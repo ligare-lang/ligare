@@ -31,9 +31,11 @@ pub enum Token {
     #[token("auto")]
     KwAuto,
 
-    // Check directive
+    // Directives
     #[token("#check")]
     HashCheck,
+    #[token("#show")]
+    HashShow,
 
     // Symbols
     #[token(":=")]

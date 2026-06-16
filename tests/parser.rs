@@ -204,6 +204,27 @@ fn program_with_expr() {
 }
 
 #[test]
+fn program_with_show() {
+    let (b, arena) = a();
+    let result = parse_program("def x : int := 5\n#show x", b, &arena);
+    assert!(result.is_ok());
+    let tops = result.unwrap();
+    assert_eq!(tops.len(), 2);
+    assert!(matches!(tops[0], TopLevel::TLDef(..)));
+    assert!(matches!(tops[1], TopLevel::TLShow(..)));
+}
+
+#[test]
+fn show_simple_expr() {
+    let (b, arena) = a();
+    let result = parse_program("#show 1 + 2", b, &arena);
+    assert!(result.is_ok());
+    let tops = result.unwrap();
+    assert_eq!(tops.len(), 1);
+    assert!(matches!(tops[0], TopLevel::TLShow(..)));
+}
+
+#[test]
 fn func_one_param() {
     let (b, arena) = a();
     assert!(parse_expr_top("func f (x: int) : int := x + 1", b, &arena).is_ok());
@@ -311,4 +332,263 @@ fn def_no_ret() {
     let (name, term) = result.unwrap();
     assert_eq!(name, "x");
     assert_eq!(*term, Term::LitInt(5));
+}
+
+// ── Binary operator tests (regression for parse_app_generic hijacking infix ops) ──
+
+#[test]
+fn binary_sub_in_lambda_body() {
+    let (b, arena) = a();
+    // "n - 1" must parse as Sub(Var(0), LitInt(1)), NOT as App(Var(0), Sub(0,1)).
+    assert_eq!(
+        *parse("\\n. n - 1", b, &arena),
+        *arena.lam(bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1)))
+    );
+}
+
+#[test]
+fn binary_sub_in_parens_in_lambda() {
+    let (b, arena) = a();
+    // Parentheses should not change the parse of a binary subtraction.
+    assert_eq!(
+        *parse("\\n. (n - 1)", b, &arena),
+        *arena.lam(bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1)))
+    );
+}
+
+#[test]
+fn binary_sub_left_assoc_with_add() {
+    let (b, arena) = a();
+    // "n - 1 + 2" should be left-associative: (n - 1) + 2
+    assert_eq!(
+        *parse("\\n. n - 1 + 2", b, &arena),
+        *arena.lam(bin(
+            &arena,
+            PrimOp::Add,
+            bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1)),
+            arena.lit_int(2)
+        ))
+    );
+}
+
+#[test]
+fn binary_add_left_assoc_with_sub() {
+    let (b, arena) = a();
+    // "n + 1 - 2" should be left-associative: (n + 1) - 2
+    assert_eq!(
+        *parse("\\n. n + 1 - 2", b, &arena),
+        *arena.lam(bin(
+            &arena,
+            PrimOp::Sub,
+            bin(&arena, PrimOp::Add, arena.var(0), arena.lit_int(1)),
+            arena.lit_int(2)
+        ))
+    );
+}
+
+#[test]
+fn unary_negation_in_lambda() {
+    let (b, arena) = a();
+    // Unary minus should still normalize to: 0 - n
+    let sub = arena.app(arena.prim_op(PrimOp::Sub), arena.lit_int(0));
+    assert_eq!(
+        *parse("\\n. -n", b, &arena),
+        *arena.lam(arena.app(sub, arena.var(0)))
+    );
+}
+
+#[test]
+fn binary_plus_with_unary_negation_rhs() {
+    let (b, arena) = a();
+    // "n + -1" should be Add(Var(0), Sub(0, 1))
+    let sub = arena.app(arena.prim_op(PrimOp::Sub), arena.lit_int(0));
+    let neg_one = arena.app(sub, arena.lit_int(1));
+    assert_eq!(
+        *parse("\\n. n + -1", b, &arena),
+        *arena.lam(bin(&arena, PrimOp::Add, arena.var(0), neg_one))
+    );
+}
+
+#[test]
+fn binary_sub_in_application() {
+    let (b, arena) = a();
+    // "f (n-1)" as a lambda: the inner subtraction must be binary, not hijacked.
+    // \n. f (n-1)  →  Lam(App(Builtin(f), Sub(Var(0), LitInt(1))))
+    assert_eq!(
+        *parse("\\n. f (n - 1)", b, &arena),
+        *arena.lam(arena.app(
+            arena.builtin(s(&arena, "f")),
+            bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1))
+        ))
+    );
+}
+
+#[test]
+fn binary_sub_multi_param_lambda() {
+    let (b, arena) = a();
+    // \n m. n - m  →  Lam(Lam(Sub(Var(1), Var(0))))
+    assert_eq!(
+        *parse("\\n. \\m. n - m", b, &arena),
+        *arena.lam(arena.lam(bin(&arena, PrimOp::Sub, arena.var(1), arena.var(0))))
+    );
+}
+
+#[test]
+fn binary_sub_twice_in_lambda() {
+    let (b, arena) = a();
+    // \n. n - 1 - 2  →  Lam(Sub(Sub(Var(0), LitInt(1)), LitInt(2)))
+    let inner_sub = bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1));
+    assert_eq!(
+        *parse("\\n. n - 1 - 2", b, &arena),
+        *arena.lam(bin(&arena, PrimOp::Sub, inner_sub, arena.lit_int(2)))
+    );
+}
+
+#[test]
+fn all_infix_ops_with_variable() {
+    let (b, arena) = a();
+    // Test that each infix operator works correctly with a variable LHS.
+    // This ensures the "break on infix token" logic in parse_app_generic
+    // doesn't break any operator.
+    let cases: Vec<(&str, PrimOp)> = vec![
+        ("\\n. n + 1", PrimOp::Add),
+        ("\\n. n - 1", PrimOp::Sub),
+        ("\\n. n * 2", PrimOp::Mul),
+        ("\\n. n / 2", PrimOp::Div),
+        ("\\n. n % 2", PrimOp::Mod_),
+        ("\\n. n < 2", PrimOp::Lt),
+        ("\\n. n > 2", PrimOp::Gt),
+        ("\\n. n <= 2", PrimOp::Le),
+        ("\\n. n >= 2", PrimOp::Ge),
+        ("\\n. n == 2", PrimOp::Eq),
+        ("\\n. n /= 2", PrimOp::Neq),
+    ];
+    for (input, op) in cases {
+        let expected = arena.lam(bin(&arena, op, arena.var(0), arena.lit_int(2)));
+        // "n + 1" uses 1, not 2, as the RHS
+        let expected = if input.contains("+ 1") || input.contains("- 1") {
+            arena.lam(bin(&arena, op, arena.var(0), arena.lit_int(1)))
+        } else {
+            expected
+        };
+        assert_eq!(
+            *parse(input, b, &arena),
+            *expected,
+            "failed for input: {}",
+            input
+        );
+    }
+}
+
+#[test]
+fn def_with_binary_sub_in_body() {
+    let (b, arena) = a();
+    // Regression: "n - 1" inside a def body must be binary subtraction.
+    let result = parse_def_top("def dec (n : int) : int := n - 1", b, &arena);
+    assert!(result.is_ok());
+    let (name, term) = result.unwrap();
+    assert_eq!(name, "dec");
+    assert_eq!(
+        *term,
+        *arena.annot(
+            arena.lam(bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1))),
+            arena.builtin(s(&arena, "int"))
+        )
+    );
+}
+
+#[test]
+fn fib_def_parses_successfully() {
+    let (b, arena) = a();
+    // The original bug: fib's else branch "fib (n-1) + fib (n-2)" was
+    // parsing n-1 as n(0-1) instead of n-1.
+    let result = parse_def_top(
+        "def fib (n : int) : int := if n < 2 then n else fib (n-1) + fib (n-2)",
+        b,
+        &arena,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn fib_def_structure_matches_expected() {
+    let (b, arena) = a();
+    // Full structural test for the fib definition.
+    let result = parse_def_top(
+        "def fib (n : int) : int := if n < 2 then n else fib (n-1) + fib (n-2)",
+        b,
+        &arena,
+    );
+    assert!(result.is_ok());
+    let (name, term) = result.unwrap();
+    assert_eq!(name, "fib");
+
+    // Expected: Annot(Lam(IfThenElse(cond, then_, else_)), int)
+    let cond = bin(&arena, PrimOp::Lt, arena.var(0), arena.lit_int(2));
+    let then_branch = arena.var(0);
+    // fib (n-1)  →  App(This, Sub(Var(0), LitInt(1)))
+    let rec_call_1 = arena.app(
+        arena.this_(),
+        bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1)),
+    );
+    // fib (n-2)  →  App(This, Sub(Var(0), LitInt(2)))
+    let rec_call_2 = arena.app(
+        arena.this_(),
+        bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(2)),
+    );
+    // fib (n-1) + fib (n-2)
+    let else_branch = bin(&arena, PrimOp::Add, rec_call_1, rec_call_2);
+
+    let body = arena.if_then_else(cond, then_branch, else_branch);
+    let expected = arena.annot(arena.lam(body), arena.builtin(s(&arena, "int")));
+
+    assert_eq!(*term, *expected);
+}
+
+#[test]
+fn unary_negation_after_binary_op() {
+    let (b, arena) = a();
+    // "1 + -2" should treat the second "-" as unary negation.
+    let sub = arena.app(arena.prim_op(PrimOp::Sub), arena.lit_int(0));
+    let neg_two = arena.app(sub, arena.lit_int(2));
+    assert_eq!(
+        *parse("1 + -2", b, &arena),
+        *bin(&arena, PrimOp::Add, arena.lit_int(1), neg_two)
+    );
+}
+
+#[test]
+fn unary_negation_after_comparison() {
+    let (b, arena) = a();
+    // "1 < -2" should still parse: unary minus on RHS.
+    let sub = arena.app(arena.prim_op(PrimOp::Sub), arena.lit_int(0));
+    let neg_two = arena.app(sub, arena.lit_int(2));
+    assert_eq!(
+        *parse("1 < -2", b, &arena),
+        *bin(&arena, PrimOp::Lt, arena.lit_int(1), neg_two)
+    );
+}
+
+#[test]
+fn comparison_of_two_binary_subs() {
+    let (b, arena) = a();
+    // \n m. n - 1 < m - 2  —  both sides are binary subtractions.
+    let left = bin(&arena, PrimOp::Sub, arena.var(1), arena.lit_int(1));
+    let right = bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(2));
+    assert_eq!(
+        *parse("\\n. \\m. n - 1 < m - 2", b, &arena),
+        *arena.lam(arena.lam(bin(&arena, PrimOp::Lt, left, right)))
+    );
+}
+
+#[test]
+fn parens_respect_binary_op() {
+    let (b, arena) = a();
+    // "(n - 1) * 2" inside a lambda — parens should group the subtraction,
+    // then binary multiply on the grouped result.
+    let sub = bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1));
+    assert_eq!(
+        *parse("\\n. (n - 1) * 2", b, &arena),
+        *arena.lam(bin(&arena, PrimOp::Mul, sub, arena.lit_int(2)))
+    );
 }

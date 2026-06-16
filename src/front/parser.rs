@@ -11,6 +11,7 @@ use crate::front::lexer::Token;
 pub enum TopLevel<'bump> {
     TLDef(Name<'bump>, &'bump Term<'bump>),
     TLCheck(&'bump Term<'bump>, &'bump Term<'bump>),
+    TLShow(&'bump Term<'bump>),
     TLExpr(&'bump Term<'bump>),
 }
 
@@ -141,6 +142,11 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             };
             return Ok(TopLevel::TLCheck(term, constraint));
         }
+        if self.peek_token() == Some(Token::HashShow) {
+            self.advance();
+            let term = self.parse_expr(&[])?;
+            return Ok(TopLevel::TLShow(term));
+        }
         let term = self.parse_expr(&[])?;
         Ok(TopLevel::TLExpr(term))
     }
@@ -170,8 +176,20 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         }
         let t1 = parse_term_fn(self, env)?;
         let mut result = t1;
-        while let Ok(t) = parse_term_fn(self, env) {
-            result = self.arena.app(result, t);
+        loop {
+            // If the next token is an infix operator, break so that
+            // parse_binop_rhs handles it. This prevents unary minus
+            // from being parsed greedily inside the application loop
+            // when it should be a binary operator (e.g., "n-1").
+            if let Some(tok) = self.peek_token()
+                && Self::token_precedence(&tok).is_some()
+            {
+                break;
+            }
+            match parse_term_fn(self, env) {
+                Ok(t) => result = self.arena.app(result, t),
+                Err(_) => break,
+            }
         }
         Ok(result)
     }

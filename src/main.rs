@@ -103,6 +103,13 @@ impl<'bump> Compiler<'bump> {
                     Ok(_) => println!("[OK]"),
                 }
             }
+            TopLevel::TLShow(term) => {
+                let resolved = self.subst_top_level(term);
+                match self.evaluator.eval(resolved) {
+                    Err(err) => eprintln!("show error: {}", err),
+                    Ok(val) => println!("{}", PrettyPrinter::pretty(val)),
+                }
+            }
             TopLevel::TLExpr(term) => {
                 let resolved = self.subst_top_level(term);
                 match self.evaluator.eval(resolved) {

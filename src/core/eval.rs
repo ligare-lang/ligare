@@ -1,5 +1,6 @@
 use crate::core::pool::{SubstitutionContext, TermArena};
 use crate::core::syntax::{PrimOp, Term};
+use crate::pretty::pretty;
 
 /// Evaluates terms to normal form using a bump arena for intermediate allocations.
 ///
@@ -184,7 +185,7 @@ impl<'bump> Evaluator<'bump> {
                 };
                 Ok(self.arena.alloc(Self::arith_result(*op, *x, *y)))
             }
-            _ => Err("arithmetic on non-integer".to_string()),
+            _ => Err(format!("arithmetic on non-integer: {} and {}.", pretty(x), pretty(y))),
         }
     }
 

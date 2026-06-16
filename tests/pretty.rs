@@ -46,5 +46,5 @@ fn refine() {
     let (_bump, arena) = a();
     let pred = bin(&arena, PrimOp::Ge, arena.ref_param(), arena.lit_int(0));
     let t = arena.refine(s(&arena, ""), arena.builtin(s(&arena, "int")), pred);
-    assert_eq!(pretty(t), "int where (x => ((>= x) 0))");
+    assert_eq!(pretty(t), "int where (x => (x >= 0))");
 }

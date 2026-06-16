@@ -3,5 +3,4 @@ def x : nat := 10
 #check x : int
 def sdiv (a : int) (b : int where (x => x /= 0)) := a / b
 def fib (n : int) : int := if n < 2 then n else fib (n-1) + fib (n-2)
-#check fib 5 : int
-
+#show fib 20

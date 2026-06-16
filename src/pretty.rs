@@ -1,4 +1,4 @@
-use crate::core::syntax::{Name, Term};
+use crate::core::syntax::{Name, PrimOp, Term};
 
 /// Pretty-printer for Terms, producing human-readable string representations.
 ///
@@ -12,7 +12,7 @@ impl PrettyPrinter {
         match t {
             Term::Var(i) => format!("${}", i),
             Term::Lam(body) => format!("λ. {}", Self::pretty(body)),
-            Term::App(f, a) => format!("({} {})", Self::pretty(f), Self::pretty(a)),
+            Term::App(f, a) => Self::pretty_app(f, a),
             Term::LitInt(n) => n.to_string(),
             Term::Universe(u) => u.to_string(),
             Term::Pi("", a, b) => {
@@ -86,6 +86,46 @@ impl PrettyPrinter {
         }
     }
 
+    /// Pretty-print an application, using infix notation for binary operators
+    /// and unary notation for negation.
+    fn pretty_app(f: &Term<'_>, a: &Term<'_>) -> String {
+        // Detect binary operator: ((op left) right)
+        if let Term::App(inner, left) = f {
+            if matches!(inner, Term::PrimOp(_)) {
+                // Special case: unary negation (0 - x)
+                if is_sub(inner) && matches!(left, Term::LitInt(0)) {
+                    return Self::pretty_neg(a);
+                }
+                // General infix: (left op right)
+                return format!(
+                    "({} {} {})",
+                    Self::pretty(left),
+                    Self::pretty(inner),
+                    Self::pretty(a)
+                );
+            }
+        }
+        // Default: prefix application
+        format!("({} {})", Self::pretty(f), Self::pretty(a))
+    }
+
+    /// Format a negated term: `-lit` for simple atoms, `-(expr)` for complex ones.
+    fn pretty_neg(t: &Term<'_>) -> String {
+        let inner = Self::pretty(t);
+        match t {
+            // Simple atoms don't need parentheses around the operand
+            Term::LitInt(_)
+            | Term::LitBool(_)
+            | Term::Builtin(_)
+            | Term::Var(_)
+            | Term::This
+            | Term::RefParam
+            | Term::AutoProof => format!("-{}", inner),
+            // Complex sub-terms wrap in parens for clarity
+            _ => format!("-({})", inner),
+        }
+    }
+
     /// Format parameter list: `(name : type, ...)`.
     fn pretty_params(params: &[(Name<'_>, Option<&Term<'_>>)]) -> String {
         params
@@ -102,4 +142,10 @@ impl PrettyPrinter {
 /// Convenience wrapper for backward-compatible free-function style.
 pub fn pretty(t: &Term<'_>) -> String {
     PrettyPrinter::pretty(t)
+}
+
+// ── helpers ──
+
+fn is_sub(t: &Term<'_>) -> bool {
+    matches!(t, Term::PrimOp(PrimOp::Sub))
 }
