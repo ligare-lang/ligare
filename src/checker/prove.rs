@@ -3,25 +3,8 @@
 use crate::checker::TypeChecker;
 use crate::checker::context::Context;
 use crate::config::{AND_ELIM_LEFT, AND_INTRO, BUILTIN_AND};
-use crate::core::pool::TermArena;
-use crate::core::syntax::{PrimOp, Term, TermVisitor};
+use crate::core::syntax::{PrimOp, Term};
 use crate::pretty::PrettyPrinter;
-
-/// A `TermVisitor` that substitutes `RefParam` nodes with a specific term.
-struct SubstRefParamVisitor<'bump> {
-    arena: &'bump TermArena<'bump>,
-    subj: &'bump Term<'bump>,
-}
-
-impl<'bump> TermVisitor<'bump> for SubstRefParamVisitor<'bump> {
-    fn arena(&self) -> &TermArena<'bump> {
-        self.arena
-    }
-
-    fn visit_ref_param(&self) -> Option<&'bump Term<'bump>> {
-        Some(self.subj)
-    }
-}
 
 impl<'bump> TypeChecker<'bump> {
     // ── Proof search ──
@@ -51,11 +34,13 @@ impl<'bump> TypeChecker<'bump> {
         subj: &'bump Term<'bump>,
         t: &'bump Term<'bump>,
     ) -> &'bump Term<'bump> {
-        SubstRefParamVisitor {
-            arena: self.arena,
-            subj,
-        }
-        .walk(t)
+        self.arena.map(t, &|node| {
+            if matches!(node, Term::RefParam) {
+                Some(subj)
+            } else {
+                None
+            }
+        })
     }
 
     fn search_ctx(

@@ -1,4 +1,3 @@
-#[allow(dead_code)]
 use logos::Logos;
 
 use bumpalo::Bump;
@@ -63,11 +62,9 @@ impl<'a, 'bump> Parser<'a, 'bump> {
     fn peek(&self) -> Option<&SpannedToken> {
         self.tokens.get(self.pos)
     }
-
     fn peek_token(&self) -> Option<Token> {
         self.peek().map(|(t, _)| t.clone())
     }
-
     fn advance(&mut self) {
         self.pos += 1;
     }
@@ -135,7 +132,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         if self.peek_token() == Some(Token::HashCheck) {
             self.advance();
             let term = self.parse_expr(&[])?;
-            let constraint: &'bump Term<'bump> = if self.try_expect(&Token::Colon) {
+            let constraint = if self.try_expect(&Token::Colon) {
                 self.parse_expr(&[])?
             } else {
                 self.arena.builtin(self.pool.intern("data"))
@@ -144,14 +141,12 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         }
         if self.peek_token() == Some(Token::HashShow) {
             self.advance();
-            let term = self.parse_expr(&[])?;
-            return Ok(TopLevel::TLShow(term));
+            return Ok(TopLevel::TLShow(self.parse_expr(&[])?));
         }
-        let term = self.parse_expr(&[])?;
-        Ok(TopLevel::TLExpr(term))
+        Ok(TopLevel::TLExpr(self.parse_expr(&[])?))
     }
 
-    // ── Expressions (with annotation / no-annotation) ──
+    // ── Expressions ──
 
     fn parse_app_no_annot(
         &mut self,
@@ -174,13 +169,8 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         if let Ok(t) = self.parse_dep_arrow_expr() {
             return Ok(t);
         }
-        let t1 = parse_term_fn(self, env)?;
-        let mut result = t1;
+        let mut result = parse_term_fn(self, env)?;
         loop {
-            // If the next token is an infix operator, break so that
-            // parse_binop_rhs handles it. This prevents unary minus
-            // from being parsed greedily inside the application loop
-            // when it should be a binary operator (e.g., "n-1").
             if let Some(tok) = self.peek_token()
                 && Self::token_precedence(&tok).is_some()
             {
@@ -217,22 +207,24 @@ impl<'a, 'bump> Parser<'a, 'bump> {
     fn parse_def(&mut self) -> Result<(Name<'bump>, &'bump Term<'bump>), ParseError> {
         self.expect(&Token::KwDef)?;
         let name = self.parse_ident()?;
+        Ok((name, self.parse_func_body(name, &[])?))
+    }
+
+    fn parse_func_body(
+        &mut self,
+        name: Name<'bump>,
+        outer_env: &[Name<'bump>],
+    ) -> Result<&'bump Term<'bump>, ParseError> {
         let params = self.parse_many_curried_params();
-        let m_ret = self.parse_type_annotation(&[]);
+        let m_ret = self.parse_type_annotation(outer_env);
         self.expect(&Token::ColonEq)?;
-
         let param_names: Vec<Name<'bump>> = params.iter().map(|(n, _)| *n).collect();
-        let env: Vec<Name<'bump>> = param_names.iter().rev().copied().collect();
-        let body = self.parse_expr(&env)?;
-        let body = subst_this(self.arena, name, body);
-
-        // Produce a Func node to preserve parameter type annotations
-        // (otherwise constraints like `b: int where (x => x /= 0)` are lost).
+        let mut env: Vec<Name<'bump>> = param_names.iter().rev().copied().collect();
+        env.extend_from_slice(outer_env);
+        let body_expr = self.parse_expr(&env)?;
+        let body = subst_this(self.arena, name, body_expr);
         let params_slice = self.arena.alloc_slice(&params);
-        Ok((
-            name,
-            self.arena.func(name, params_slice, m_ret, &[], &[], body),
-        ))
+        Ok(self.arena.func(name, params_slice, m_ret, &[], &[], body))
     }
 
     fn parse_curried_param(&mut self) -> Option<(Name<'bump>, Option<&'bump Term<'bump>>)> {
@@ -278,8 +270,9 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         self.expect(&Token::KwThen)?;
         let tbranch = self.parse_expr(env)?;
         self.expect(&Token::KwElse)?;
-        let fbranch = self.parse_expr(env)?;
-        Ok(self.arena.if_then_else(cond, tbranch, fbranch))
+        Ok(self
+            .arena
+            .if_then_else(cond, tbranch, self.parse_expr(env)?))
     }
 
     fn parse_operators(
@@ -324,7 +317,6 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         Ok(self.arena.let_(name, val, body, m_constraint))
     }
 
-    /// Attempt to consume `tok` then run `parse_fn`. On failure, restore position.
     fn try_parse<T>(
         &mut self,
         tok: Token,
@@ -361,22 +353,11 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 span: 0..0,
             });
         }
-        let fname = self.parse_ident()?;
-        let params = self.parse_many_curried_params();
-        let m_ret = self.parse_type_annotation(env);
-        self.expect(&Token::ColonEq)?;
-
-        let param_names: Vec<Name<'bump>> = params.iter().map(|(n, _)| *n).collect();
-        let mut extended_env: Vec<Name<'bump>> = param_names.iter().rev().copied().collect();
-        extended_env.extend_from_slice(env);
-        let body = self.parse_expr(&extended_env)?;
-        let body = subst_this(self.arena, fname, body);
-
-        let params_slice = self.arena.alloc_slice(&params);
-        Ok(self.arena.func(fname, params_slice, m_ret, &[], &[], body))
+        let name = self.parse_ident()?;
+        self.parse_func_body(name, env)
     }
 
-    // ── Dependent arrow: (x : A) -> B ──
+    // ── Dependent arrow ──
 
     fn parse_dep_arrow_expr(&mut self) -> Result<&'bump Term<'bump>, ParseError> {
         let saved = self.pos;
@@ -427,8 +408,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 span: 0..0,
             });
         }
-        let b = self.parse_expr(&[x])?;
-        Ok(self.arena.pi(x, a, b))
+        Ok(self.arena.pi(x, a, self.parse_expr(&[x])?))
     }
 
     // ── Term ──
@@ -454,6 +434,11 @@ impl<'a, 'bump> Parser<'a, 'bump> {
 
     // ── Atom ──
 
+    fn builtin_atom(&mut self, name: &str) -> &'bump Term<'bump> {
+        self.advance();
+        self.arena.builtin(self.pool.intern(name))
+    }
+
     fn parse_atom(&mut self, env: &[Name<'bump>]) -> Result<&'bump Term<'bump>, ParseError> {
         match self.peek_token() {
             Some(Token::IntLit(n)) => {
@@ -468,30 +453,12 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 self.advance();
                 Ok(self.arena.lit_bool(false))
             }
-            Some(Token::AndIntro) => {
-                self.advance();
-                Ok(self.arena.builtin(self.pool.intern("∧-intro")))
-            }
-            Some(Token::AndElimLeft) => {
-                self.advance();
-                Ok(self.arena.builtin(self.pool.intern("∧-elim-left")))
-            }
-            Some(Token::And) => {
-                self.advance();
-                Ok(self.arena.builtin(self.pool.intern("and")))
-            }
-            Some(Token::Or) => {
-                self.advance();
-                Ok(self.arena.builtin(self.pool.intern("or")))
-            }
-            Some(Token::Not) => {
-                self.advance();
-                Ok(self.arena.builtin(self.pool.intern("not")))
-            }
-            Some(Token::Implies) => {
-                self.advance();
-                Ok(self.arena.builtin(self.pool.intern("implies")))
-            }
+            Some(Token::AndIntro) => Ok(self.builtin_atom("∧-intro")),
+            Some(Token::AndElimLeft) => Ok(self.builtin_atom("∧-elim-left")),
+            Some(Token::And) => Ok(self.builtin_atom("and")),
+            Some(Token::Or) => Ok(self.builtin_atom("or")),
+            Some(Token::Not) => Ok(self.builtin_atom("not")),
+            Some(Token::Implies) => Ok(self.builtin_atom("implies")),
             Some(Token::KwAuto) => {
                 self.advance();
                 Ok(self.arena.auto_proof())
@@ -501,10 +468,11 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             Some(Token::Minus) => {
                 self.advance();
                 let t = self.parse_atom(env)?;
-                let sub_call = self
-                    .arena
-                    .app(self.arena.prim_op(PrimOp::Sub), self.arena.lit_int(0));
-                Ok(self.arena.app(sub_call, t))
+                Ok(self.arena.app(
+                    self.arena
+                        .app(self.arena.prim_op(PrimOp::Sub), self.arena.lit_int(0)),
+                    t,
+                ))
             }
             Some(Token::LParen) => self.parse_parens(env),
             Some(Token::LBrace) => {
@@ -544,9 +512,9 @@ impl<'a, 'bump> Parser<'a, 'bump> {
     fn parse_ident(&mut self) -> Result<Name<'bump>, ParseError> {
         match self.peek() {
             Some((Token::Ident(name), _)) => {
-                let interned = self.pool.intern(name);
+                let n = self.pool.intern(name);
                 self.advance();
-                Ok(interned)
+                Ok(n)
             }
             Some((t, span)) => Err(ParseError {
                 message: format!("expected identifier, found {:?}", t),
@@ -573,8 +541,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         self.expect(&Token::Dot)?;
         let mut extended_env: Vec<Name<'bump>> = vec![x];
         extended_env.extend_from_slice(env);
-        let body = self.parse_expr(&extended_env)?;
-        Ok(self.arena.lam(body))
+        Ok(self.arena.lam(self.parse_expr(&extended_env)?))
     }
 
     fn parse_parens(&mut self, env: &[Name<'bump>]) -> Result<&'bump Term<'bump>, ParseError> {
@@ -601,11 +568,14 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         self.expect(&Token::FatArrow)?;
         let predicate = self.parse_expr(&[param_name])?;
         self.expect(&Token::RParen)?;
-        let pred2 = replace_var_zero(self.arena, predicate);
-        Ok(self.arena.refine(self.pool.intern(""), parent, pred2))
+        Ok(self.arena.refine(
+            self.pool.intern(""),
+            parent,
+            replace_var_zero(self.arena, predicate),
+        ))
     }
 
-    // ── Operator precedence (Pratt-style) ──
+    // ── Operators ──
 
     fn token_precedence(tok: &Token) -> Option<(i32, Associativity)> {
         match tok {
@@ -639,20 +609,18 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 Associativity::Right => prec,
                 Associativity::None => prec + 1,
             };
-
-            // Handle arrow separately (different AST node)
             if tok == Token::ThinArrow {
                 self.advance();
                 let rhs_atom = self.parse_app_any(env, no_annot)?;
-                let rhs = self.parse_binop_rhs(env, rhs_atom, next_min, no_annot)?;
-                return Ok(self.arena.pi(self.pool.intern(""), lhs, rhs));
+                return Ok(self.arena.pi(
+                    self.pool.intern(""),
+                    lhs,
+                    self.parse_binop_rhs(env, rhs_atom, next_min, no_annot)?,
+                ));
             }
-
-            // Guard / against /=
             if tok == Token::Slash && self.peek_ahead_is(&Token::Eq) {
                 break;
             }
-
             self.advance();
             let op = match &tok {
                 Token::Star => PrimOp::Mul,
@@ -668,11 +636,11 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 Token::Gt => PrimOp::Gt,
                 _ => unreachable!(),
             };
-
             let rhs_atom = self.parse_app_any(env, no_annot)?;
             let rhs = self.parse_binop_rhs(env, rhs_atom, next_min, no_annot)?;
-            let op_app = self.arena.app(self.arena.prim_op(op), lhs);
-            lhs = self.arena.app(op_app, rhs);
+            lhs = self
+                .arena
+                .app(self.arena.app(self.arena.prim_op(op), lhs), rhs);
         }
         Ok(lhs)
     }
@@ -710,41 +678,13 @@ pub fn replace_var_zero<'bump>(
     arena: &TermArena<'bump>,
     term: &'bump Term<'bump>,
 ) -> &'bump Term<'bump> {
-    match term {
-        Term::Var(0) => arena.ref_param(),
-        Term::App(f, a) => {
-            let f2 = replace_var_zero(arena, f);
-            let a2 = replace_var_zero(arena, a);
-            arena.app(f2, a2)
+    arena.map(term, &|t| {
+        if matches!(t, Term::Var(0)) {
+            Some(arena.ref_param())
+        } else {
+            None
         }
-        Term::Lam(b) => {
-            let b2 = replace_var_zero(arena, b);
-            arena.lam(b2)
-        }
-        Term::Let(n, v, b, mc) => {
-            let v2 = replace_var_zero(arena, v);
-            let b2 = replace_var_zero(arena, b);
-            let mc2 = mc.map(|c| replace_var_zero(arena, c));
-            arena.let_(n, v2, b2, mc2)
-        }
-        Term::IfThenElse(c, t, f) => {
-            let c2 = replace_var_zero(arena, c);
-            let t2 = replace_var_zero(arena, t);
-            let f2 = replace_var_zero(arena, f);
-            arena.if_then_else(c2, t2, f2)
-        }
-        Term::Annot(inner, c) => {
-            let inner2 = replace_var_zero(arena, inner);
-            let c2 = replace_var_zero(arena, c);
-            arena.annot(inner2, c2)
-        }
-        Term::ByProof(inner, p) => {
-            let inner2 = replace_var_zero(arena, inner);
-            let p2 = replace_var_zero(arena, p);
-            arena.by_proof(inner2, p2)
-        }
-        _ => term,
-    }
+    })
 }
 
 pub fn subst_this<'bump>(
@@ -752,89 +692,35 @@ pub fn subst_this<'bump>(
     name: Name<'bump>,
     term: &'bump Term<'bump>,
 ) -> &'bump Term<'bump> {
-    match term {
-        Term::Builtin(n) if *n == name => arena.this_(),
-        Term::App(f, a) => {
-            let f2 = subst_this(arena, name, f);
-            let a2 = subst_this(arena, name, a);
-            arena.app(f2, a2)
+    arena.map(term, &|t| {
+        if let Term::Builtin(n) = t
+            && *n == name
+        {
+            Some(arena.this_())
+        } else {
+            None
         }
-        Term::Lam(b) => {
-            let b2 = subst_this(arena, name, b);
-            arena.lam(b2)
-        }
-        Term::Pi(x, a, b) => {
-            let a2 = subst_this(arena, name, a);
-            let b2 = subst_this(arena, name, b);
-            arena.pi(x, a2, b2)
-        }
-        Term::Let(x, v, b, mc) => {
-            let v2 = subst_this(arena, name, v);
-            let b2 = subst_this(arena, name, b);
-            let mc2 = mc.map(|c| subst_this(arena, name, c));
-            arena.let_(x, v2, b2, mc2)
-        }
-        Term::IfThenElse(c, t, f) => {
-            let c2 = subst_this(arena, name, c);
-            let t2 = subst_this(arena, name, t);
-            let f2 = subst_this(arena, name, f);
-            arena.if_then_else(c2, t2, f2)
-        }
-        Term::Annot(inner, c) => {
-            let inner2 = subst_this(arena, name, inner);
-            let c2 = subst_this(arena, name, c);
-            arena.annot(inner2, c2)
-        }
-        Term::ByProof(inner, p) => {
-            let inner2 = subst_this(arena, name, inner);
-            let p2 = subst_this(arena, name, p);
-            arena.by_proof(inner2, p2)
-        }
-        Term::Refine(n, par, p) => {
-            let par2 = subst_this(arena, name, par);
-            let p2 = subst_this(arena, name, p);
-            arena.refine(n, par2, p2)
-        }
-        Term::Func(fn_name, params, m_ret, pre, post, body) => {
-            let params2 = params
-                .iter()
-                .map(|(n, mc)| {
-                    let mc2 = mc.map(|c| subst_this(arena, name, c));
-                    (*n, mc2)
-                })
-                .collect::<Vec<_>>();
-            let params_slice = arena.alloc_slice(&params2);
-            let m_ret2 = m_ret.map(|c| subst_this(arena, name, c));
-            let pre2: Vec<_> = pre.iter().map(|t| *subst_this(arena, name, t)).collect();
-            let pre_slice = arena.alloc_slice(&pre2);
-            let post2: Vec<_> = post.iter().map(|t| *subst_this(arena, name, t)).collect();
-            let post_slice = arena.alloc_slice(&post2);
-            let body2 = subst_this(arena, name, body);
-            arena.func(fn_name, params_slice, m_ret2, pre_slice, post_slice, body2)
-        }
-        Term::ProofBlock(t) => {
-            let t2 = subst_this(arena, name, t);
-            arena.proof_block(t2)
-        }
-        _ => term,
-    }
+    })
 }
 
 // ── Public entry points ──
+
+fn tokenize(input: &str) -> Vec<SpannedToken> {
+    Token::lexer(input)
+        .spanned()
+        .filter_map(|(r, s)| r.ok().map(|t| (t, s)))
+        .collect()
+}
 
 pub fn parse_expr_top<'bump>(
     input: &str,
     bump: &'bump Bump,
     arena: &'bump TermArena<'bump>,
 ) -> Result<&'bump Term<'bump>, String> {
-    let lex = Token::lexer(input);
-    let tokens: Vec<SpannedToken> = lex
-        .spanned()
-        .filter_map(|(r, s)| r.ok().map(|t| (t, s)))
-        .collect();
     let pool = StringPool::new(bump);
-    let mut parser = Parser::new(&tokens, &pool, arena);
-    parser.parse_expr_top().map_err(|e| e.to_string())
+    Parser::new(&tokenize(input), &pool, arena)
+        .parse_expr_top()
+        .map_err(|e| e.to_string())
 }
 
 pub fn parse_def_top<'bump>(
@@ -842,14 +728,10 @@ pub fn parse_def_top<'bump>(
     bump: &'bump Bump,
     arena: &'bump TermArena<'bump>,
 ) -> Result<(Name<'bump>, &'bump Term<'bump>), String> {
-    let lex = Token::lexer(input);
-    let tokens: Vec<SpannedToken> = lex
-        .spanned()
-        .filter_map(|(r, s)| r.ok().map(|t| (t, s)))
-        .collect();
     let pool = StringPool::new(bump);
-    let mut parser = Parser::new(&tokens, &pool, arena);
-    parser.parse_def_top().map_err(|e| e.to_string())
+    Parser::new(&tokenize(input), &pool, arena)
+        .parse_def_top()
+        .map_err(|e| e.to_string())
 }
 
 pub fn parse_program<'bump>(
@@ -857,12 +739,8 @@ pub fn parse_program<'bump>(
     bump: &'bump Bump,
     arena: &'bump TermArena<'bump>,
 ) -> Result<Vec<TopLevel<'bump>>, String> {
-    let lex = Token::lexer(input);
-    let tokens: Vec<SpannedToken> = lex
-        .spanned()
-        .filter_map(|(r, s)| r.ok().map(|t| (t, s)))
-        .collect();
     let pool = StringPool::new(bump);
-    let mut parser = Parser::new(&tokens, &pool, arena);
-    parser.parse_program().map_err(|e| e.to_string())
+    Parser::new(&tokenize(input), &pool, arena)
+        .parse_program()
+        .map_err(|e| e.to_string())
 }

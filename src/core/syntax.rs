@@ -1,9 +1,7 @@
 use std::fmt;
 
 use crate::config::{UNIVERSE_DATA, UNIVERSE_PROOF, UNIVERSE_PROP, UNIVERSE_THEOREM};
-use crate::core::pool::TermArena;
 
-/// A name in the AST, arena-allocated for zero-copy sharing.
 pub type Name<'bump> = &'bump str;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,27 +57,13 @@ impl fmt::Display for PrimOp {
 }
 
 impl PrimOp {
-    /// Compute the result of this primitive operation on two integer operands.
-    /// Division and modulo by zero return `LitInt(0)`.
     pub fn apply(&self, x: i64, y: i64) -> Term<'static> {
         match self {
             PrimOp::Add => Term::LitInt(x.wrapping_add(y)),
             PrimOp::Sub => Term::LitInt(x.wrapping_sub(y)),
             PrimOp::Mul => Term::LitInt(x.wrapping_mul(y)),
-            PrimOp::Div => {
-                if y == 0 {
-                    Term::LitInt(0)
-                } else {
-                    Term::LitInt(x / y)
-                }
-            }
-            PrimOp::Mod_ => {
-                if y == 0 {
-                    Term::LitInt(0)
-                } else {
-                    Term::LitInt(x % y)
-                }
-            }
+            PrimOp::Div => Term::LitInt(if y == 0 { 0 } else { x / y }),
+            PrimOp::Mod_ => Term::LitInt(if y == 0 { 0 } else { x % y }),
             PrimOp::Eq => Term::LitBool(x == y),
             PrimOp::Lt => Term::LitBool(x < y),
             PrimOp::Gt => Term::LitBool(x > y),
@@ -90,12 +74,6 @@ impl PrimOp {
     }
 }
 
-/// The core Term, arena-allocated via bumpalo.
-///
-/// All recursive positions use `&'bump Term<'bump>` references instead of
-/// `Box<Term>`, eliminating per-node heap allocations.  The entire term tree
-/// lives in a single bump arena for fast allocation and excellent cache
-/// locality.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Term<'bump> {
     Var(usize),
@@ -131,133 +109,6 @@ pub enum Term<'bump> {
     ProofBlock(&'bump Term<'bump>),
 }
 
-// ── TermVisitor: a trait for polymorphic term traversal ──
-
-/// A visitor that walks over a `Term` tree, allowing custom logic at each node.
-///
-/// Implementors override the methods for the variants they care about;
-/// the default implementations simply recurse into children.
-///
-/// The `walk` method drives the traversal.  Because Term nodes are arena-allocated
-/// and immutable, the visitor returns `Option<&'bump Term<'bump>>` — `Some(new)` to
-/// replace the node, or `None` to keep it unchanged.
-pub trait TermVisitor<'bump> {
-    /// The arena used for allocating replacement nodes.
-    fn arena(&self) -> &TermArena<'bump>;
-
-    fn visit_var(&self, _i: usize) -> Option<&'bump Term<'bump>> {
-        None
-    }
-    fn visit_lam(&self, body: &'bump Term<'bump>) -> Option<&'bump Term<'bump>> {
-        let b = self.walk(body);
-        Some(self.arena().lam(b))
-    }
-    fn visit_app(
-        &self,
-        f: &'bump Term<'bump>,
-        a: &'bump Term<'bump>,
-    ) -> Option<&'bump Term<'bump>> {
-        let f2 = self.walk(f);
-        let a2 = self.walk(a);
-        Some(self.arena().app(f2, a2))
-    }
-    fn visit_pi(
-        &self,
-        name: Name<'bump>,
-        a: &'bump Term<'bump>,
-        b: &'bump Term<'bump>,
-    ) -> Option<&'bump Term<'bump>> {
-        let a2 = self.walk(a);
-        let b2 = self.walk(b);
-        Some(self.arena().pi(name, a2, b2))
-    }
-    fn visit_let(
-        &self,
-        name: Name<'bump>,
-        val: &'bump Term<'bump>,
-        body: &'bump Term<'bump>,
-        mconstr: Option<&'bump Term<'bump>>,
-    ) -> Option<&'bump Term<'bump>> {
-        let v2 = self.walk(val);
-        let mc2 = mconstr.map(|c| self.walk(c));
-        let b2 = self.walk(body);
-        Some(self.arena().let_(name, v2, b2, mc2))
-    }
-    fn visit_if(
-        &self,
-        cond: &'bump Term<'bump>,
-        th: &'bump Term<'bump>,
-        el: &'bump Term<'bump>,
-    ) -> Option<&'bump Term<'bump>> {
-        let c2 = self.walk(cond);
-        let th2 = self.walk(th);
-        let el2 = self.walk(el);
-        Some(self.arena().if_then_else(c2, th2, el2))
-    }
-    fn visit_annot(
-        &self,
-        t: &'bump Term<'bump>,
-        c: &'bump Term<'bump>,
-    ) -> Option<&'bump Term<'bump>> {
-        let t2 = self.walk(t);
-        let c2 = self.walk(c);
-        Some(self.arena().annot(t2, c2))
-    }
-    fn visit_by_proof(
-        &self,
-        t: &'bump Term<'bump>,
-        p: &'bump Term<'bump>,
-    ) -> Option<&'bump Term<'bump>> {
-        let t2 = self.walk(t);
-        let p2 = self.walk(p);
-        Some(self.arena().by_proof(t2, p2))
-    }
-    fn visit_refine(
-        &self,
-        name: Name<'bump>,
-        parent: &'bump Term<'bump>,
-        pred: &'bump Term<'bump>,
-    ) -> Option<&'bump Term<'bump>> {
-        let par2 = self.walk(parent);
-        let p2 = self.walk(pred);
-        Some(self.arena().refine(name, par2, p2))
-    }
-    fn visit_proof_block(&self, inner: &'bump Term<'bump>) -> Option<&'bump Term<'bump>> {
-        let i2 = self.walk(inner);
-        Some(self.arena().proof_block(i2))
-    }
-    fn visit_builtin(&self, _name: Name<'bump>) -> Option<&'bump Term<'bump>> {
-        None
-    }
-    fn visit_ref_param(&self) -> Option<&'bump Term<'bump>> {
-        None
-    }
-    fn visit_this(&self) -> Option<&'bump Term<'bump>> {
-        None
-    }
-
-    /// Walk the entire term tree, dispatching to the appropriate visitor method.
-    fn walk(&self, t: &'bump Term<'bump>) -> &'bump Term<'bump> {
-        match t {
-            Term::Var(i) => self.visit_var(*i).unwrap_or(t),
-            Term::Lam(body) => self.visit_lam(body).unwrap_or(t),
-            Term::App(f, a) => self.visit_app(f, a).unwrap_or(t),
-            Term::Pi(n, a, b) => self.visit_pi(n, a, b).unwrap_or(t),
-            Term::Let(n, v, b, mc) => self.visit_let(n, v, b, *mc).unwrap_or(t),
-            Term::IfThenElse(c, th, el) => self.visit_if(c, th, el).unwrap_or(t),
-            Term::Annot(inner, ct) => self.visit_annot(inner, ct).unwrap_or(t),
-            Term::ByProof(inner, p) => self.visit_by_proof(inner, p).unwrap_or(t),
-            Term::Refine(n, par, p) => self.visit_refine(n, par, p).unwrap_or(t),
-            Term::ProofBlock(inner) => self.visit_proof_block(inner).unwrap_or(t),
-            Term::Builtin(n) => self.visit_builtin(*n).unwrap_or(t),
-            Term::RefParam => self.visit_ref_param().unwrap_or(t),
-            Term::This => self.visit_this().unwrap_or(t),
-            // Other leaf nodes — keep as-is
-            _ => t,
-        }
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::redundant_clone)]
 mod tests {
@@ -269,226 +120,93 @@ mod tests {
         (b, TermArena::new(b))
     }
 
-    fn s<'a>(arena: &TermArena<'a>, name: &str) -> &'a str {
-        arena.alloc_str(name)
-    }
-
-    // ── PrimOp::apply ──
-
-    #[test]
-    fn primop_add() {
-        assert_eq!(PrimOp::Add.apply(3, 5), Term::LitInt(8));
-    }
-
-    #[test]
-    fn primop_sub() {
-        assert_eq!(PrimOp::Sub.apply(10, 3), Term::LitInt(7));
+    fn bin<'bump>(
+        arena: &TermArena<'bump>,
+        op: PrimOp,
+        l: &'bump Term<'bump>,
+        r: &'bump Term<'bump>,
+    ) -> &'bump Term<'bump> {
+        arena.app(arena.app(arena.prim_op(op), l), r)
     }
 
     #[test]
-    fn primop_sub_negative_result() {
-        assert_eq!(PrimOp::Sub.apply(3, 10), Term::LitInt(-7));
+    fn primop_apply() {
+        let cases: &[(PrimOp, i64, i64, Term<'static>)] = &[
+            (PrimOp::Add, 3, 5, Term::LitInt(8)),
+            (PrimOp::Sub, 10, 3, Term::LitInt(7)),
+            (PrimOp::Sub, 3, 10, Term::LitInt(-7)),
+            (PrimOp::Mul, 4, 5, Term::LitInt(20)),
+            (PrimOp::Mul, 0, 100, Term::LitInt(0)),
+            (PrimOp::Mul, -3, 4, Term::LitInt(-12)),
+            (PrimOp::Div, 10, 3, Term::LitInt(3)),
+            (PrimOp::Div, 10, 0, Term::LitInt(0)),
+            (PrimOp::Div, -10, 3, Term::LitInt(-3)),
+            (PrimOp::Mod_, 10, 3, Term::LitInt(1)),
+            (PrimOp::Mod_, 10, 0, Term::LitInt(0)),
+            (PrimOp::Mod_, -10, 3, Term::LitInt(-1)),
+            (PrimOp::Eq, 5, 5, Term::LitBool(true)),
+            (PrimOp::Eq, 5, 3, Term::LitBool(false)),
+            (PrimOp::Lt, 3, 5, Term::LitBool(true)),
+            (PrimOp::Lt, 5, 3, Term::LitBool(false)),
+            (PrimOp::Lt, 5, 5, Term::LitBool(false)),
+            (PrimOp::Gt, 5, 3, Term::LitBool(true)),
+            (PrimOp::Gt, 3, 5, Term::LitBool(false)),
+            (PrimOp::Le, 3, 5, Term::LitBool(true)),
+            (PrimOp::Le, 5, 5, Term::LitBool(true)),
+            (PrimOp::Le, 5, 3, Term::LitBool(false)),
+            (PrimOp::Ge, 5, 3, Term::LitBool(true)),
+            (PrimOp::Ge, 5, 5, Term::LitBool(true)),
+            (PrimOp::Ge, 3, 5, Term::LitBool(false)),
+            (PrimOp::Neq, 5, 3, Term::LitBool(true)),
+            (PrimOp::Neq, 5, 5, Term::LitBool(false)),
+        ];
+        for &(op, x, y, ref expected) in cases {
+            assert_eq!(op.apply(x, y), *expected, "{op:?} {x} {y}");
+        }
     }
-
-    #[test]
-    fn primop_mul() {
-        assert_eq!(PrimOp::Mul.apply(4, 5), Term::LitInt(20));
-    }
-
-    #[test]
-    fn primop_mul_with_zero() {
-        assert_eq!(PrimOp::Mul.apply(0, 100), Term::LitInt(0));
-    }
-
-    #[test]
-    fn primop_mul_negative() {
-        assert_eq!(PrimOp::Mul.apply(-3, 4), Term::LitInt(-12));
-    }
-
-    #[test]
-    fn primop_div() {
-        assert_eq!(PrimOp::Div.apply(10, 3), Term::LitInt(3));
-    }
-
-    #[test]
-    fn primop_div_by_zero() {
-        assert_eq!(PrimOp::Div.apply(10, 0), Term::LitInt(0));
-    }
-
-    #[test]
-    fn primop_div_negative() {
-        assert_eq!(PrimOp::Div.apply(-10, 3), Term::LitInt(-3));
-    }
-
-    #[test]
-    fn primop_mod() {
-        assert_eq!(PrimOp::Mod_.apply(10, 3), Term::LitInt(1));
-    }
-
-    #[test]
-    fn primop_mod_by_zero() {
-        assert_eq!(PrimOp::Mod_.apply(10, 0), Term::LitInt(0));
-    }
-
-    #[test]
-    fn primop_mod_negative() {
-        assert_eq!(PrimOp::Mod_.apply(-10, 3), Term::LitInt(-1));
-    }
-
-    #[test]
-    fn primop_eq_true() {
-        assert_eq!(PrimOp::Eq.apply(5, 5), Term::LitBool(true));
-    }
-
-    #[test]
-    fn primop_eq_false() {
-        assert_eq!(PrimOp::Eq.apply(5, 3), Term::LitBool(false));
-    }
-
-    #[test]
-    fn primop_lt_true() {
-        assert_eq!(PrimOp::Lt.apply(3, 5), Term::LitBool(true));
-    }
-
-    #[test]
-    fn primop_lt_false() {
-        assert_eq!(PrimOp::Lt.apply(5, 3), Term::LitBool(false));
-    }
-
-    #[test]
-    fn primop_lt_same() {
-        assert_eq!(PrimOp::Lt.apply(5, 5), Term::LitBool(false));
-    }
-
-    #[test]
-    fn primop_gt_true() {
-        assert_eq!(PrimOp::Gt.apply(5, 3), Term::LitBool(true));
-    }
-
-    #[test]
-    fn primop_gt_false() {
-        assert_eq!(PrimOp::Gt.apply(3, 5), Term::LitBool(false));
-    }
-
-    #[test]
-    fn primop_le_true() {
-        assert_eq!(PrimOp::Le.apply(3, 5), Term::LitBool(true));
-    }
-
-    #[test]
-    fn primop_le_same() {
-        assert_eq!(PrimOp::Le.apply(5, 5), Term::LitBool(true));
-    }
-
-    #[test]
-    fn primop_le_false() {
-        assert_eq!(PrimOp::Le.apply(5, 3), Term::LitBool(false));
-    }
-
-    #[test]
-    fn primop_ge_true() {
-        assert_eq!(PrimOp::Ge.apply(5, 3), Term::LitBool(true));
-    }
-
-    #[test]
-    fn primop_ge_same() {
-        assert_eq!(PrimOp::Ge.apply(5, 5), Term::LitBool(true));
-    }
-
-    #[test]
-    fn primop_ge_false() {
-        assert_eq!(PrimOp::Ge.apply(3, 5), Term::LitBool(false));
-    }
-
-    #[test]
-    fn primop_neq_true() {
-        assert_eq!(PrimOp::Neq.apply(5, 3), Term::LitBool(true));
-    }
-
-    #[test]
-    fn primop_neq_false() {
-        assert_eq!(PrimOp::Neq.apply(5, 5), Term::LitBool(false));
-    }
-
-    // ── PrimOp Display ──
 
     #[test]
     fn primop_display_all() {
-        assert_eq!(PrimOp::Add.to_string(), "+");
-        assert_eq!(PrimOp::Sub.to_string(), "-");
-        assert_eq!(PrimOp::Mul.to_string(), "*");
-        assert_eq!(PrimOp::Div.to_string(), "/");
-        assert_eq!(PrimOp::Mod_.to_string(), "%");
-        assert_eq!(PrimOp::Eq.to_string(), "==");
-        assert_eq!(PrimOp::Lt.to_string(), "<");
-        assert_eq!(PrimOp::Gt.to_string(), ">");
-        assert_eq!(PrimOp::Le.to_string(), "<=");
-        assert_eq!(PrimOp::Ge.to_string(), ">=");
-        assert_eq!(PrimOp::Neq.to_string(), "/=");
+        for (op, s) in [
+            (PrimOp::Add, "+"),
+            (PrimOp::Sub, "-"),
+            (PrimOp::Mul, "*"),
+            (PrimOp::Div, "/"),
+            (PrimOp::Mod_, "%"),
+            (PrimOp::Eq, "=="),
+            (PrimOp::Lt, "<"),
+            (PrimOp::Gt, ">"),
+            (PrimOp::Le, "<="),
+            (PrimOp::Ge, ">="),
+            (PrimOp::Neq, "/="),
+        ] {
+            assert_eq!(op.to_string(), s);
+        }
     }
-
-    // ── Universe Display ──
 
     #[test]
     fn universe_display_all() {
-        assert_eq!(Universe::UData.to_string(), "data");
-        assert_eq!(Universe::UProp.to_string(), "prop");
-        assert_eq!(Universe::UTheorem.to_string(), "theorem");
-        assert_eq!(Universe::UProof.to_string(), "proof");
-    }
-
-    // ── TermVisitor: ReplaceThis ──
-
-    struct ReplaceThisVisitor<'bump> {
-        arena: &'bump TermArena<'bump>,
-        self_term: &'bump Term<'bump>,
-    }
-
-    impl<'bump> TermVisitor<'bump> for ReplaceThisVisitor<'bump> {
-        fn arena(&self) -> &TermArena<'bump> {
-            self.arena
-        }
-        fn visit_this(&self) -> Option<&'bump Term<'bump>> {
-            Some(self.self_term)
+        for (u, s) in [
+            (Universe::UData, "data"),
+            (Universe::UProp, "prop"),
+            (Universe::UTheorem, "theorem"),
+            (Universe::UProof, "proof"),
+        ] {
+            assert_eq!(u.to_string(), s);
         }
     }
 
     #[test]
-    fn visitor_replace_this_in_app() {
+    fn map_replace_this() {
         let (_b, arena) = a();
-        let self_term = arena.lit_int(42);
-        let body = arena.app(arena.this_(), arena.lit_int(1));
-        let v = ReplaceThisVisitor {
-            arena: &arena,
-            self_term,
-        };
-        let result = v.walk(body);
-        assert_eq!(*result, Term::App(arena.lit_int(42), arena.lit_int(1)));
-    }
-
-    #[test]
-    fn visitor_replace_this_in_lam_body() {
-        let (_b, arena) = a();
-        let self_term = arena.lit_int(7);
-        let lam = arena.lam(arena.this_());
-        let v = ReplaceThisVisitor {
-            arena: &arena,
-            self_term,
-        };
-        let result = v.walk(lam);
-        assert_eq!(*result, Term::Lam(arena.lit_int(7)));
-    }
-
-    #[test]
-    fn visitor_replace_this_in_if_branches() {
-        let (_b, arena) = a();
-        let self_term = arena.lit_int(100);
-        let body = arena.if_then_else(arena.lit_bool(true), arena.this_(), arena.lit_int(0));
-        let v = ReplaceThisVisitor {
-            arena: &arena,
-            self_term,
-        };
-        let result = v.walk(body);
+        let term = arena.if_then_else(arena.lit_bool(true), arena.this_(), arena.lit_int(0));
+        let result = arena.map(term, &|t| {
+            if matches!(t, Term::This) {
+                Some(arena.lit_int(100))
+            } else {
+                None
+            }
+        });
         assert_eq!(
             *result,
             Term::IfThenElse(arena.lit_bool(true), arena.lit_int(100), arena.lit_int(0))
@@ -496,155 +214,27 @@ mod tests {
     }
 
     #[test]
-    fn visitor_replace_this_leaf_unchanged() {
+    fn map_preserves_unchanged_nodes() {
         let (_b, arena) = a();
-        let v = ReplaceThisVisitor {
-            arena: &arena,
-            self_term: arena.lit_int(1),
-        };
-        assert_eq!(*v.walk(arena.var(0)), Term::Var(0));
-        assert_eq!(*v.walk(arena.lit_int(5)), Term::LitInt(5));
-        assert_eq!(*v.walk(arena.lit_bool(false)), Term::LitBool(false));
-        assert_eq!(*v.walk(arena.ref_param()), Term::RefParam);
-        assert_eq!(*v.walk(arena.auto_proof()), Term::AutoProof);
-    }
-
-    // ── TermVisitor: SubstRefParam ──
-
-    struct SubstRefParamVisitor<'bump> {
-        arena: &'bump TermArena<'bump>,
-        subj: &'bump Term<'bump>,
-    }
-
-    impl<'bump> TermVisitor<'bump> for SubstRefParamVisitor<'bump> {
-        fn arena(&self) -> &TermArena<'bump> {
-            self.arena
-        }
-        fn visit_ref_param(&self) -> Option<&'bump Term<'bump>> {
-            Some(self.subj)
-        }
-    }
-
-    #[test]
-    fn visitor_subst_refparam_in_predicate() {
-        let (_b, arena) = a();
-        let subj = arena.lit_int(5);
-        let pred = arena.app(
-            arena.app(arena.prim_op(PrimOp::Ge), arena.ref_param()),
-            arena.lit_int(0),
-        );
-        let v = SubstRefParamVisitor {
-            arena: &arena,
-            subj,
-        };
-        let result = v.walk(pred);
-        let expected = arena.app(
-            arena.app(arena.prim_op(PrimOp::Ge), arena.lit_int(5)),
-            arena.lit_int(0),
-        );
-        assert_eq!(*result, *expected);
-    }
-
-    #[test]
-    fn visitor_subst_refparam_in_lam() {
-        let (_b, arena) = a();
-        let subj = arena.lit_int(7);
-        let lam = arena.lam(arena.ref_param());
-        let v = SubstRefParamVisitor {
-            arena: &arena,
-            subj,
-        };
-        let result = v.walk(lam);
-        assert_eq!(*result, Term::Lam(arena.lit_int(7)));
-    }
-
-    #[test]
-    fn visitor_subst_refparam_leaf_unchanged() {
-        let (_b, arena) = a();
-        let v = SubstRefParamVisitor {
-            arena: &arena,
-            subj: arena.lit_int(1),
-        };
-        assert_eq!(*v.walk(arena.lit_int(42)), Term::LitInt(42));
-        assert_eq!(*v.walk(arena.lit_bool(true)), Term::LitBool(true));
-        assert_eq!(*v.walk(arena.this_()), Term::This);
-        assert_eq!(*v.walk(arena.auto_proof()), Term::AutoProof);
-    }
-
-    #[test]
-    fn visitor_subst_refparam_in_refine() {
-        let (_b, arena) = a();
-        let subj = arena.lit_int(3);
-        let pred = arena.app(
-            arena.app(arena.prim_op(PrimOp::Neq), arena.ref_param()),
-            arena.lit_int(0),
-        );
-        let refine = arena.refine(s(&arena, ""), arena.builtin(s(&arena, "int")), pred);
-        let v = SubstRefParamVisitor {
-            arena: &arena,
-            subj,
-        };
-        let result = v.walk(refine);
-        let expected_pred = arena.app(
-            arena.app(arena.prim_op(PrimOp::Neq), arena.lit_int(3)),
-            arena.lit_int(0),
-        );
-        assert_eq!(
-            *result,
-            Term::Refine("", arena.builtin("int"), expected_pred)
-        );
-    }
-
-    // ── Default visitor: identity traversal ──
-
-    struct IdentityVisitor<'bump> {
-        arena: &'bump TermArena<'bump>,
-    }
-
-    impl<'bump> TermVisitor<'bump> for IdentityVisitor<'bump> {
-        fn arena(&self) -> &TermArena<'bump> {
-            self.arena
-        }
-    }
-
-    #[test]
-    fn visitor_identity_preserves_term() {
-        let (_b, arena) = a();
-        let term = arena.app(
-            arena.lam(bin_test(
-                &arena,
-                PrimOp::Add,
-                arena.var(0),
-                arena.lit_int(1),
-            )),
-            arena.lit_int(5),
-        );
-        let v = IdentityVisitor { arena: &arena };
-        let result = v.walk(term);
+        let term = arena.app(arena.lam(arena.var(0)), arena.lit_int(5));
+        let result = arena.map(term, &|_| None);
         assert_eq!(*result, *term);
     }
 
     #[test]
-    fn visitor_identity_preserves_refine() {
+    fn map_replace_refparam() {
         let (_b, arena) = a();
-        let pred = arena.lam(bin_test(
-            &arena,
-            PrimOp::Ge,
-            arena.ref_param(),
-            arena.lit_int(0),
-        ));
-        let refine = arena.refine(s(&arena, "nat"), arena.builtin(s(&arena, "int")), pred);
-        let v = IdentityVisitor { arena: &arena };
-        let result = v.walk(refine);
-        assert_eq!(*result, *refine);
-    }
-
-    fn bin_test<'bump>(
-        arena: &TermArena<'bump>,
-        op: PrimOp,
-        l: &'bump Term<'bump>,
-        r: &'bump Term<'bump>,
-    ) -> &'bump Term<'bump> {
-        arena.app(arena.app(arena.prim_op(op), l), r)
+        let pred = bin(&arena, PrimOp::Ge, arena.ref_param(), arena.lit_int(0));
+        let result = arena.map(pred, &|t| {
+            if matches!(t, Term::RefParam) {
+                Some(arena.lit_int(5))
+            } else {
+                None
+            }
+        });
+        assert_eq!(
+            *result,
+            *bin(&arena, PrimOp::Ge, arena.lit_int(5), arena.lit_int(0))
+        );
     }
 }

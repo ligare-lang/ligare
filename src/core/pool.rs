@@ -90,9 +90,53 @@ impl<'bump> TermArena<'bump> {
     #[inline]
     pub fn alloc_slice<T: Copy>(&self, data: &[T]) -> &'bump [T] {
         if data.is_empty() {
-            return &[];
+            &[]
+        } else {
+            self.bump.alloc_slice_copy(data)
         }
-        self.bump.alloc_slice_copy(data)
+    }
+
+    /// Bottom-up tree transformation.  `f` is called on every node;
+    /// returning `Some(t)` replaces the node, `None` recurses into children.
+    pub fn map(
+        &self,
+        t: &'bump Term<'bump>,
+        f: &impl Fn(&'bump Term<'bump>) -> Option<&'bump Term<'bump>>,
+    ) -> &'bump Term<'bump> {
+        if let Some(r) = f(t) {
+            return r;
+        }
+        match t {
+            Term::App(fun, arg) => self.app(self.map(fun, f), self.map(arg, f)),
+            Term::Lam(body) => self.lam(self.map(body, f)),
+            Term::Pi(n, a, b) => self.pi(n, self.map(a, f), self.map(b, f)),
+            Term::Let(n, v, b, mc) => {
+                let mc2 = mc.map(|c| self.map(c, f));
+                self.let_(n, self.map(v, f), self.map(b, f), mc2)
+            }
+            Term::IfThenElse(c, th, el) => {
+                self.if_then_else(self.map(c, f), self.map(th, f), self.map(el, f))
+            }
+            Term::Annot(inner, ct) => self.annot(self.map(inner, f), self.map(ct, f)),
+            Term::ByProof(inner, p) => self.by_proof(self.map(inner, f), self.map(p, f)),
+            Term::Refine(n, par, p) => self.refine(n, self.map(par, f), self.map(p, f)),
+            Term::Func(fname, params, m_ret, pre, post, body) => {
+                let params2: Vec<_> = params
+                    .iter()
+                    .map(|(nm, mc)| (*nm, mc.map(|c| self.map(c, f))))
+                    .collect();
+                self.func(
+                    fname,
+                    self.alloc_slice(&params2),
+                    m_ret.map(|c| self.map(c, f)),
+                    self.alloc_slice(&pre.iter().map(|t| *self.map(t, f)).collect::<Vec<_>>()),
+                    self.alloc_slice(&post.iter().map(|t| *self.map(t, f)).collect::<Vec<_>>()),
+                    self.map(body, f),
+                )
+            }
+            Term::ProofBlock(inner) => self.proof_block(self.map(inner, f)),
+            _ => t,
+        }
     }
 
     // ── leaf constructors ──
@@ -242,177 +286,77 @@ impl<'bump> SubstitutionContext<'bump> {
         cutoff: usize,
         t: &'bump Term<'bump>,
     ) -> &'bump Term<'bump> {
-        match t {
-            Term::Var(j) => {
-                if *j == i + cutoff {
-                    self.shift(cutoff as i32, 0, s)
-                } else {
-                    t
-                }
-            }
-            Term::Lam(body) => {
-                let b = self.subst_cutoff(s, i, cutoff + 1, body);
-                self.arena.lam(b)
-            }
-            Term::App(f, a) => {
-                let f2 = self.subst_cutoff(s, i, cutoff, f);
-                let a2 = self.subst_cutoff(s, i, cutoff, a);
-                self.arena.app(f2, a2)
-            }
-            Term::Pi(n, a, b) => {
-                let a2 = self.subst_cutoff(s, i, cutoff, a);
-                let b2 = self.subst_cutoff(s, i, cutoff + 1, b);
-                self.arena.pi(n, a2, b2)
-            }
-            Term::Let(n, v, b, mc) => {
-                let v2 = self.subst_cutoff(s, i, cutoff, v);
-                let b2 = self.subst_cutoff(s, i, cutoff + 1, b);
-                let mc2 = mc.map(|c| self.subst_cutoff(s, i, cutoff, c));
-                self.arena.let_(n, v2, b2, mc2)
-            }
-            Term::IfThenElse(c, th, el) => {
-                let c2 = self.subst_cutoff(s, i, cutoff, c);
-                let th2 = self.subst_cutoff(s, i, cutoff, th);
-                let el2 = self.subst_cutoff(s, i, cutoff, el);
-                self.arena.if_then_else(c2, th2, el2)
-            }
-            Term::Annot(inner, ct) => {
-                let inner2 = self.subst_cutoff(s, i, cutoff, inner);
-                let ct2 = self.subst_cutoff(s, i, cutoff, ct);
-                self.arena.annot(inner2, ct2)
-            }
-            Term::ByProof(inner, p) => {
-                let inner2 = self.subst_cutoff(s, i, cutoff, inner);
-                let p2 = self.subst_cutoff(s, i, cutoff, p);
-                self.arena.by_proof(inner2, p2)
-            }
-            Term::Refine(n, par, p) => {
-                let par2 = self.subst_cutoff(s, i, cutoff, par);
-                let p2 = self.subst_cutoff(s, i, cutoff, p);
-                self.arena.refine(n, par2, p2)
-            }
-            Term::Func(fname, params, m_ret, pre, post, body) => {
-                let params2 = params
-                    .iter()
-                    .map(|(nm, mc)| {
-                        let mc2 = mc.map(|c| self.subst_cutoff(s, i, cutoff, c));
-                        (*nm, mc2)
-                    })
-                    .collect::<Vec<_>>();
-                let params_slice = self.arena.alloc_slice(&params2);
-                let m_ret2 = m_ret.map(|c| self.subst_cutoff(s, i, cutoff, c));
-                let pre2: Vec<_> = pre
-                    .iter()
-                    .map(|t| *self.subst_cutoff(s, i, cutoff, t))
-                    .collect();
-                let pre_slice = self.arena.alloc_slice(&pre2);
-                let post2: Vec<_> = post
-                    .iter()
-                    .map(|t| *self.subst_cutoff(s, i, cutoff, t))
-                    .collect();
-                let post_slice = self.arena.alloc_slice(&post2);
-                let body2 = self.subst_cutoff(s, i, cutoff + params.len(), body);
-                self.arena
-                    .func(fname, params_slice, m_ret2, pre_slice, post_slice, body2)
-            }
-            Term::ProofBlock(inner) => {
-                let inner2 = self.subst_cutoff(s, i, cutoff, inner);
-                self.arena.proof_block(inner2)
-            }
-            // Leaf nodes: return as-is
-            Term::This
-            | Term::RefParam
-            | Term::AutoProof
-            | Term::LitInt(_)
-            | Term::LitBool(_)
-            | Term::PrimOp(_)
-            | Term::Universe(_)
-            | Term::Builtin(_) => t,
+        if let Term::Var(j) = t
+            && *j == i + cutoff
+        {
+            return self.shift(cutoff as i32, 0, s);
         }
+        self.traverse_children(t, cutoff as i32, |t, c| {
+            self.subst_cutoff(s, i, c as usize, t)
+        })
     }
 
     /// Shift: add `d` to all de Bruijn indices >= `cutoff`.
     pub fn shift(&self, d: i32, cutoff: i32, t: &'bump Term<'bump>) -> &'bump Term<'bump> {
+        if let Term::Var(j) = t
+            && (*j as i32) >= cutoff
+        {
+            return self.arena.var((*j as i32 + d) as usize);
+        }
+        self.traverse_children(t, cutoff, |t, c| self.shift(d, c, t))
+    }
+
+    /// Shared children-recursion for `shift` and `subst_cutoff`.
+    /// For nodes that bind variables (Lam, Pi, Let, Func), `cutoff` is bumped.
+    fn traverse_children(
+        &self,
+        t: &'bump Term<'bump>,
+        cutoff: i32,
+        recurse: impl Fn(&'bump Term<'bump>, i32) -> &'bump Term<'bump>,
+    ) -> &'bump Term<'bump> {
         match t {
-            Term::Var(i) => {
-                if (*i as i32) >= cutoff {
-                    self.arena.var((*i as i32 + d) as usize)
-                } else {
-                    t
-                }
-            }
-            Term::Lam(body) => {
-                let b = self.shift(d, cutoff + 1, body);
-                self.arena.lam(b)
-            }
-            Term::App(f, a) => {
-                let f2 = self.shift(d, cutoff, f);
-                let a2 = self.shift(d, cutoff, a);
-                self.arena.app(f2, a2)
-            }
-            Term::Pi(n, a, b) => {
-                let a2 = self.shift(d, cutoff, a);
-                let b2 = self.shift(d, cutoff + 1, b);
-                self.arena.pi(n, a2, b2)
-            }
+            Term::Lam(body) => self.arena.lam(recurse(body, cutoff + 1)),
+            Term::App(f, a) => self.arena.app(recurse(f, cutoff), recurse(a, cutoff)),
+            Term::Pi(n, a, b) => self.arena.pi(n, recurse(a, cutoff), recurse(b, cutoff + 1)),
             Term::Let(n, v, b, mc) => {
-                let v2 = self.shift(d, cutoff, v);
-                let b2 = self.shift(d, cutoff + 1, b);
-                let mc2 = mc.map(|c| self.shift(d, cutoff, c));
-                self.arena.let_(n, v2, b2, mc2)
+                let mc2 = mc.map(|c| recurse(c, cutoff));
+                self.arena
+                    .let_(n, recurse(v, cutoff), recurse(b, cutoff + 1), mc2)
             }
-            Term::IfThenElse(c, th, el) => {
-                let c2 = self.shift(d, cutoff, c);
-                let th2 = self.shift(d, cutoff, th);
-                let el2 = self.shift(d, cutoff, el);
-                self.arena.if_then_else(c2, th2, el2)
-            }
-            Term::Annot(inner, ct) => {
-                let inner2 = self.shift(d, cutoff, inner);
-                let ct2 = self.shift(d, cutoff, ct);
-                self.arena.annot(inner2, ct2)
-            }
-            Term::ByProof(inner, p) => {
-                let inner2 = self.shift(d, cutoff, inner);
-                let p2 = self.shift(d, cutoff, p);
-                self.arena.by_proof(inner2, p2)
-            }
+            Term::IfThenElse(c, th, el) => self.arena.if_then_else(
+                recurse(c, cutoff),
+                recurse(th, cutoff),
+                recurse(el, cutoff),
+            ),
+            Term::Annot(inner, ct) => self
+                .arena
+                .annot(recurse(inner, cutoff), recurse(ct, cutoff)),
+            Term::ByProof(inner, p) => self
+                .arena
+                .by_proof(recurse(inner, cutoff), recurse(p, cutoff)),
             Term::Refine(n, par, p) => {
-                let par2 = self.shift(d, cutoff, par);
-                let p2 = self.shift(d, cutoff, p);
-                self.arena.refine(n, par2, p2)
+                self.arena
+                    .refine(n, recurse(par, cutoff), recurse(p, cutoff))
             }
             Term::Func(fname, params, m_ret, pre, post, body) => {
-                let params2 = params
+                let params2: Vec<_> = params
                     .iter()
-                    .map(|(nm, mc)| {
-                        let mc2 = mc.map(|c| self.shift(d, cutoff, c));
-                        (*nm, mc2)
-                    })
-                    .collect::<Vec<_>>();
-                let params_slice = self.arena.alloc_slice(&params2);
-                let m_ret2 = m_ret.map(|c| self.shift(d, cutoff, c));
-                let pre2: Vec<_> = pre.iter().map(|t| *self.shift(d, cutoff, t)).collect();
-                let pre_slice = self.arena.alloc_slice(&pre2);
-                let post2: Vec<_> = post.iter().map(|t| *self.shift(d, cutoff, t)).collect();
-                let post_slice = self.arena.alloc_slice(&post2);
-                let body2 = self.shift(d, cutoff + params.len() as i32, body);
-                self.arena
-                    .func(fname, params_slice, m_ret2, pre_slice, post_slice, body2)
+                    .map(|(nm, mc)| (*nm, mc.map(|c| recurse(c, cutoff))))
+                    .collect();
+                self.arena.func(
+                    fname,
+                    self.arena.alloc_slice(&params2),
+                    m_ret.map(|c| recurse(c, cutoff)),
+                    self.arena
+                        .alloc_slice(&pre.iter().map(|t| *recurse(t, cutoff)).collect::<Vec<_>>()),
+                    self.arena
+                        .alloc_slice(&post.iter().map(|t| *recurse(t, cutoff)).collect::<Vec<_>>()),
+                    recurse(body, cutoff + params.len() as i32),
+                )
             }
-            Term::ProofBlock(inner) => {
-                let inner2 = self.shift(d, cutoff, inner);
-                self.arena.proof_block(inner2)
-            }
-            // Leaf nodes
-            Term::RefParam
-            | Term::This
-            | Term::AutoProof
-            | Term::LitInt(_)
-            | Term::LitBool(_)
-            | Term::PrimOp(_)
-            | Term::Universe(_)
-            | Term::Builtin(_) => t,
+            Term::ProofBlock(inner) => self.arena.proof_block(recurse(inner, cutoff)),
+            // Leaf nodes — returned unchanged (Var handled by callers)
+            _ => t,
         }
     }
 

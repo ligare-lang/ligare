@@ -10,21 +10,16 @@ use crate::pretty::PrettyPrinter;
 
 pub type BuiltinChecker = fn(&Term<'_>) -> Result<(), String>;
 
-/// Describes how a builtin logical operator should be desugared as a constraint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogicKind {
-    /// Conjunctive: `(and A B)` → check term against both A and B.
     Conj,
-    /// Disjunctive: `(or A B)` → check term against A or B.
     Disj,
-    /// Vacuous: `(not A)` → always succeeds (cannot be used as a positive constraint).
     Vacuous,
 }
 
 pub struct BuiltinEntry {
     pub universe: Universe,
     pub checker: BuiltinChecker,
-    /// If present, this builtin is a logical operator with the given combining strategy.
     pub logic_kind: Option<LogicKind>,
 }
 
@@ -54,82 +49,34 @@ fn check_any(_t: &Term<'_>) -> Result<(), String> {
     Ok(())
 }
 
-/// Statically initialized builtin table via LazyLock, avoiding
-/// repeated heap allocation on every lookup.
+fn entry(u: Universe, c: BuiltinChecker, lk: Option<LogicKind>) -> BuiltinEntry {
+    BuiltinEntry {
+        universe: u,
+        checker: c,
+        logic_kind: lk,
+    }
+}
+
 static BUILTINS: LazyLock<HashMap<&'static str, BuiltinEntry>> = LazyLock::new(|| {
     HashMap::from([
-        (
-            BUILTIN_INT,
-            BuiltinEntry {
-                universe: Universe::UProp,
-                checker: check_int,
-                logic_kind: None,
-            },
-        ),
-        (
-            BUILTIN_BOOL,
-            BuiltinEntry {
-                universe: Universe::UProp,
-                checker: check_bool,
-                logic_kind: None,
-            },
-        ),
-        (
-            BUILTIN_DATA,
-            BuiltinEntry {
-                universe: Universe::UProp,
-                checker: check_any,
-                logic_kind: None,
-            },
-        ),
-        (
-            BUILTIN_THEOREM,
-            BuiltinEntry {
-                universe: Universe::UTheorem,
-                checker: check_any,
-                logic_kind: None,
-            },
-        ),
-        (
-            BUILTIN_PROOF,
-            BuiltinEntry {
-                universe: Universe::UProof,
-                checker: check_any,
-                logic_kind: None,
-            },
-        ),
+        (BUILTIN_INT, entry(Universe::UProp, check_int, None)),
+        (BUILTIN_BOOL, entry(Universe::UProp, check_bool, None)),
+        (BUILTIN_DATA, entry(Universe::UProp, check_any, None)),
+        (BUILTIN_THEOREM, entry(Universe::UTheorem, check_any, None)),
+        (BUILTIN_PROOF, entry(Universe::UProof, check_any, None)),
         (
             BUILTIN_AND,
-            BuiltinEntry {
-                universe: Universe::UProp,
-                checker: check_any,
-                logic_kind: Some(LogicKind::Conj),
-            },
+            entry(Universe::UProp, check_any, Some(LogicKind::Conj)),
         ),
         (
             BUILTIN_OR,
-            BuiltinEntry {
-                universe: Universe::UProp,
-                checker: check_any,
-                logic_kind: Some(LogicKind::Disj),
-            },
+            entry(Universe::UProp, check_any, Some(LogicKind::Disj)),
         ),
         (
             BUILTIN_NOT,
-            BuiltinEntry {
-                universe: Universe::UProp,
-                checker: check_any,
-                logic_kind: Some(LogicKind::Vacuous),
-            },
+            entry(Universe::UProp, check_any, Some(LogicKind::Vacuous)),
         ),
-        (
-            BUILTIN_IMPLIES,
-            BuiltinEntry {
-                universe: Universe::UProp,
-                checker: check_any,
-                logic_kind: None,
-            },
-        ),
+        (BUILTIN_IMPLIES, entry(Universe::UProp, check_any, None)),
     ])
 });
 
@@ -141,7 +88,6 @@ pub fn check_builtin(name: &str) -> Option<BuiltinChecker> {
     BUILTINS.get(name).map(|e| e.checker)
 }
 
-/// Look up the logical operator kind for a builtin name, if any.
 pub fn logic_kind(name: &str) -> Option<LogicKind> {
     BUILTINS.get(name).and_then(|e| e.logic_kind)
 }

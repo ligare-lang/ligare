@@ -8,24 +8,8 @@
 //! During type checking, prefer `WhnfEvaluator` from `crate::core::whnf`.
 
 use crate::core::pool::{SubstitutionContext, TermArena};
-use crate::core::syntax::{Term, TermVisitor};
+use crate::core::syntax::Term;
 use crate::pretty::pretty;
-
-/// A `TermVisitor` that replaces `This` nodes with a self-reference term.
-struct ReplaceThisVisitor<'bump> {
-    arena: &'bump TermArena<'bump>,
-    self_term: &'bump Term<'bump>,
-}
-
-impl<'bump> TermVisitor<'bump> for ReplaceThisVisitor<'bump> {
-    fn arena(&self) -> &TermArena<'bump> {
-        self.arena
-    }
-
-    fn visit_this(&self) -> Option<&'bump Term<'bump>> {
-        Some(self.self_term)
-    }
-}
 
 /// Strong evaluator — reduces terms to normal form using a bump arena
 /// for intermediate allocations.
@@ -106,7 +90,7 @@ impl<'bump> Evaluator<'bump> {
                 let b = self.sub.beta(body2, a);
                 self.eval(b)
             }
-            Term::App(prim, first) if self.is_prim_op(prim) => {
+            Term::App(prim, first) if matches!(prim, Term::PrimOp(_)) => {
                 let a_val = self.eval(a)?;
                 let first_val = self.eval(first)?;
                 self.eval_arith(prim, first_val, a_val)
@@ -114,8 +98,7 @@ impl<'bump> Evaluator<'bump> {
             _ => {
                 let f_val = self.eval(f)?;
                 if matches!(f_val, Term::Lam(_)) {
-                    let app = self.arena.app(f_val, a);
-                    self.eval(app)
+                    self.eval(self.arena.app(f_val, a))
                 } else {
                     Ok(self.arena.app(f_val, a))
                 }
@@ -129,15 +112,13 @@ impl<'bump> Evaluator<'bump> {
         self_term: &'bump Term<'bump>,
         t: &'bump Term<'bump>,
     ) -> &'bump Term<'bump> {
-        ReplaceThisVisitor {
-            arena: self.arena,
-            self_term,
-        }
-        .walk(t)
-    }
-
-    fn is_prim_op(&self, t: &Term<'_>) -> bool {
-        matches!(t, Term::PrimOp(_))
+        self.arena.map(t, &|node| {
+            if matches!(node, Term::This) {
+                Some(self_term)
+            } else {
+                None
+            }
+        })
     }
 
     fn eval_if(

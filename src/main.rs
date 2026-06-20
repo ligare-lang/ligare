@@ -166,66 +166,16 @@ impl<'bump> Compiler<'bump> {
 
     /// Substitute known top-level definitions into a term.
     fn subst_top_level(&self, term: &'bump Term<'bump>) -> &'bump Term<'bump> {
-        match term {
-            Term::Builtin(name) => {
-                if let Some((_, body)) = self.env.iter().find(|(n, _)| *n == *name) {
-                    body
-                } else {
-                    term
-                }
+        self.arena.map(term, &|t| {
+            if let Term::Builtin(name) = t {
+                self.env
+                    .iter()
+                    .find(|(n, _)| *n == *name)
+                    .map(|(_, body)| *body)
+            } else {
+                None
             }
-            Term::Func(fname, params, m_ret, pre, post, body) => {
-                let body2 = self.subst_top_level(body);
-                self.arena.func(fname, params, *m_ret, pre, post, body2)
-            }
-            Term::App(f, a) => {
-                let f2 = self.subst_top_level(f);
-                let a2 = self.subst_top_level(a);
-                self.arena.app(f2, a2)
-            }
-            Term::Lam(body) => {
-                let b2 = self.subst_top_level(body);
-                self.arena.lam(b2)
-            }
-            Term::Pi(n, a, b) => {
-                let a2 = self.subst_top_level(a);
-                let b2 = self.subst_top_level(b);
-                self.arena.pi(n, a2, b2)
-            }
-            Term::Let(n, v, b, mc) => {
-                let v2 = self.subst_top_level(v);
-                let b2 = self.subst_top_level(b);
-                let mc2 = mc.map(|c| self.subst_top_level(c));
-                self.arena.let_(n, v2, b2, mc2)
-            }
-            Term::IfThenElse(c, t, f) => {
-                let c2 = self.subst_top_level(c);
-                let t2 = self.subst_top_level(t);
-                let f2 = self.subst_top_level(f);
-                self.arena.if_then_else(c2, t2, f2)
-            }
-            Term::Annot(t, c) => {
-                let t2 = self.subst_top_level(t);
-                let c2 = self.subst_top_level(c);
-                self.arena.annot(t2, c2)
-            }
-            Term::ByProof(t, p) => {
-                let t2 = self.subst_top_level(t);
-                let p2 = self.subst_top_level(p);
-                self.arena.by_proof(t2, p2)
-            }
-            Term::Refine(n, par, p) => {
-                let par2 = self.subst_top_level(par);
-                let p2 = self.subst_top_level(p);
-                self.arena.refine(n, par2, p2)
-            }
-            Term::ProofBlock(t) => {
-                let t2 = self.subst_top_level(t);
-                self.arena.proof_block(t2)
-            }
-            // Leaf nodes
-            _ => term,
-        }
+        })
     }
 }
 
