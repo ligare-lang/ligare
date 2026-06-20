@@ -1,13 +1,13 @@
 use bumpalo::Bump;
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 use crate::core::syntax::{Name, PrimOp, Term, Universe};
 
 /// A bumpalo-backed string interner.
 ///
 /// Uses a bump arena to allocate strings, ensuring that identical strings
-/// share the same allocation without using a hash set (they're just
-/// allocated once per compilation unit by the parser).
+/// share the same allocation (backed by a hash map for O(1) lookup).
 ///
 /// Threaded through `CompState` so the checker and evaluator can
 /// use arena-allocated strings to reduce heap fragmentation.
@@ -15,14 +15,14 @@ pub struct StringPool<'bump> {
     bump: &'bump Bump,
     /// Intern table: caches previously allocated strings so identical
     /// strings share the same bump-allocated pointer.
-    intern: RefCell<Vec<&'bump str>>,
+    intern: RefCell<HashMap<&'bump str, &'bump str>>,
 }
 
 impl<'bump> StringPool<'bump> {
     pub fn new(bump: &'bump Bump) -> Self {
         Self {
             bump,
-            intern: RefCell::new(Vec::new()),
+            intern: RefCell::new(HashMap::new()),
         }
     }
 
@@ -33,15 +33,14 @@ impl<'bump> StringPool<'bump> {
     }
 
     /// Intern a string: return a bump-allocated `&str`.
-    /// Reuses an existing allocation if the same string was already interned.
+    /// Reuses an existing allocation if the same string was already interned (O(1)).
     pub fn intern(&self, s: &str) -> &'bump str {
-        let intern = self.intern.borrow();
-        if let Some(&existing) = intern.iter().find(|&&v| v == s) {
+        let mut intern = self.intern.borrow_mut();
+        if let Some(&existing) = intern.get(s) {
             return existing;
         }
-        drop(intern);
         let allocated: &'bump str = self.bump.alloc_str(s);
-        self.intern.borrow_mut().push(allocated);
+        intern.insert(allocated, allocated);
         allocated
     }
 

@@ -28,6 +28,7 @@ pub fn s<'bump>(arena: &TermArena<'bump>, s: &str) -> Name<'bump> {
 }
 
 /// Parse an expression using the given bump + arena.
+#[track_caller]
 pub fn parse<'bump>(
     input: &str,
     _bump: &'bump Bump,
@@ -37,6 +38,7 @@ pub fn parse<'bump>(
 }
 
 /// Parse a constraint expression.
+#[track_caller]
 pub fn parse_constraint<'bump>(
     input: &str,
     bump: &'bump Bump,

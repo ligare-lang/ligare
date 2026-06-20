@@ -94,16 +94,14 @@ impl<'bump> Compiler<'bump> {
                 // For zero-parameter definitions whose body is a
                 // refinement, extract the Refine so it is properly
                 // registered in the constraint table.
-                Term::Func(_, params, _, _, _, body) if params.is_empty() => match body {
-                    Term::Refine(_, parent, predicate) => {
-                        println!("[refinement] {}", name);
-                        self.checker.add_refinement(name, parent, predicate);
-                    }
-                    _ => {
-                        println!("[defined] {}", name);
-                        self.env.push((name, term));
-                    }
-                },
+                Term::Func(_, [], _, _, _, Term::Refine(_, parent, predicate)) => {
+                    println!("[refinement] {}", name);
+                    self.checker.add_refinement(name, parent, predicate);
+                }
+                Term::Func(_, [], _, _, _, _) => {
+                    println!("[defined] {}", name);
+                    self.env.push((name, term));
+                }
                 _ => {
                     println!("[defined] {}", name);
                     self.env.push((name, term));

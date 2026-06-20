@@ -144,12 +144,12 @@ impl<'bump> Evaluator<'bump> {
         match (x, y) {
             (Term::LitInt(x), Term::LitInt(y)) => {
                 let Term::PrimOp(op) = prim else {
-                    return Err("expected PrimOp".to_string());
+                    return Err("Expected PrimOp".to_string());
                 };
                 Ok(self.arena.alloc(op.apply(*x, *y)))
             }
             _ => Err(format!(
-                "arithmetic on non-integer: {} and {}.",
+                "Arithmetic on non-integer: {} and {}",
                 pretty(x),
                 pretty(y)
             )),

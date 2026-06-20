@@ -146,14 +146,14 @@ fn emit_app(term: &Term<'_>, bound: &[String], self_name: Option<&str>) -> Strin
         unreachable!()
     };
     // Binary operators.
-    if let Term::App(prim, left) = f {
-        if let Term::PrimOp(op) = *prim {
-            return emit_binop(
-                *op,
-                &emit_expr(left, bound, self_name),
-                &emit_expr(a, bound, self_name),
-            );
-        }
+    if let Term::App(prim, left) = f
+        && let Term::PrimOp(op) = prim
+    {
+        return emit_binop(
+            *op,
+            &emit_expr(left, bound, self_name),
+            &emit_expr(a, bound, self_name),
+        );
     }
     if matches!(**f, Term::PrimOp(_)) {
         return emit_expr(a, bound, self_name);

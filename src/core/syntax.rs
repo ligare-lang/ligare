@@ -110,7 +110,6 @@ pub enum Term<'bump> {
 }
 
 #[cfg(test)]
-#[allow(clippy::redundant_clone)]
 mod tests {
     use super::*;
     use crate::core::pool::TermArena;
@@ -160,8 +159,8 @@ mod tests {
             (PrimOp::Neq, 5, 3, Term::LitBool(true)),
             (PrimOp::Neq, 5, 5, Term::LitBool(false)),
         ];
-        for &(op, x, y, ref expected) in cases {
-            assert_eq!(op.apply(x, y), *expected, "{op:?} {x} {y}");
+        for &(op, x, y, expected) in cases {
+            assert_eq!(op.apply(x, y), expected, "{op:?} {x} {y}");
         }
     }
 
