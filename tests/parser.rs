@@ -171,13 +171,15 @@ fn def_refinement() {
     assert!(result.is_ok());
     let (name, term) = result.unwrap();
     assert_eq!(name, "nat");
+    // parse_def now produces Func nodes to preserve parameter types.
+    let expected_body = arena.refine(
+        s(&arena, ""),
+        arena.builtin(s(&arena, "int")),
+        bin(&arena, PrimOp::Ge, arena.ref_param(), arena.lit_int(0)),
+    );
     assert_eq!(
         *term,
-        *arena.refine(
-            s(&arena, ""),
-            arena.builtin(s(&arena, "int")),
-            bin(&arena, PrimOp::Ge, arena.ref_param(), arena.lit_int(0))
-        )
+        *arena.func(s(&arena, "nat"), &[], None, &[], &[], expected_body)
     );
 }
 
@@ -306,7 +308,14 @@ fn def_simple() {
     assert_eq!(name, "x");
     assert_eq!(
         *term,
-        *arena.annot(arena.lit_int(5), arena.builtin(s(&arena, "int")))
+        *arena.func(
+            s(&arena, "x"),
+            &[],
+            Some(arena.builtin(s(&arena, "int"))),
+            &[],
+            &[],
+            arena.lit_int(5)
+        )
     );
 }
 
@@ -318,9 +327,12 @@ fn def_with_params() {
     let (name, term) = result.unwrap();
     assert_eq!(name, "add");
     let inner = bin(&arena, PrimOp::Add, arena.var(1), arena.var(0));
+    let pt = Some(arena.builtin(s(&arena, "int")) as &Term<'_>);
+    let params: &[(&str, Option<&Term>)] =
+        arena.alloc_slice(&[(s(&arena, "a"), pt), (s(&arena, "b"), pt)]);
     assert_eq!(
         *term,
-        *arena.annot(arena.lam(arena.lam(inner)), arena.builtin(s(&arena, "int")))
+        *arena.func(s(&arena, "add"), params, pt, &[], &[], inner)
     );
 }
 
@@ -331,7 +343,10 @@ fn def_no_ret() {
     assert!(result.is_ok());
     let (name, term) = result.unwrap();
     assert_eq!(name, "x");
-    assert_eq!(*term, Term::LitInt(5));
+    assert_eq!(
+        *term,
+        *arena.func(s(&arena, "x"), &[], None, &[], &[], arena.lit_int(5))
+    );
 }
 
 // ── Binary operator tests (regression for parse_app_generic hijacking infix ops) ──
@@ -483,17 +498,16 @@ fn all_infix_ops_with_variable() {
 #[test]
 fn def_with_binary_sub_in_body() {
     let (b, arena) = a();
-    // Regression: "n - 1" inside a def body must be binary subtraction.
     let result = parse_def_top("def dec (n : int) : int := n - 1", b, &arena);
     assert!(result.is_ok());
     let (name, term) = result.unwrap();
     assert_eq!(name, "dec");
+    let body = bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1));
+    let pt = Some(arena.builtin(s(&arena, "int")) as &Term<'_>);
+    let params: &[(&str, Option<&Term>)] = arena.alloc_slice(&[(s(&arena, "n"), pt)]);
     assert_eq!(
         *term,
-        *arena.annot(
-            arena.lam(bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1))),
-            arena.builtin(s(&arena, "int"))
-        )
+        *arena.func(s(&arena, "dec"), params, pt, &[], &[], body)
     );
 }
 
@@ -513,7 +527,6 @@ fn fib_def_parses_successfully() {
 #[test]
 fn fib_def_structure_matches_expected() {
     let (b, arena) = a();
-    // Full structural test for the fib definition.
     let result = parse_def_top(
         "def fib (n : int) : int := if n < 2 then n else fib (n-1) + fib (n-2)",
         b,
@@ -523,25 +536,22 @@ fn fib_def_structure_matches_expected() {
     let (name, term) = result.unwrap();
     assert_eq!(name, "fib");
 
-    // Expected: Annot(Lam(IfThenElse(cond, then_, else_)), int)
     let cond = bin(&arena, PrimOp::Lt, arena.var(0), arena.lit_int(2));
     let then_branch = arena.var(0);
-    // fib (n-1)  →  App(This, Sub(Var(0), LitInt(1)))
     let rec_call_1 = arena.app(
         arena.this_(),
         bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1)),
     );
-    // fib (n-2)  →  App(This, Sub(Var(0), LitInt(2)))
     let rec_call_2 = arena.app(
         arena.this_(),
         bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(2)),
     );
-    // fib (n-1) + fib (n-2)
     let else_branch = bin(&arena, PrimOp::Add, rec_call_1, rec_call_2);
-
     let body = arena.if_then_else(cond, then_branch, else_branch);
-    let expected = arena.annot(arena.lam(body), arena.builtin(s(&arena, "int")));
 
+    let pt = Some(arena.builtin(s(&arena, "int")) as &Term<'_>);
+    let params: &[(&str, Option<&Term>)] = arena.alloc_slice(&[(s(&arena, "n"), pt)]);
+    let expected = arena.func(s(&arena, "fib"), params, pt, &[], &[], body);
     assert_eq!(*term, *expected);
 }
 

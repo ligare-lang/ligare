@@ -71,11 +71,18 @@ impl<'bump> Compiler<'bump> {
         Ok(())
     }
 
-    /// Process a source file and collect top-level items without executing.
+    /// Process a source file, collect top-level items, and type-check.
+    /// Used by `--emit-zig` to ensure type errors are caught before
+    /// code generation.
     pub fn collect_file(&mut self, file: &str) -> Result<(), String> {
         let content = fs::read_to_string(file).map_err(|e| format!("{}: {}", file, e))?;
         let tops = parse_program(&content, self.bump, self.arena)
             .map_err(|e| format!("{}: parse error: {}", file, e))?;
+        // Type-check each item.  This catches errors like refinement
+        // violations before emitting Zig.
+        for top in &tops {
+            self.process_top_level(top.clone())?;
+        }
         self.tops.extend(tops);
         Ok(())
     }
@@ -109,6 +116,20 @@ impl<'bump> Compiler<'bump> {
                     println!("[refinement] {}", name);
                     self.checker.add_refinement(name, parent, predicate);
                 }
+                // parse_def always wraps the body in a Func node.
+                // For zero-parameter definitions whose body is a
+                // refinement, extract the Refine so it is properly
+                // registered in the constraint table.
+                Term::Func(_, params, _, _, _, body) if params.is_empty() => match body {
+                    Term::Refine(_, parent, predicate) => {
+                        println!("[refinement] {}", name);
+                        self.checker.add_refinement(name, parent, predicate);
+                    }
+                    _ => {
+                        println!("[defined] {}", name);
+                        self.env.push((name, term));
+                    }
+                },
                 _ => {
                     println!("[defined] {}", name);
                     self.env.push((name, term));
@@ -121,7 +142,7 @@ impl<'bump> Compiler<'bump> {
                     .checker
                     .check(&empty_ctx(), resolved, resolved_constraint)
                 {
-                    Err(err) => eprintln!("check failed: {}", err),
+                    Err(err) => return Err(format!("check failed: {}", err)),
                     Ok(_) => println!("[OK]"),
                 }
             }
@@ -152,6 +173,10 @@ impl<'bump> Compiler<'bump> {
                 } else {
                     term
                 }
+            }
+            Term::Func(fname, params, m_ret, pre, post, body) => {
+                let body2 = self.subst_top_level(body);
+                self.arena.func(fname, params, *m_ret, pre, post, body2)
             }
             Term::App(f, a) => {
                 let f2 = self.subst_top_level(f);
@@ -213,21 +238,29 @@ fn main() {
     // ── Zig code generation path ──
     if cli.emit_zig {
         let mut compiler = Compiler::new(&bump, &arena);
+        let mut had_error = false;
         for file in &cli.files {
             if let Err(e) = compiler.collect_file(file) {
                 eprintln!("{}", e);
+                had_error = true;
             }
         }
-        compiler.emit_zig();
+        if !had_error {
+            compiler.emit_zig();
+        } else {
+            std::process::exit(1);
+        }
         return;
     }
 
     // ── Normal interpret / check / eval path ──
     let mut compiler = Compiler::new(&bump, &arena);
+    let mut had_error = false;
 
     for file in &cli.files {
         if let Err(e) = compiler.process_file(file) {
             eprintln!("{}", e);
+            had_error = true;
         }
     }
 
@@ -235,5 +268,10 @@ fn main() {
         && let Err(e) = compiler.eval_expr(expr)
     {
         eprintln!("{}", e);
+        had_error = true;
+    }
+
+    if had_error {
+        std::process::exit(1);
     }
 }

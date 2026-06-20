@@ -1,3 +1,4 @@
+use crate::config::BUILTIN_DATA;
 use crate::core::pool::TermArena;
 use crate::core::syntax::Term;
 
@@ -10,9 +11,6 @@ pub struct Desugarer<'bump> {
 }
 
 impl<'bump> Desugarer<'bump> {
-    /// Default constraint name used when no type annotation is given.
-    const DATA: &'static str = "data";
-
     pub fn new(arena: &'bump TermArena<'bump>) -> Self {
         Self { arena }
     }
@@ -40,16 +38,16 @@ impl<'bump> Desugarer<'bump> {
         // Build lambda body: fold params into nested Lam
         let func_body = params.iter().fold(body, |b, _| self.arena.lam(b));
 
-        // Build Pi type annotation
-        let default_constraint = self.arena.builtin(self.arena.alloc_str(Self::DATA));
-        let func_type =
-            params
-                .iter()
-                .rev()
-                .rfold(m_ret.unwrap_or(default_constraint), |b, (pn, mc)| {
-                    let constraint = mc.unwrap_or(default_constraint);
-                    self.arena.pi(pn, constraint, b)
-                });
+        // Build Pi type annotation.
+        // Uses rfold (right-to-left) so the outermost Pi corresponds
+        // to the first parameter, matching the lambda wrapping above.
+        let default_constraint = self.arena.builtin(self.arena.alloc_str(BUILTIN_DATA));
+        let func_type = params
+            .iter()
+            .rfold(m_ret.unwrap_or(default_constraint), |b, (pn, mc)| {
+                let constraint = mc.unwrap_or(default_constraint);
+                self.arena.pi(pn, constraint, b)
+            });
 
         self.arena.annot(func_body, func_type)
     }

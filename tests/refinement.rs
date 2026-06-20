@@ -143,3 +143,69 @@ fn pos_is_subtype_of_int_parent_chain() {
         Ok(())
     );
 }
+
+// ── Neq (not-equal) refinement ──
+
+#[test]
+fn neq_refinement_accepts_nonzero() {
+    let (_b, arena) = a();
+    let table = add_refine(
+        s(&arena, "nonzero"),
+        arena.builtin(s(&arena, "int")),
+        bin(&arena, PrimOp::Neq, arena.ref_param(), arena.lit_int(0)),
+        &empty_table(),
+    );
+    assert_eq!(
+        check(
+            &arena,
+            &table,
+            &empty_ctx(),
+            arena.lit_int(5),
+            arena.builtin(s(&arena, "nonzero"))
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn neq_refinement_rejects_zero() {
+    let (_b, arena) = a();
+    let table = add_refine(
+        s(&arena, "nonzero"),
+        arena.builtin(s(&arena, "int")),
+        bin(&arena, PrimOp::Neq, arena.ref_param(), arena.lit_int(0)),
+        &empty_table(),
+    );
+    assert!(
+        check(
+            &arena,
+            &table,
+            &empty_ctx(),
+            arena.lit_int(0),
+            arena.builtin(s(&arena, "nonzero"))
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn neq_refinement_accepts_negative() {
+    let (b, arena) = a();
+    let table = add_refine(
+        s(&arena, "nonzero"),
+        arena.builtin(s(&arena, "int")),
+        bin(&arena, PrimOp::Neq, arena.ref_param(), arena.lit_int(0)),
+        &empty_table(),
+    );
+    let neg_one = parse("-1", b, &arena);
+    assert_eq!(
+        check(
+            &arena,
+            &table,
+            &empty_ctx(),
+            neg_one,
+            arena.builtin(s(&arena, "nonzero"))
+        ),
+        Ok(())
+    );
+}

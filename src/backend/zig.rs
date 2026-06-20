@@ -14,34 +14,29 @@ use crate::front::parser::TopLevel;
 pub fn emit_zig(tops: &[TopLevel<'_>]) -> String {
     let mut out = String::new();
 
-    // ── Preamble ──
     out.push_str("const std = @import(\"std\");\n\n");
 
-    // ── Collect defs and output expressions ──
     let mut defs: Vec<(&str, &Term<'_>)> = Vec::new();
     let mut outputs: Vec<&Term<'_>> = Vec::new();
 
     for top in tops {
         match top {
             TopLevel::TLDef(name, term) => {
-                // Skip refinement type definitions (type-level only)
                 if matches!(term, Term::Refine(_, _, _)) {
                     continue;
                 }
                 defs.push((name, term));
             }
-            TopLevel::TLCheck(_, _) => {} // compile-time only
+            TopLevel::TLCheck(_, _) => {}
             TopLevel::TLShow(term) | TopLevel::TLExpr(term) => outputs.push(term),
         }
     }
 
-    // ── Emit function / constant definitions ──
     for (name, term) in &defs {
         out.push_str(&emit_def(name, term));
         out.push('\n');
     }
 
-    // ── Emit main ──
     if !outputs.is_empty() {
         out.push_str("pub fn main() !void {\n");
         out.push_str("    const stdout = std.io.getStdOut().writer();\n");
@@ -58,23 +53,22 @@ pub fn emit_zig(tops: &[TopLevel<'_>]) -> String {
     out
 }
 
-/// Emit a top-level definition as a Zig function or constant.
 fn emit_def(name: &str, term: &Term<'_>) -> String {
-    // Peel off Annot wrapper
+    if let Term::Func(_fname, params, m_ret, _pre, _post, body) = term {
+        return emit_func_def(name, params, *m_ret, body);
+    }
+
     let inner = match term {
         Term::Annot(t, _) => t,
         _ => term,
     };
 
-    // Count nested Lams to determine arity
     let arity = count_lams(inner);
 
     if arity == 0 {
-        // Simple constant definition
         let val = emit_term(inner, &[], None);
         format!("const {} = {};\n", name, val)
     } else {
-        // Function definition
         let params: Vec<String> = (0..arity).map(|i| format!("arg_{}: i64", i)).collect();
         let param_names: Vec<String> = (0..arity)
             .map(|i| format!("arg_{}", arity - 1 - i))
@@ -89,7 +83,38 @@ fn emit_def(name: &str, term: &Term<'_>) -> String {
     }
 }
 
-/// Count how many nested `Lam` wrappers there are.
+fn emit_func_def(
+    name: &str,
+    params: &[(&str, Option<&Term<'_>>)],
+    _m_ret: Option<&Term<'_>>,
+    body: &Term<'_>,
+) -> String {
+    let arity = params.len();
+    if arity == 0 {
+        let val = emit_term(body, &[], None);
+        return format!("const {} = {};\n", name, val);
+    }
+
+    let zig_params: Vec<String> = params
+        .iter()
+        .map(|(pn, _)| format!("{}: i64", pn))
+        .collect();
+
+    let bound: Vec<String> = params
+        .iter()
+        .rev()
+        .map(|(pn, _)| (*pn).to_string())
+        .collect();
+
+    let body_str = emit_term(body, &bound, Some(name));
+    format!(
+        "fn {}({}) i64 {{\n    return {};\n}}\n",
+        name,
+        zig_params.join(", "),
+        body_str
+    )
+}
+
 fn count_lams(term: &Term<'_>) -> usize {
     match term {
         Term::Lam(body) => 1 + count_lams(body),
@@ -97,7 +122,6 @@ fn count_lams(term: &Term<'_>) -> usize {
     }
 }
 
-/// Peel off `n` layers of `Lam` and return the body.
 fn peel_lams<'bump>(term: &'bump Term<'bump>, n: usize) -> &'bump Term<'bump> {
     let mut t = term;
     for _ in 0..n {
@@ -108,13 +132,8 @@ fn peel_lams<'bump>(term: &'bump Term<'bump>, n: usize) -> &'bump Term<'bump> {
     t
 }
 
-/// Emit a term as a Zig expression string.
-///
-/// `bound` maps de Bruijn indices (0 = innermost) to Zig variable names.
-/// `self_name` is the name of the enclosing function (for `This` recursion).
 fn emit_term(term: &Term<'_>, bound: &[String], self_name: Option<&str>) -> String {
     match term {
-        // ── Leaf values ──
         Term::LitInt(n) => n.to_string(),
         Term::LitBool(b) => {
             if *b {
@@ -124,19 +143,13 @@ fn emit_term(term: &Term<'_>, bound: &[String], self_name: Option<&str>) -> Stri
             }
         }
         Term::Var(i) => bound[*i].clone(),
-
-        // ── Self-reference (recursion) ──
         Term::This => self_name.unwrap_or("__self__").to_string(),
-
-        // ── Top-level name reference ──
         Term::Builtin(name) => (*name).to_string(),
 
-        // ── Type erasure ──
         Term::Annot(inner, _) | Term::ByProof(inner, _) | Term::ProofBlock(inner) => {
             emit_term(inner, bound, self_name)
         }
 
-        // ── If-then-else ──
         Term::IfThenElse(cond, tbranch, fbranch) => {
             let c = emit_term(cond, bound, self_name);
             let t = emit_term(tbranch, bound, self_name);
@@ -144,7 +157,6 @@ fn emit_term(term: &Term<'_>, bound: &[String], self_name: Option<&str>) -> Stri
             format!("if ({}) {{ {} }} else {{ {} }}", c, t, f)
         }
 
-        // ── Let binding ──
         Term::Let(name, val, body, _) => {
             let v = emit_term(val, bound, self_name);
             let mut extended: Vec<String> = vec![(*name).to_string()];
@@ -153,9 +165,7 @@ fn emit_term(term: &Term<'_>, bound: &[String], self_name: Option<&str>) -> Stri
             format!("{{ const {} = {}; {} }}", name, v, b)
         }
 
-        // ── Lambda (should only appear as inline, not at top-level) ──
         Term::Lam(body) => {
-            // Generate a fresh name for the bound variable
             let mut extended: Vec<String> = vec!["_x".to_string()];
             extended.extend_from_slice(bound);
             let b = emit_term(body, &extended, self_name);
@@ -165,28 +175,23 @@ fn emit_term(term: &Term<'_>, bound: &[String], self_name: Option<&str>) -> Stri
             )
         }
 
-        // ── Application ──
         Term::App(_, _) => emit_app(term, bound, self_name),
 
-        // ── Type-level terms (should not appear at runtime) ──
         Term::Pi(_, _, _)
         | Term::Universe(_)
         | Term::AutoProof
         | Term::RefParam
         | Term::Refine(_, _, _)
         | Term::Func { .. }
-        | Term::PrimOp(_) => "/* type-level */ @as(i64, 0)".to_string(),
+        | Term::PrimOp(_) => "@as(i64, 0)".to_string(),
     }
 }
 
-/// Emit an application, detecting binary operators and function calls.
 fn emit_app(term: &Term<'_>, bound: &[String], self_name: Option<&str>) -> String {
     let Term::App(f, a) = term else {
         unreachable!()
     };
 
-    // Detect binary operator: App(App(PrimOp(op), left), right)
-    // `f` is `&Term<'_>`; pattern-match through the reference.
     if let Term::App(prim, left) = f {
         if let Term::PrimOp(op) = prim {
             let left_str = emit_term(left, bound, self_name);
@@ -195,20 +200,16 @@ fn emit_app(term: &Term<'_>, bound: &[String], self_name: Option<&str>) -> Strin
         }
     }
 
-    // Detect PrimOp + single arg (curried, should not happen but handle)
     if let Term::PrimOp(_) = **f {
         let right_str = emit_term(a, bound, self_name);
-        return format!("/* partial-op */ {}", right_str);
+        return right_str;
     }
 
-    // Function call: collect all arguments in the App chain
     let mut args: Vec<String> = Vec::new();
     let func = collect_call_args(term, bound, self_name, &mut args);
     format!("{}({})", func, args.join(", "))
 }
 
-/// Recursively collect arguments from a curried App chain.
-/// Returns the function expression string.
 fn collect_call_args(
     term: &Term<'_>,
     bound: &[String],
@@ -225,15 +226,11 @@ fn collect_call_args(
     }
 }
 
-/// Emit a binary operator.
 fn emit_binop(op: PrimOp, left: &str, right: &str) -> String {
     match op {
         PrimOp::Add => format!("({} + {})", left, right),
         PrimOp::Sub => format!("({} - {})", left, right),
         PrimOp::Mul => format!("({} * {})", left, right),
-        // Ligare erases proof/prop/theorem terms after compile-time
-        // verification — the generated code is pure data with zero
-        // runtime overhead from the constraint system.
         PrimOp::Div => format!("@divTrunc({}, {})", left, right),
         PrimOp::Mod_ => format!("@rem({}, {})", left, right),
         PrimOp::Eq => format!("({} == {})", left, right),
@@ -261,23 +258,32 @@ mod tests {
         arena.alloc_str(s)
     }
 
+    fn def_func<'bump>(
+        arena: &'bump TermArena<'bump>,
+        name: &'bump str,
+        params: &'bump [(&'bump str, Option<&'bump Term<'bump>>)],
+        ret: Option<&'bump Term<'bump>>,
+        body: &'bump Term<'bump>,
+    ) -> TopLevel<'bump> {
+        TopLevel::TLDef(name, arena.func(name, params, ret, &[], &[], body))
+    }
+
     #[test]
     fn emit_simple_function() {
         let (_bump, arena) = a();
-        // def add1 (x : int) : int := x + 1
-        // After parsing: Annot(Lam(App(App(+, Var(0)), 1)), int)
+        let pt = Some(arena.builtin(ns(&arena, "int")) as &Term<'_>);
+        let params: &[(&str, Option<&Term>)] = arena.alloc_slice(&[(ns(&arena, "x"), pt)]);
         let body = arena.app(
             arena.app(arena.prim_op(PrimOp::Add), arena.var(0)),
             arena.lit_int(1),
         );
-        let lam = arena.lam(body);
-        let term = arena.annot(lam, arena.builtin(ns(&arena, "int")));
-        let tops = vec![TopLevel::TLDef(ns(&arena, "add1"), term)];
-        let zig = emit_zig(&tops);
-        assert!(zig.contains("fn add1("), "expected fn add1, got:\n{}", zig);
+        let top = def_func(&arena, ns(&arena, "add1"), params, pt, body);
+        let zig = emit_zig(&[top]);
+        assert!(zig.contains("fn add1("), "got:\n{}", zig);
+        assert!(zig.contains("x: i64"), "got:\n{}", zig);
         assert!(
-            zig.contains("arg_0 + 1"),
-            "expected arg_0 + 1, got:\n{}",
+            zig.contains("x + 1") || zig.contains("x+1"),
+            "got:\n{}",
             zig
         );
     }
@@ -285,20 +291,20 @@ mod tests {
     #[test]
     fn emit_constant() {
         let (_bump, arena) = a();
-        let term = arena.annot(arena.lit_int(42), arena.builtin(ns(&arena, "int")));
-        let tops = vec![TopLevel::TLDef(ns(&arena, "answer"), term)];
-        let zig = emit_zig(&tops);
-        assert!(
-            zig.contains("const answer = 42;"),
-            "expected const answer, got:\n{}",
-            zig
+        let top = def_func(
+            &arena,
+            ns(&arena, "answer"),
+            &[],
+            Some(arena.builtin(ns(&arena, "int"))),
+            arena.lit_int(42),
         );
+        let zig = emit_zig(&[top]);
+        assert!(zig.contains("const answer = 42;"), "got:\n{}", zig);
     }
 
     #[test]
     fn emit_recursive_function() {
         let (_bump, arena) = a();
-        // def fib (n : int) : int := if n < 2 then n else fib (n-1) + fib (n-2)
         let body = arena.if_then_else(
             arena.app(
                 arena.app(arena.prim_op(PrimOp::Lt), arena.var(0)),
@@ -325,97 +331,71 @@ mod tests {
                 ),
             ),
         );
-        let lam = arena.lam(body);
-        let term = arena.annot(lam, arena.builtin(ns(&arena, "int")));
-        let tops = vec![TopLevel::TLDef(ns(&arena, "fib"), term)];
-        let zig = emit_zig(&tops);
-        assert!(
-            zig.contains("fn fib(") && zig.contains("fib("),
-            "expected recursive fib, got:\n{}",
-            zig
-        );
+        let pt = Some(arena.builtin(ns(&arena, "int")) as &Term<'_>);
+        let params: &[(&str, Option<&Term>)] = arena.alloc_slice(&[(ns(&arena, "n"), pt)]);
+        let top = def_func(&arena, ns(&arena, "fib"), params, pt, body);
+        let zig = emit_zig(&[top]);
+        assert!(zig.contains("fn fib("), "got:\n{}", zig);
+        assert!(zig.contains("n: i64"), "got:\n{}", zig);
+        assert!(zig.contains("fib("), "got:\n{}", zig);
     }
 
     #[test]
     fn emit_show_produces_main() {
         let (_bump, arena) = a();
-        let tops = vec![TopLevel::TLShow(arena.lit_int(42))];
-        let zig = emit_zig(&tops);
-        assert!(
-            zig.contains("pub fn main()"),
-            "expected main, got:\n{}",
-            zig
-        );
-        assert!(zig.contains("42"), "expected 42, got:\n{}", zig);
+        let zig = emit_zig(&[TopLevel::TLShow(arena.lit_int(42))]);
+        assert!(zig.contains("pub fn main()"), "got:\n{}", zig);
+        assert!(zig.contains("42"), "got:\n{}", zig);
     }
 
     #[test]
     fn emit_multi_arg_function() {
         let (_bump, arena) = a();
-        // def add (a : int) (b : int) := a + b
-        // After parsing: Lam(Lam(App(App(+, Var(1)), Var(0))))
-        let inner = arena.app(
+        let pt = Some(arena.builtin(ns(&arena, "int")) as &Term<'_>);
+        let params: &[(&str, Option<&Term>)] =
+            arena.alloc_slice(&[(ns(&arena, "a"), pt), (ns(&arena, "b"), pt)]);
+        let body = arena.app(
             arena.app(arena.prim_op(PrimOp::Add), arena.var(1)),
             arena.var(0),
         );
-        let lam2 = arena.lam(inner);
-        let lam1 = arena.lam(lam2);
-        let tops = vec![TopLevel::TLDef(ns(&arena, "add"), lam1)];
-        let zig = emit_zig(&tops);
-        assert!(
-            zig.contains("fn add(arg_0: i64, arg_1: i64)"),
-            "expected two params, got:\n{}",
-            zig
-        );
+        let top = def_func(&arena, ns(&arena, "add"), params, None, body);
+        let zig = emit_zig(&[top]);
+        assert!(zig.contains("fn add(a: i64, b: i64)"), "got:\n{}", zig);
     }
 
     #[test]
     fn emit_comparison_operators() {
         let (_bump, arena) = a();
-        // Lam(App(App(==, Var(0)), LitInt(0)))
+        let pt = Some(arena.builtin(ns(&arena, "int")) as &Term<'_>);
+        let params: &[(&str, Option<&Term>)] = arena.alloc_slice(&[(ns(&arena, "x"), pt)]);
         let body = arena.app(
             arena.app(arena.prim_op(PrimOp::Eq), arena.var(0)),
             arena.lit_int(0),
         );
-        let lam = arena.lam(body);
-        let tops = vec![TopLevel::TLDef(ns(&arena, "is_zero"), lam)];
-        let zig = emit_zig(&tops);
-        assert!(
-            zig.contains("arg_0 == 0"),
-            "expected comparison, got:\n{}",
-            zig
-        );
+        let top = def_func(&arena, ns(&arena, "is_zero"), params, None, body);
+        let zig = emit_zig(&[top]);
+        assert!(zig.contains("x == 0"), "got:\n{}", zig);
     }
 
     #[test]
     fn emit_division() {
         let (_bump, arena) = a();
-        // Lam(Lam(App(App(/, Var(1)), Var(0))))
+        let pt = Some(arena.builtin(ns(&arena, "int")) as &Term<'_>);
+        let params: &[(&str, Option<&Term>)] =
+            arena.alloc_slice(&[(ns(&arena, "a"), pt), (ns(&arena, "b"), pt)]);
         let body = arena.app(
             arena.app(arena.prim_op(PrimOp::Div), arena.var(1)),
             arena.var(0),
         );
-        let lam2 = arena.lam(body);
-        let lam1 = arena.lam(lam2);
-        let tops = vec![TopLevel::TLDef(ns(&arena, "sdiv"), lam1)];
-        let zig = emit_zig(&tops);
-        assert!(
-            zig.contains("@divTrunc"),
-            "expected @divTrunc, got:\n{}",
-            zig
-        );
-        // No zero-check: Ligare erases proof constraints at compile time
-        assert!(
-            !zig.contains("== 0"),
-            "should NOT have zero-check (type system proves it), got:\n{}",
-            zig
-        );
+        let top = def_func(&arena, ns(&arena, "sdiv"), params, None, body);
+        let zig = emit_zig(&[top]);
+        assert!(zig.contains("@divTrunc"), "got:\n{}", zig);
+        assert!(!zig.contains("== 0"), "got:\n{}", zig);
     }
 
     #[test]
     fn emit_skips_refinement_def() {
         let (_bump, arena) = a();
-        // def nat := int where (x => x >= 0)
         let pred = arena.lam(arena.app(
             arena.app(arena.prim_op(PrimOp::Ge), arena.var(0)),
             arena.lit_int(0),
@@ -426,19 +406,13 @@ mod tests {
             TopLevel::TLShow(arena.lit_int(42)),
         ];
         let zig = emit_zig(&tops);
-        // nat should NOT appear as a const/fn in the output
-        assert!(
-            !zig.contains("nat"),
-            "refinement type should be skipped, got:\n{}",
-            zig
-        );
-        assert!(zig.contains("42"), "expected 42 in main, got:\n{}", zig);
+        assert!(!zig.contains("nat"), "got:\n{}", zig);
+        assert!(zig.contains("42"), "got:\n{}", zig);
     }
 
     #[test]
     fn emit_let_binding() {
         let (_bump, arena) = a();
-        // def answer := let x := 40 in x + 2
         let body = arena.let_(
             ns(&arena, "x"),
             arena.lit_int(40),
@@ -448,12 +422,12 @@ mod tests {
             ),
             None,
         );
-        let tops = vec![TopLevel::TLDef(ns(&arena, "answer"), body)];
-        let zig = emit_zig(&tops);
-        assert!(zig.contains("const x = 40"), "expected let, got:\n{}", zig);
+        let top = def_func(&arena, ns(&arena, "answer"), &[], None, body);
+        let zig = emit_zig(&[top]);
+        assert!(zig.contains("const x = 40"), "got:\n{}", zig);
         assert!(
             zig.contains("x + 2") || zig.contains("x+2"),
-            "expected x + 2, got:\n{}",
+            "got:\n{}",
             zig
         );
     }
@@ -462,21 +436,15 @@ mod tests {
     fn emit_if_then_else_top_level() {
         let (_bump, arena) = a();
         let term = arena.if_then_else(arena.lit_bool(true), arena.lit_int(10), arena.lit_int(20));
-        let tops = vec![TopLevel::TLShow(term)];
-        let zig = emit_zig(&tops);
-        assert!(
-            zig.contains("10"),
-            "expected 10 in if-branch, got:\n{}",
-            zig
-        );
-        assert!(zig.contains("if (true)"), "expected if, got:\n{}", zig);
+        let zig = emit_zig(&[TopLevel::TLShow(term)]);
+        assert!(zig.contains("10"), "got:\n{}", zig);
+        assert!(zig.contains("if (true)"), "got:\n{}", zig);
     }
 
     #[test]
     fn emit_boolean_show_handled() {
         let (_bump, arena) = a();
-        let tops = vec![TopLevel::TLShow(arena.lit_bool(true))];
-        let zig = emit_zig(&tops);
-        assert!(zig.contains("true"), "expected true, got:\n{}", zig);
+        let zig = emit_zig(&[TopLevel::TLShow(arena.lit_bool(true))]);
+        assert!(zig.contains("true"), "got:\n{}", zig);
     }
 }

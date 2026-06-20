@@ -1,5 +1,6 @@
 use std::fmt;
 
+use crate::config::{UNIVERSE_DATA, UNIVERSE_PROOF, UNIVERSE_PROP, UNIVERSE_THEOREM};
 use crate::core::pool::TermArena;
 
 /// A name in the AST, arena-allocated for zero-copy sharing.
@@ -16,10 +17,10 @@ pub enum Universe {
 impl fmt::Display for Universe {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Universe::UData => write!(f, "data"),
-            Universe::UProp => write!(f, "prop"),
-            Universe::UTheorem => write!(f, "theorem"),
-            Universe::UProof => write!(f, "proof"),
+            Universe::UData => write!(f, "{UNIVERSE_DATA}"),
+            Universe::UProp => write!(f, "{UNIVERSE_PROP}"),
+            Universe::UTheorem => write!(f, "{UNIVERSE_THEOREM}"),
+            Universe::UProof => write!(f, "{UNIVERSE_PROOF}"),
         }
     }
 }

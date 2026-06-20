@@ -109,3 +109,61 @@ fn nested_if() {
         Term::LitInt(2)
     );
 }
+
+#[test]
+fn func_desugars_and_evaluates() {
+    let (_b, arena) = a();
+    let params: &[(&str, Option<&Term>)] =
+        arena.alloc_slice(&[(s(&arena, "x"), Some(arena.builtin(s(&arena, "int"))))]);
+    let body = bin(&arena, PrimOp::Add, arena.var(0), arena.lit_int(1));
+    let func = arena.func(
+        s(&arena, "f"),
+        params,
+        Some(arena.builtin(s(&arena, "int"))),
+        &[],
+        &[],
+        body,
+    );
+    let app = arena.app(func, arena.lit_int(5));
+    assert_eq!(*eval(&arena, app).unwrap(), Term::LitInt(6));
+}
+
+#[test]
+fn let_with_by_proof_evaluates() {
+    let (_b, arena) = a();
+    // let x : int by true := 5 in x → 5
+    let term = arena.let_(
+        s(&arena, "x"),
+        arena.lit_int(5),
+        arena.var(0),
+        Some(arena.builtin(s(&arena, "int"))),
+    );
+    assert_eq!(*eval(&arena, term).unwrap(), Term::LitInt(5));
+}
+
+#[test]
+fn if_then_else_div_zero_returns_zero() {
+    let (b, arena) = a();
+    assert_eq!(
+        *eval(&arena, parse("if false then (1 / 0) else 42", b, &arena)).unwrap(),
+        Term::LitInt(42)
+    );
+}
+
+#[test]
+fn div_zero_returns_zero() {
+    let (b, arena) = a();
+    assert_eq!(
+        *eval(&arena, parse("5 / 0", b, &arena)).unwrap(),
+        Term::LitInt(0)
+    );
+}
+
+#[test]
+fn mod_zero_returns_zero() {
+    let (b, arena) = a();
+    assert_eq!(
+        *eval(&arena, parse("5 % 0", b, &arena)).unwrap(),
+        Term::LitInt(0)
+    );
+}

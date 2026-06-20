@@ -48,3 +48,69 @@ fn refine() {
     let t = arena.refine(s(&arena, ""), arena.builtin(s(&arena, "int")), pred);
     assert_eq!(pretty(t), "int where (x => (x >= 0))");
 }
+
+#[test]
+fn pi_simple() {
+    let (_bump, arena) = a();
+    let pi = arena.pi(
+        s(&arena, ""),
+        arena.builtin(s(&arena, "int")),
+        arena.builtin(s(&arena, "int")),
+    );
+    assert_eq!(pretty(pi), "(int -> int)");
+}
+
+#[test]
+fn pi_named() {
+    let (_bump, arena) = a();
+    let pi = arena.pi(
+        s(&arena, "x"),
+        arena.builtin(s(&arena, "int")),
+        arena.builtin(s(&arena, "int")),
+    );
+    assert_eq!(pretty(pi), "(Pi x : int => int)");
+}
+
+#[test]
+fn pi_nested() {
+    let (_bump, arena) = a();
+    let inner = arena.pi(
+        s(&arena, ""),
+        arena.builtin(s(&arena, "bool")),
+        arena.builtin(s(&arena, "int")),
+    );
+    let outer = arena.pi(s(&arena, ""), arena.builtin(s(&arena, "int")), inner);
+    assert_eq!(pretty(outer), "(int -> (bool -> int))");
+}
+
+#[test]
+fn app_infix() {
+    let (_bump, arena) = a();
+    let add = bin(&arena, PrimOp::Add, arena.lit_int(1), arena.lit_int(2));
+    assert_eq!(pretty(add), "(1 + 2)");
+}
+
+#[test]
+fn app_prefix() {
+    let (_bump, arena) = a();
+    let app = arena.app(arena.builtin(s(&arena, "f")), arena.lit_int(42));
+    assert_eq!(pretty(app), "(f 42)");
+}
+
+#[test]
+fn compare_ge() {
+    let (_bump, arena) = a();
+    assert_eq!(
+        pretty(bin(&arena, PrimOp::Ge, arena.lit_int(5), arena.lit_int(3))),
+        "(5 >= 3)"
+    );
+}
+
+#[test]
+fn compare_neq() {
+    let (_bump, arena) = a();
+    assert_eq!(
+        pretty(bin(&arena, PrimOp::Neq, arena.lit_int(1), arena.lit_int(0))),
+        "(1 /= 0)"
+    );
+}

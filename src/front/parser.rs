@@ -226,12 +226,10 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         let body = self.parse_expr(&env)?;
         let body = subst_this(self.arena, name, body);
 
-        let func_body = params.iter().fold(body, |b, _| self.arena.lam(b));
-        let result = match m_ret {
-            Some(c) => self.arena.annot(func_body, c),
-            None => func_body,
-        };
-        Ok((name, result))
+        // Produce a Func node to preserve parameter type annotations
+        // (otherwise constraints like `b: int where (x => x /= 0)` are lost).
+        let params_slice = self.arena.alloc_slice(&params);
+        Ok((name, self.arena.func(name, params_slice, m_ret, &[], &[], body)))
     }
 
     fn parse_curried_param(&mut self) -> Option<(Name<'bump>, Option<&'bump Term<'bump>>)> {
