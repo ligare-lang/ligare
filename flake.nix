@@ -29,6 +29,7 @@
             clang
             libffi
             libxml2
+            zig
             (rust-bin.fromRustupToolchainFile ./rust-toolchain.toml)
           ];
 
