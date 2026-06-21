@@ -2,7 +2,7 @@ mod common;
 
 use common::{bin, leak_bump, parse, s};
 use ligare::core::pool::TermArena;
-use ligare::core::syntax::{PrimOp, Term};
+use ligare::core::syntax::{PrimOp, Tactic, Term};
 use ligare::core::whnf::whnf;
 
 fn a() -> (&'static bumpalo::Bump, TermArena<'static>) {
@@ -256,12 +256,9 @@ fn annot_strips_annotation() {
 #[test]
 fn by_proof_strips_proof() {
     let (_b, arena) = a();
+    let tactics = arena.alloc_slice(&[Tactic::Exact(arena.lit_bool(true))]);
     assert_eq!(
-        *whnf(
-            &arena,
-            arena.by_proof(arena.lit_int(42), arena.lit_bool(true))
-        )
-        .unwrap(),
+        *whnf(&arena, arena.by_proof(Some(arena.lit_int(42)), tactics)).unwrap(),
         Term::LitInt(42)
     );
 }
@@ -471,7 +468,8 @@ fn whnf_var_identity() {
 #[test]
 fn whnf_proof_block_strips() {
     let (_b, arena) = a();
-    let block = arena.proof_block(arena.lit_int(42));
+    let tactics = arena.alloc_slice(&[Tactic::Exact(arena.lit_int(42))]);
+    let block = arena.by_proof(Some(arena.lit_int(42)), tactics);
     assert_eq!(*whnf(&arena, block).unwrap(), Term::LitInt(42));
 }
 

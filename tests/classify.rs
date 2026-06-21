@@ -1,6 +1,7 @@
 use ligare::checker::context::empty_ctx;
 use ligare::core::classify::classify;
-use ligare::core::syntax::{Term, Universe};
+use ligare::core::pool::TermArena;
+use ligare::core::syntax::{Tactic, Term, Universe};
 
 #[test]
 fn lit_int_is_data() {
@@ -82,13 +83,11 @@ fn annot_keeps_inner_universe() {
 
 #[test]
 fn by_proof_keeps_inner_universe() {
-    assert_eq!(
-        classify(
-            &empty_ctx(),
-            &Term::ByProof(&Term::LitInt(5), &Term::AutoProof)
-        ),
-        Some(Universe::UData)
-    );
+    let bump = bumpalo::Bump::new();
+    let arena = TermArena::new(&bump);
+    let tactics = arena.alloc_slice(&[Tactic::Exact(arena.auto_proof())]);
+    let term = arena.by_proof(Some(arena.lit_int(5)), tactics);
+    assert_eq!(classify(&empty_ctx(), term), Some(Universe::UData));
 }
 
 #[test]

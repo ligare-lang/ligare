@@ -1,0 +1,144 @@
+(* ──────────────────────────────────────────────────────────────────
+   Ligare Grammar (EBNF)
+   ──────────────────────────────────────────────────────────────────
+
+   Notation:
+     [ X ]        optional X
+     { X }        zero or more X
+     X | Y        alternation (X or Y)
+     "..."        terminal token
+     (* ... *)    comment
+
+   Context-sensitivity note:
+     Inside type annotations (e.g., after `:` in `let x : ...`),
+     the keyword `by` is NOT consumed as a suffix or standalone
+     proof block — it is reserved for the outer `let`-binding's
+     proof clause.  This is enforced by the parser's `no_by` flag,
+     not expressible in pure EBNF.
+
+   Whitespace & comments:
+     Whitespace (spaces, tabs, \r, \f) is ignored except as
+     token separators.  Newlines are significant only as implicit
+     tactic separators (see Tactics).
+     Line comments:     "--" to end of line.
+     Block comments:    "{-" ... "-}"  (non-nestable).
+     Block comments:    "/-" ... "-/"  (nestable, Lean 4 style).
+
+   ────────────────────────────────────────────────────────────────── *)
+
+(* ── Top-level ──────────────────────────────────────────────────── *)
+
+Program     ::= { TopLevel }
+
+TopLevel    ::= Def
+              | Check
+              | Show
+              | Expr
+
+Def         ::= "def" Ident Params [ ":" Expr ] ":=" Expr
+              | "def" Ident                   ":=" Expr
+
+Check       ::= "#check" Expr [ ":" Expr ]
+
+Show        ::= "#show" Expr
+
+(* ── Definitions ────────────────────────────────────────────────── *)
+
+Params      ::= { Param }
+
+Param       ::= "(" Ident [ ":" Expr ] ")"
+
+(* ── Expressions ────────────────────────────────────────────────── *)
+
+Expr        ::= IfExpr
+              | OperatorExpr
+
+IfExpr      ::= "if" Expr "then" Expr "else" Expr
+
+OperatorExpr ::= TermApp { BinOp TermApp }
+
+BinOp       ::= "*" | "/" | "%"          (* precedence 4, left-assoc  *)
+              | "->"                     (* precedence 3, right-assoc *)
+              | "+" | "-"                (* precedence 2, left-assoc  *)
+              | "==" | "=" | "<=" | ">="
+              | "/=" | "<"  | ">"        (* precedence 1, non-assoc   *)
+
+(* ── Terms (application by juxtaposition) ───────────────────────── *)
+
+TermApp     ::= LetExpr
+              | FuncExpr
+              | DepArrow
+              | Term { Term }
+
+Term        ::= Atom TermSuffix
+
+TermSuffix  ::= RefineSuffix TermSuffix
+              | ":" Expr TermSuffix     (* type annotation *)
+              | "by" Tactics TermSuffix  (* proof block    *)
+              | ε
+
+(* ── Atoms ──────────────────────────────────────────────────────── *)
+
+Atom        ::= IntLiteral
+              | "true"
+              | "false"
+              | Lambda
+              | Ident
+              | "(" Expr ")"
+              | "by" Tactics             (* standalone proof block *)
+              | "auto"                   (* auto proof             *)
+              | "∧" | "∨" | "¬" | "→"   (* logical connectives    *)
+              | "∧-intro" | "∧-elim-left"
+              | "-" Atom                 (* unary negation (desugars to 0 - x) *)
+
+IntLiteral  ::= [0-9]+
+
+Lambda      ::= ("\" | "λ") Ident "." Expr
+
+(* ── Let expressions ────────────────────────────────────────────── *)
+
+LetExpr     ::= "let" Ident [ ":" Expr ] [ "by" Tactics ] ":=" Expr "in" Expr
+
+(* ── Func expressions ───────────────────────────────────────────── *)
+
+FuncExpr    ::= "func" Ident Params [ ":" Expr ] ":=" Expr
+
+(* ── Dependent arrow ────────────────────────────────────────────── *)
+
+DepArrow    ::= "(" Ident ":" Expr ")" "->" Expr
+
+(* ── Refinement types ───────────────────────────────────────────── *)
+
+RefineSuffix ::= "where" "(" Ident "=>" Expr ")"
+
+(* ── Tactics ────────────────────────────────────────────────────── *)
+
+Tactics     ::= Tactic { ";" Tactic }
+
+Tactic      ::= "exact" Expr
+              | "apply" Expr
+              | "intro" [ Ident ]
+              | "have" Ident ":=" Expr
+              | Expr                    (* implicit "exact" *)
+
+Tactic terminators (tokens that end the tactic block):
+  ":="  "in"  "then"  "else"  ")"  "}"  ":"  "def"  "#check"  "#show"
+
+(* ── Identifiers ────────────────────────────────────────────────── *)
+
+Ident       ::= [a-zA-Z_][a-zA-Z0-9_]*
+
+(* Reserved words (cannot be used as identifiers):
+     let  in  if  then  else  true  false  by  func  where  def  auto *)
+
+(* ── Types (subset of expressions used as type constraints) ─────── *)
+
+(* Types are just expressions.  Key type forms:
+
+     "int"                     builtin base type
+     "bool"                    builtin base type
+     "data"                    universe of data
+     T "->" T                  non-dependent arrow  (≡ Pi "" T T)
+     "(" x ":" T ")" "->" T   dependent arrow       (≡ Pi x T T)
+     T "where" "(" x "=>" P ")"   refinement type   (≡ Refine T (λx.P))
+*)

@@ -3,7 +3,7 @@ use logos::Logos;
 use bumpalo::Bump;
 
 use crate::core::pool::{StringPool, TermArena};
-use crate::core::syntax::{Name, PrimOp, Term};
+use crate::core::syntax::{Name, PrimOp, Tactic, Term};
 use crate::front::lexer::Token;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +25,9 @@ pub struct Parser<'a, 'bump> {
     pos: usize,
     pool: &'a StringPool<'bump>,
     arena: &'a TermArena<'bump>,
+    /// When true, `parse_suffixes` skips the `by` suffix (used for
+    /// parsing type annotations where `by` belongs to the outer context).
+    no_by: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -56,17 +59,31 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             pos: 0,
             pool,
             arena,
+            no_by: false,
         }
     }
 
     fn peek(&self) -> Option<&SpannedToken> {
-        self.tokens.get(self.pos)
+        let mut i = self.pos;
+        loop {
+            match self.tokens.get(i) {
+                Some((Token::Newline, _)) => i += 1,
+                other => return other,
+            }
+        }
     }
     fn peek_token(&self) -> Option<Token> {
         self.peek().map(|(t, _)| t.clone())
     }
     fn advance(&mut self) {
-        self.pos += 1;
+        // Advance past the current token and any following newlines,
+        // so that `pos` always points to a meaningful token.
+        loop {
+            self.pos += 1;
+            if !matches!(self.tokens.get(self.pos), Some((Token::Newline, _))) {
+                break;
+            }
+        }
     }
 
     fn expect(&mut self, expected: &Token) -> Result<(), ParseError> {
@@ -131,11 +148,15 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         }
         if self.peek_token() == Some(Token::HashCheck) {
             self.advance();
-            let term = self.parse_expr(&[])?;
-            let constraint = if self.try_expect(&Token::Colon) {
-                self.parse_expr(&[])?
+            let full_term = self.parse_expr(&[])?;
+            // If `parse_expr` already returned an annotation (from `:`),
+            // split it; otherwise expect `:` and parse constraint.
+            let (term, constraint) = if let Term::Annot(t, c) = full_term {
+                (*t, *c)
+            } else if self.try_expect(&Token::Colon) {
+                (full_term, self.parse_expr(&[])?)
             } else {
-                self.arena.builtin(self.pool.intern("data"))
+                (full_term, self.arena.builtin(self.pool.intern("data")))
             };
             return Ok(TopLevel::TLCheck(term, constraint));
         }
@@ -307,7 +328,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         self.expect(&Token::ColonEq)?;
         let val = self.parse_expr(env)?;
         let val = match m_proof {
-            Some(p) => self.arena.by_proof(val, p),
+            Some(tactics) => self.arena.by_proof(Some(val), tactics),
             None => val,
         };
         self.expect(&Token::KwIn)?;
@@ -337,11 +358,14 @@ impl<'a, 'bump> Parser<'a, 'bump> {
     }
 
     fn parse_type_annotation(&mut self, env: &[Name<'bump>]) -> Option<&'bump Term<'bump>> {
-        self.try_parse(Token::Colon, |s| s.parse_expr(env))
+        self.no_by = true;
+        let result = self.try_parse(Token::Colon, |s| s.parse_expr(env));
+        self.no_by = false;
+        result
     }
 
-    fn parse_by_proof_clause(&mut self, env: &[Name<'bump>]) -> Option<&'bump Term<'bump>> {
-        self.try_parse(Token::KwBy, |s| s.parse_term(env))
+    fn parse_by_proof_clause(&mut self, env: &[Name<'bump>]) -> Option<&'bump [Tactic<'bump>]> {
+        self.try_parse(Token::KwBy, |s| s.parse_tactics(env))
     }
 
     // ── Func ──
@@ -427,7 +451,15 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             Ok(t2) => self.parse_suffixes(env, t2),
             Err(_) => match self.try_parse(Token::Colon, |s| s.parse_expr(env)) {
                 Some(c) => self.parse_suffixes(env, self.arena.annot(t, c)),
-                None => Ok(t),
+                None => {
+                    // `by` suffix: term by tactic1; tactic2; ...
+                    if !self.no_by {
+                        if let Some(tactics) = self.parse_by_proof_clause(env) {
+                            return self.parse_suffixes(env, self.arena.by_proof(Some(t), tactics));
+                        }
+                    }
+                    Ok(t)
+                }
             },
         }
     }
@@ -475,11 +507,19 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 ))
             }
             Some(Token::LParen) => self.parse_parens(env),
-            Some(Token::LBrace) => {
+            Some(Token::KwBy) => {
+                if self.no_by {
+                    // Inside a type annotation, `by` belongs to the
+                    // outer context (e.g., a let-binding proof clause).
+                    return Err(ParseError {
+                        message: "not a standalone by block".into(),
+                        span: 0..0,
+                    });
+                }
+                // Standalone `by` block (first-class proof).
                 self.advance();
-                let t = self.parse_expr(env)?;
-                self.expect(&Token::RBrace)?;
-                Ok(self.arena.proof_block(t))
+                let tactics = self.parse_tactics(env)?;
+                Ok(self.arena.by_proof(None, tactics))
             }
             Some(tok) => {
                 let span = self.peek().map(|(_, s)| s.clone()).unwrap_or(0..0);
@@ -662,6 +702,92 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             .get(self.pos + 1)
             .map(|(t, _)| t == tok)
             .unwrap_or(false)
+    }
+
+    // ── Tactic parsing ──
+
+    /// Parse a sequence of tactics from a `by` block (Lean 4 style).
+    /// Tactics are separated by newlines or semicolons.  The last tactic
+    /// may be a bare expression (implicit `exact`).  Stops at terminator
+    /// tokens (`:=`, `in`, `:`, `)`, etc.) or EOF.
+    fn parse_tactics(&mut self, env: &[Name<'bump>]) -> Result<&'bump [Tactic<'bump>], ParseError> {
+        let mut tactics: Vec<Tactic<'bump>> = Vec::new();
+        loop {
+            // Stop at tokens that end the tactic block.
+            // We peek *before* advance skips newlines, so we also see
+            // newlines as implicit separators — the next non-newline
+            // token being a terminator ends the block.
+            match self.peek() {
+                None
+                | Some((Token::ColonEq, _))
+                | Some((Token::KwIn, _))
+                | Some((Token::KwThen, _))
+                | Some((Token::KwElse, _))
+                | Some((Token::RParen, _))
+                | Some((Token::RBrace, _))
+                | Some((Token::Colon, _))
+                | Some((Token::KwDef, _))
+                | Some((Token::HashCheck, _))
+                | Some((Token::HashShow, _)) => break,
+                _ => {}
+            }
+            let tactic = self.parse_tactic(env)?;
+            tactics.push(tactic);
+            // Skip optional `;` separator.
+            // Newlines are already consumed by `advance` inside
+            // `parse_tactic`, so they act as implicit separators.
+            if self.peek_token() == Some(Token::Semi) {
+                self.advance();
+            }
+        }
+        if tactics.is_empty() {
+            return Err(ParseError {
+                message: "Empty proof block".into(),
+                span: 0..0,
+            });
+        }
+        Ok(self.arena.alloc_slice(&tactics))
+    }
+
+    /// Parse a single tactic: `exact <term>`, `apply <term>`, `intro [name]`,
+    /// `have <name> := <term>`, or a bare expression (implicit `exact`).
+    /// Uses `parse_term_no_annot` so that `:` and `by` are NOT consumed
+    /// (they delimit the end of the tactic block).
+    fn parse_tactic(&mut self, env: &[Name<'bump>]) -> Result<Tactic<'bump>, ParseError> {
+        match self.peek_token() {
+            Some(Token::KwExact) => {
+                self.advance();
+                let t = self.parse_app_no_annot(env)?;
+                Ok(Tactic::Exact(t))
+            }
+            Some(Token::KwApply) => {
+                self.advance();
+                let t = self.parse_app_no_annot(env)?;
+                Ok(Tactic::Apply(t))
+            }
+            Some(Token::KwIntro) => {
+                self.advance();
+                // Optional name: `intro x` or just `intro`
+                let name = if let Some(Token::Ident(_)) = self.peek_token() {
+                    Some(self.parse_ident()?)
+                } else {
+                    None
+                };
+                Ok(Tactic::Intro(name))
+            }
+            Some(Token::KwHave) => {
+                self.advance();
+                let name = self.parse_ident()?;
+                self.expect(&Token::ColonEq)?;
+                let t = self.parse_app_no_annot(env)?;
+                Ok(Tactic::Have(name, t))
+            }
+            // Bare expression = implicit `exact`
+            _ => {
+                let t = self.parse_app_no_annot(env)?;
+                Ok(Tactic::Exact(t))
+            }
+        }
     }
 }
 

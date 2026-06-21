@@ -1,10 +1,13 @@
 use logos::Logos;
 
 #[derive(Logos, Debug, Clone, PartialEq, Eq)]
-#[logos(skip r"[ \t\n\r\f]+")]
+#[logos(skip r"[ \t\r\f]+")]
 #[logos(skip r"--[^\n]*")]
 #[logos(skip r"\{-([^-]|-[^}])*-\}")]
 pub enum Token {
+    // Whitespace
+    #[token("\n")]
+    Newline,
     // Keywords
     #[token("let")]
     KwLet,
@@ -30,12 +33,24 @@ pub enum Token {
     KwDef,
     #[token("auto")]
     KwAuto,
+    #[token("exact")]
+    KwExact,
+    #[token("apply")]
+    KwApply,
+    #[token("intro")]
+    KwIntro,
+    #[token("have")]
+    KwHave,
 
     // Directives
     #[token("#check")]
     HashCheck,
     #[token("#show")]
     HashShow,
+
+    // Nestable block comment (Lean 4 style: /- ... -/)
+    #[token("/-", nestable_block_comment)]
+    BlockComment,
 
     // Symbols
     #[token(":=")]
@@ -56,6 +71,8 @@ pub enum Token {
     LParen,
     #[token(")")]
     RParen,
+    #[token(";")]
+    Semi,
     #[token("{")]
     LBrace,
     #[token("}")]
@@ -106,4 +123,33 @@ pub enum Token {
     // Identifier: starts with letter, followed by alphanumerics or underscore
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice().to_string())]
     Ident(String),
+}
+
+/// Nestable block comment `/- ... -/` (Lean 4 style).
+///
+/// Called by the lexer when `/-` is encountered.  Scans forward
+/// tracking nesting depth so that `/- outer /- inner -/ -/`
+/// is a single comment.
+fn nestable_block_comment(lex: &mut logos::Lexer<Token>) {
+    let mut depth: u32 = 1;
+    let rest = lex.remainder();
+    let bytes = rest.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'/' && bytes[i + 1] == b'-' {
+            depth += 1;
+            i += 2;
+        } else if bytes[i] == b'-' && bytes[i + 1] == b'/' {
+            depth -= 1;
+            if depth == 0 {
+                lex.bump(i + 2); // skip past closing `-/`
+                return;
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    // Unterminated comment — consume the rest
+    lex.bump(rest.len());
 }

@@ -116,9 +116,9 @@ fn emit_expr(term: &Term<'_>, bound: &[String], self_name: Option<&str>) -> Stri
         Term::Var(i) => bound[*i].clone(),
         Term::This => self_name.unwrap_or("__self__").to_string(),
         Term::Builtin(name) => (*name).to_string(),
-        Term::Annot(inner, _) | Term::ByProof(inner, _) | Term::ProofBlock(inner) => {
-            emit_expr(inner, bound, self_name)
-        }
+        Term::Annot(inner, _) => emit_expr(inner, bound, self_name),
+        Term::ByProof(Some(inner), _) => emit_expr(inner, bound, self_name),
+        Term::ByProof(None, _) => "0".into(),
         Term::IfThenElse(c, t, f) => format!(
             "({}) ? ({}) : ({})",
             emit_expr(c, bound, self_name),

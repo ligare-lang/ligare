@@ -8,7 +8,7 @@
 //! During type checking, prefer `WhnfEvaluator` from `crate::core::whnf`.
 
 use crate::core::pool::{SubstitutionContext, TermArena};
-use crate::core::syntax::Term;
+use crate::core::syntax::{Tactic, Term};
 use crate::pretty::pretty;
 
 /// Strong evaluator — reduces terms to normal form using a bump arena
@@ -52,7 +52,17 @@ impl<'bump> Evaluator<'bump> {
             }
             Term::IfThenElse(cond, tbranch, fbranch) => self.eval_if(cond, tbranch, fbranch),
             Term::Annot(inner, _) => self.eval(inner),
-            Term::ByProof(inner, _) => self.eval(inner),
+            Term::ByProof(inner, tactics) => {
+                if let Some(inner) = inner {
+                    self.eval(inner)
+                } else {
+                    // Standalone proof: mechanically expand tactics.
+                    // Only `intro` + `exact` is supported here;
+                    // `apply` requires type information not available in eval.
+                    let expanded = self.expand_proof_tactics(tactics)?;
+                    self.eval(expanded)
+                }
+            }
             Term::Refine(name, parent, p) => {
                 let parent_val = self.eval(parent)?;
                 let p_val = self.eval(p)?;
@@ -65,7 +75,6 @@ impl<'bump> Evaluator<'bump> {
                 let d = crate::core::desugar::Desugarer::new(self.arena).desugar(t);
                 self.eval(d)
             }
-            Term::ProofBlock(inner) => self.eval(inner),
             // Leaf values
             Term::Pi(_, _, _)
             | Term::Var(_)
@@ -154,6 +163,39 @@ impl<'bump> Evaluator<'bump> {
                 pretty(y)
             )),
         }
+    }
+
+    /// Mechanically expand `intro*; exact t` tactics to a lambda term.
+    /// This is used for standalone `by` blocks at runtime.
+    fn expand_proof_tactics(
+        &self,
+        tactics: &'bump [Tactic<'bump>],
+    ) -> Result<&'bump Term<'bump>, String> {
+        let mut intro_count = 0usize;
+        let n = tactics.len();
+        for (i, tactic) in tactics.iter().enumerate() {
+            let is_last = i == n - 1;
+            match tactic {
+                Tactic::Intro(_) if !is_last => intro_count += 1,
+                Tactic::Exact(t) if is_last => {
+                    let mut result = *t;
+                    for _ in 0..intro_count {
+                        result = self.arena.lam(result);
+                    }
+                    return Ok(result);
+                }
+                Tactic::Exact(_) => {
+                    return Err("`exact` must be the last tactic".into());
+                }
+                _ => {
+                    return Err(
+                        "Only `intro`+`exact` tactics are supported in standalone proof eval"
+                            .into(),
+                    );
+                }
+            }
+        }
+        Err("Proof block must end with `exact`".into())
     }
 }
 

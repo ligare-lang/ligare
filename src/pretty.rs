@@ -1,4 +1,4 @@
-use crate::core::syntax::{PrimOp, Term};
+use crate::core::syntax::{PrimOp, Tactic, Term};
 
 pub struct PrettyPrinter;
 
@@ -39,11 +39,27 @@ impl PrettyPrinter {
                 format!("{} where (x => {})", Self::pretty(parent), Self::pretty(p))
             }
             Term::Annot(inner, c) => format!("({} : {})", Self::pretty(inner), Self::pretty(c)),
-            Term::ByProof(inner, p) => format!("({} by {})", Self::pretty(inner), Self::pretty(p)),
+            Term::ByProof(inner, tactics) => {
+                let ts: Vec<String> = tactics
+                    .iter()
+                    .map(|tac| match tac {
+                        Tactic::Exact(t) => format!("exact {}", Self::pretty(t)),
+                        Tactic::Apply(t) => format!("apply {}", Self::pretty(t)),
+                        Tactic::Intro(Some(n)) => format!("intro {}", n),
+                        Tactic::Intro(None) => "intro".to_string(),
+                        Tactic::Have(n, t) => {
+                            format!("have {} := {}", n, Self::pretty(t))
+                        }
+                    })
+                    .collect();
+                match inner {
+                    Some(t) => format!("({} by {})", Self::pretty(t), ts.join("; ")),
+                    None => format!("(by {})", ts.join("; ")),
+                }
+            }
             Term::AutoProof => "auto".to_string(),
             Term::RefParam => "x".to_string(),
             Term::This => "this".to_string(),
-            Term::ProofBlock(inner) => format!("proof {{ {} }}", Self::pretty(inner)),
             Term::Func(name, params, m_ret, body) => {
                 let ps: String = params
                     .iter()

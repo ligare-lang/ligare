@@ -6,3 +6,24 @@ def fib (n : int) : int := if n < 2 then n else fib (n-1) + fib (n-2)
 #check fib 20 : int
 #show fib 10
 #check sdiv 1 1 : int
+
+-- Proof block (Lean 4-style `by` syntax with newlines):
+-- For refinement types, `by` proves the predicate:
+#check 5 by
+  exact true : nat
+
+-- Multi-tactic proof (intro + exact, constructs identity function):
+#check 0 by
+  intro
+  exact 0 : int -> int
+
+-- First-class proof: standalone `by` (no subject term):
+-- Can appear anywhere an expression is expected:
+#check (by
+  intro
+  exact 0) : int -> int
+
+-- Applied immediately (identity function, always returns 0):
+#show (by
+  intro
+  exact 0) 5

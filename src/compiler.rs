@@ -57,7 +57,22 @@ impl<'bump> Compiler<'bump> {
         for top in &tops {
             self.process_top_level(top.clone())?;
         }
-        self.tops.extend(tops);
+        // Evaluate TLShow/TLExpr terms for codegen (C backend can't handle
+        // higher-order terms like standalone `by` blocks).
+        let evald_tops: Vec<TopLevel<'bump>> = tops
+            .into_iter()
+            .map(|top| match top {
+                TopLevel::TLShow(term) | TopLevel::TLExpr(term) => {
+                    let resolved = self.subst_top_level(term);
+                    match self.evaluator.eval(resolved) {
+                        Ok(val) => TopLevel::TLShow(val),
+                        Err(_) => top,
+                    }
+                }
+                other => other,
+            })
+            .collect();
+        self.tops.extend(evald_tops);
         Ok(())
     }
 

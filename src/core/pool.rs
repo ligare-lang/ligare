@@ -2,7 +2,7 @@ use bumpalo::Bump;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crate::core::syntax::{Name, PrimOp, Term, Universe};
+use crate::core::syntax::{Name, PrimOp, Tactic, Term, Universe};
 
 /// A bumpalo-backed string interner.
 ///
@@ -117,7 +117,19 @@ impl<'bump> TermArena<'bump> {
                 self.if_then_else(self.map(c, f), self.map(th, f), self.map(el, f))
             }
             Term::Annot(inner, ct) => self.annot(self.map(inner, f), self.map(ct, f)),
-            Term::ByProof(inner, p) => self.by_proof(self.map(inner, f), self.map(p, f)),
+            Term::ByProof(inner, tactics) => {
+                let inner_mapped = inner.map(|t| self.map(t, f));
+                let mapped: Vec<Tactic<'bump>> = tactics
+                    .iter()
+                    .map(|tac| match tac {
+                        Tactic::Exact(t) => Tactic::Exact(self.map(t, f)),
+                        Tactic::Apply(t) => Tactic::Apply(self.map(t, f)),
+                        Tactic::Intro(_) => *tac,
+                        Tactic::Have(n, t) => Tactic::Have(n, self.map(t, f)),
+                    })
+                    .collect();
+                self.by_proof(inner_mapped, self.alloc_slice(&mapped))
+            }
             Term::Refine(n, par, p) => self.refine(n, self.map(par, f), self.map(p, f)),
             Term::Func(fname, params, m_ret, body) => {
                 let params2: Vec<_> = params
@@ -131,7 +143,6 @@ impl<'bump> TermArena<'bump> {
                     self.map(body, f),
                 )
             }
-            Term::ProofBlock(inner) => self.proof_block(self.map(inner, f)),
             _ => t,
         }
     }
@@ -225,8 +236,12 @@ impl<'bump> TermArena<'bump> {
         self.alloc(Term::Annot(t, c))
     }
 
-    pub fn by_proof(&self, t: &'bump Term<'bump>, p: &'bump Term<'bump>) -> &'bump Term<'bump> {
-        self.alloc(Term::ByProof(t, p))
+    pub fn by_proof(
+        &self,
+        t: Option<&'bump Term<'bump>>,
+        tactics: &'bump [Tactic<'bump>],
+    ) -> &'bump Term<'bump> {
+        self.alloc(Term::ByProof(t, tactics))
     }
 
     pub fn func(
@@ -237,10 +252,6 @@ impl<'bump> TermArena<'bump> {
         body: &'bump Term<'bump>,
     ) -> &'bump Term<'bump> {
         self.alloc(Term::Func(name, params, m_ret, body))
-    }
-
-    pub fn proof_block(&self, t: &'bump Term<'bump>) -> &'bump Term<'bump> {
-        self.alloc(Term::ProofBlock(t))
     }
 }
 
@@ -326,9 +337,20 @@ impl<'bump> SubstitutionContext<'bump> {
             Term::Annot(inner, ct) => self
                 .arena
                 .annot(recurse(inner, cutoff), recurse(ct, cutoff)),
-            Term::ByProof(inner, p) => self
-                .arena
-                .by_proof(recurse(inner, cutoff), recurse(p, cutoff)),
+            Term::ByProof(inner, tactics) => {
+                let inner_mapped = inner.map(|t| recurse(t, cutoff));
+                let mapped: Vec<Tactic<'bump>> = tactics
+                    .iter()
+                    .map(|tac| match tac {
+                        Tactic::Exact(t) => Tactic::Exact(recurse(t, cutoff)),
+                        Tactic::Apply(t) => Tactic::Apply(recurse(t, cutoff)),
+                        Tactic::Intro(_) => *tac,
+                        Tactic::Have(n, t) => Tactic::Have(n, recurse(t, cutoff)),
+                    })
+                    .collect();
+                self.arena
+                    .by_proof(inner_mapped, self.arena.alloc_slice(&mapped))
+            }
             Term::Refine(n, par, p) => {
                 self.arena
                     .refine(n, recurse(par, cutoff), recurse(p, cutoff))
@@ -345,7 +367,6 @@ impl<'bump> SubstitutionContext<'bump> {
                     recurse(body, cutoff + params.len() as i32),
                 )
             }
-            Term::ProofBlock(inner) => self.arena.proof_block(recurse(inner, cutoff)),
             // Leaf nodes — returned unchanged (Var handled by callers)
             _ => t,
         }

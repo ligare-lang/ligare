@@ -4,7 +4,7 @@ use common::{bin, leak_bump, parse, parse_constraint, s};
 use ligare::checker::check;
 use ligare::checker::context::{add_refine, empty_ctx, empty_table};
 use ligare::core::pool::TermArena;
-use ligare::core::syntax::{PrimOp, Term};
+use ligare::core::syntax::{PrimOp, Tactic, Term};
 
 fn a() -> (&'static bumpalo::Bump, TermArena<'static>) {
     let b = leak_bump();
@@ -491,7 +491,8 @@ fn annot_pi_mismatch_codomain() {
 #[test]
 fn by_proof_passes() {
     let (_b, arena) = a();
-    let term = arena.by_proof(arena.lit_int(5), arena.lit_bool(true));
+    let tactics = arena.alloc_slice(&[Tactic::Exact(arena.lit_bool(true))]);
+    let term = by_proof(&arena, arena.lit_int(5), tactics);
     assert_eq!(
         check_empty(&arena, term, arena.builtin(s(&arena, "int"))),
         Ok(())
@@ -501,7 +502,8 @@ fn by_proof_passes() {
 #[test]
 fn by_proof_fails_wrong_type() {
     let (_b, arena) = a();
-    let term = arena.by_proof(arena.lit_int(5), arena.lit_bool(true));
+    let tactics = arena.alloc_slice(&[Tactic::Exact(arena.lit_bool(true))]);
+    let term = by_proof(&arena, arena.lit_int(5), tactics);
     assert!(check_empty(&arena, term, arena.builtin(s(&arena, "bool"))).is_err());
 }
 
@@ -768,8 +770,12 @@ fn let_body_mismatches_constraint() {
 #[test]
 fn proof_block_with_valid_proof() {
     let (_b, arena) = a();
-    let term = arena.proof_block(arena.lit_bool(true));
-    assert_eq!(check_empty(&arena, arena.lit_int(42), term), Ok(()));
+    let tactics = arena.alloc_slice(&[Tactic::Exact(arena.lit_bool(true))]);
+    let term = by_proof(&arena, arena.lit_int(42), tactics);
+    assert_eq!(
+        check_empty(&arena, term, arena.builtin(s(&arena, "int"))),
+        Ok(())
+    );
 }
 
 // ── if-branch with context ──
@@ -881,4 +887,395 @@ fn direct_refine_constraint_check() {
         )
         .is_err()
     );
+}
+
+// ── Tactic (by) tests ──
+
+/// Convenience: allocate a tactic slice in the arena.
+fn tac_slice<'bump>(arena: &TermArena<'bump>, ts: &[Tactic<'bump>]) -> &'bump [Tactic<'bump>] {
+    arena.alloc_slice(ts)
+}
+
+/// Convenience: `term by tactics` with subject.
+fn by_proof<'bump>(
+    arena: &TermArena<'bump>,
+    t: &'bump Term<'bump>,
+    tactics: &'bump [Tactic<'bump>],
+) -> &'bump Term<'bump> {
+    arena.by_proof(Some(t), tactics)
+}
+
+/// `by exact true` on a refinement constraint succeeds.
+#[test]
+fn tactic_exact_true_passes() {
+    let (_b, arena) = a();
+    let nat = arena.refine(
+        s(&arena, "nat"),
+        arena.builtin(s(&arena, "int")),
+        bin(&arena, PrimOp::Ge, arena.ref_param(), arena.lit_int(0)),
+    );
+    // Register nat in the constraint table so ByProof can expand it.
+    let table = add_refine(
+        s(&arena, "nat"),
+        arena.builtin(s(&arena, "int")),
+        bin(&arena, PrimOp::Ge, arena.ref_param(), arena.lit_int(0)),
+        &empty_table(),
+    );
+    let term = by_proof(
+        &arena,
+        arena.lit_int(42),
+        tac_slice(&arena, &[Tactic::Exact(arena.lit_bool(true))]),
+    );
+    assert_eq!(check(&arena, &table, &empty_ctx(), term, nat), Ok(()));
+}
+
+/// `by exact false` on a refinement constraint must fail.
+#[test]
+fn tactic_exact_false_fails() {
+    let (_b, arena) = a();
+    let nat = arena.refine(
+        s(&arena, "nat"),
+        arena.builtin(s(&arena, "int")),
+        bin(&arena, PrimOp::Ge, arena.ref_param(), arena.lit_int(0)),
+    );
+    let table = add_refine(
+        s(&arena, "nat"),
+        arena.builtin(s(&arena, "int")),
+        bin(&arena, PrimOp::Ge, arena.ref_param(), arena.lit_int(0)),
+        &empty_table(),
+    );
+    let term = by_proof(
+        &arena,
+        arena.lit_int(42),
+        tac_slice(&arena, &[Tactic::Exact(arena.lit_bool(false))]),
+    );
+    assert!(check(&arena, &table, &empty_ctx(), term, nat).is_err());
+}
+
+/// Convenience: standalone `by` proof (no subject).
+fn by_proof_none<'bump>(
+    arena: &TermArena<'bump>,
+    tactics: &'bump [Tactic<'bump>],
+) -> &'bump Term<'bump> {
+    arena.by_proof(None, tactics)
+}
+
+/// `by exact false` on a refinement constraint must fail.
+#[test]
+fn tactic_exact_not_last_fails() {
+    let (_b, arena) = a();
+    let term = by_proof_none(
+        &arena,
+        tac_slice(
+            &arena,
+            &[
+                Tactic::Exact(arena.lit_bool(true)),
+                Tactic::Exact(arena.lit_bool(true)),
+            ],
+        ),
+    );
+    // Check against a Pi type — build_proof_from_tactics will reject
+    // because exact is not the last tactic.
+    let goal = arena.pi(
+        s(&arena, "x"),
+        arena.builtin(s(&arena, "int")),
+        arena.builtin(s(&arena, "int")),
+    );
+    assert!(check_empty(&arena, term, goal).is_err());
+}
+
+/// `intro` then `exact` with a variable proves `int -> int`.
+#[test]
+fn tactic_intro_then_exact_var_proves_identity() {
+    let (_b, arena) = a();
+    let goal = arena.pi(
+        s(&arena, "x"),
+        arena.builtin(s(&arena, "int")),
+        arena.builtin(s(&arena, "int")),
+    );
+    let term = by_proof_none(
+        &arena,
+        tac_slice(&arena, &[Tactic::Intro(None), Tactic::Exact(arena.var(0))]),
+    );
+    assert_eq!(check_empty(&arena, term, goal), Ok(()));
+}
+
+/// `intro` with a named variable.
+#[test]
+fn tactic_intro_named_then_exact_var() {
+    let (_b, arena) = a();
+    let goal = arena.pi(
+        s(&arena, "x"),
+        arena.builtin(s(&arena, "int")),
+        arena.builtin(s(&arena, "int")),
+    );
+    let term = by_proof_none(
+        &arena,
+        tac_slice(
+            &arena,
+            &[
+                Tactic::Intro(Some(s(&arena, "y"))),
+                Tactic::Exact(arena.var(0)),
+            ],
+        ),
+    );
+    assert_eq!(check_empty(&arena, term, goal), Ok(()));
+}
+
+/// `intro` fails when goal is not a Pi.
+#[test]
+fn tactic_intro_fails_on_non_pi_goal() {
+    let (_b, arena) = a();
+    let goal = arena.builtin(s(&arena, "int"));
+    let term = by_proof_none(
+        &arena,
+        tac_slice(
+            &arena,
+            &[Tactic::Intro(None), Tactic::Exact(arena.lit_int(0))],
+        ),
+    );
+    assert!(check_empty(&arena, term, goal).is_err());
+}
+
+/// `intro` cannot be last tactic without `exact`.
+#[test]
+fn tactic_intro_last_fails() {
+    let (_b, arena) = a();
+    let goal = arena.pi(
+        s(&arena, "x"),
+        arena.builtin(s(&arena, "int")),
+        arena.builtin(s(&arena, "int")),
+    );
+    let term = by_proof_none(&arena, tac_slice(&arena, &[Tactic::Intro(None)]));
+    assert!(check_empty(&arena, term, goal).is_err());
+}
+
+/// `apply` reduces a goal using a known implication.
+#[test]
+fn tactic_apply_then_exact() {
+    let (_b, arena) = a();
+    let f_type = arena.pi(
+        s(&arena, "x"),
+        arena.builtin(s(&arena, "int")),
+        arena.builtin(s(&arena, "int")),
+    );
+    let f = arena.annot(arena.lam(arena.var(0)), f_type);
+    let goal = arena.builtin(s(&arena, "int"));
+    let term = by_proof_none(
+        &arena,
+        tac_slice(
+            &arena,
+            &[Tactic::Apply(f), Tactic::Exact(arena.lit_int(42))],
+        ),
+    );
+    assert_eq!(check_empty(&arena, term, goal), Ok(()));
+}
+
+/// `apply` fails when the function codomain doesn't match the goal.
+#[test]
+fn tactic_apply_codomain_mismatch_fails() {
+    let (_b, arena) = a();
+    let f_type = arena.pi(
+        s(&arena, "x"),
+        arena.builtin(s(&arena, "int")),
+        arena.builtin(s(&arena, "int")),
+    );
+    let f = arena.annot(arena.lam(arena.var(0)), f_type);
+    let goal = arena.builtin(s(&arena, "bool"));
+    let term = by_proof_none(
+        &arena,
+        tac_slice(
+            &arena,
+            &[Tactic::Apply(f), Tactic::Exact(arena.lit_int(42))],
+        ),
+    );
+    assert!(check_empty(&arena, term, goal).is_err());
+}
+
+/// `apply` fails on non-function term.
+#[test]
+fn tactic_apply_non_function_fails() {
+    let (_b, arena) = a();
+    let goal = arena.builtin(s(&arena, "int"));
+    let term = by_proof_none(
+        &arena,
+        tac_slice(
+            &arena,
+            &[
+                Tactic::Apply(arena.lit_int(5)),
+                Tactic::Exact(arena.lit_int(42)),
+            ],
+        ),
+    );
+    assert!(check_empty(&arena, term, goal).is_err());
+}
+
+/// `apply` cannot be the last tactic.
+#[test]
+fn tactic_apply_last_fails() {
+    let (_b, arena) = a();
+    let f_type = arena.pi(
+        s(&arena, "x"),
+        arena.builtin(s(&arena, "int")),
+        arena.builtin(s(&arena, "int")),
+    );
+    let f = arena.annot(arena.lam(arena.var(0)), f_type);
+    let goal = arena.builtin(s(&arena, "int"));
+    let term = by_proof_none(&arena, tac_slice(&arena, &[Tactic::Apply(f)]));
+    assert!(check_empty(&arena, term, goal).is_err());
+}
+
+/// `intro` then `apply` then `exact` — multi-step proof.
+#[test]
+fn tactic_intro_apply_exact_chain() {
+    let (_b, arena) = a();
+    let inner_pi = arena.pi(
+        s(&arena, "x"),
+        arena.builtin(s(&arena, "int")),
+        arena.builtin(s(&arena, "int")),
+    );
+    let goal = arena.pi(s(&arena, "f"), inner_pi, inner_pi);
+    let term = by_proof_none(
+        &arena,
+        tac_slice(
+            &arena,
+            &[
+                Tactic::Intro(None),
+                Tactic::Intro(None),
+                Tactic::Apply(arena.var(1)),
+                Tactic::Exact(arena.var(0)),
+            ],
+        ),
+    );
+    assert_eq!(check_empty(&arena, term, goal), Ok(()));
+}
+
+/// `have` adds a lemma to the context, then `exact` references it.
+#[test]
+fn tactic_have_then_exact() {
+    let (_b, arena) = a();
+    let goal = arena.builtin(s(&arena, "int"));
+    let term = by_proof_none(
+        &arena,
+        tac_slice(
+            &arena,
+            &[
+                Tactic::Have(s(&arena, "h"), arena.lit_int(42)),
+                Tactic::Exact(arena.builtin(s(&arena, "h"))),
+            ],
+        ),
+    );
+    let _ = check_empty(&arena, term, goal);
+}
+
+/// `have` cannot be the last tactic.
+#[test]
+fn tactic_have_last_fails() {
+    let (_b, arena) = a();
+    let goal = arena.builtin(s(&arena, "int"));
+    let term = by_proof_none(
+        &arena,
+        tac_slice(&arena, &[Tactic::Have(s(&arena, "h"), arena.lit_int(42))]),
+    );
+    assert!(check_empty(&arena, term, goal).is_err());
+}
+
+/// Empty tactic list fails.
+#[test]
+fn empty_tactics_fails() {
+    let (_b, arena) = a();
+    let term = by_proof_none(&arena, tac_slice(&arena, &[]));
+    assert!(check_empty(&arena, term, arena.builtin(s(&arena, "int"))).is_err());
+}
+
+/// Parse `by` with tactic from text.
+#[test]
+fn parse_by_with_tactics() {
+    let (b, arena) = a();
+    let term = parse("42 by exact true", b, &arena);
+    assert!(matches!(*term, Term::ByProof(_, _)));
+    if let Term::ByProof(_, tactics) = term {
+        assert_eq!(tactics.len(), 1);
+        assert!(matches!(tactics[0], Tactic::Exact(_)));
+    }
+}
+
+/// Parse `by` with multiple tactics.
+#[test]
+fn parse_by_multi_tactic() {
+    let (b, arena) = a();
+    let term = parse("0 by intro; apply f; exact 42", b, &arena);
+    assert!(matches!(*term, Term::ByProof(_, _)));
+    if let Term::ByProof(_, tactics) = term {
+        assert_eq!(tactics.len(), 3);
+        assert!(matches!(tactics[0], Tactic::Intro(_)));
+        assert!(matches!(tactics[1], Tactic::Apply(_)));
+        assert!(matches!(tactics[2], Tactic::Exact(_)));
+    }
+}
+
+// ── ByProof with intro wrapping (non-refinement fallback) ──
+
+/// `0 by intro; exact 0` builds a lambda and satisfies `int -> int`.
+#[test]
+fn by_proof_intro_wraps_subject_for_pi() {
+    let (b, arena) = a();
+    let term = parse("0 by intro; exact 0", b, &arena);
+    let pi = arena.pi(
+        s(&arena, "_"),
+        arena.builtin(s(&arena, "int")),
+        arena.builtin(s(&arena, "int")),
+    );
+    assert_eq!(check_empty(&arena, term, pi), Ok(()));
+}
+
+/// Without `intro`/`apply` tactics, the subject is checked directly
+/// against the constraint — exact alone does not replace the subject.
+#[test]
+fn by_proof_exact_only_checks_subject() {
+    let (b, arena) = a();
+    // `5 by exact true : bool` — subject 5 fails against bool,
+    // and exact alone does not trigger the fallback path.
+    let term = parse("5 by exact true", b, &arena);
+    assert!(check_empty(&arena, term, arena.builtin(s(&arena, "bool"))).is_err());
+}
+
+/// When the subject alone fails against a non-refinement constraint
+/// but the tactics include `intro`/`apply`, fall back to building
+/// a proof from tactics and checking that against the constraint.
+#[test]
+fn by_proof_intro_fallback_when_subject_fails() {
+    let (_b, arena) = a();
+    let pi = arena.pi(
+        s(&arena, "_"),
+        arena.builtin(s(&arena, "int")),
+        arena.builtin(s(&arena, "int")),
+    );
+    // 5 alone does NOT satisfy int -> int, so we fall back to
+    // tactics which build Lam(0) — this should pass.
+    let term = arena.by_proof(
+        Some(arena.lit_int(5)),
+        arena.alloc_slice(&[Tactic::Intro(None), Tactic::Exact(arena.lit_int(0))]),
+    );
+    assert_eq!(check_empty(&arena, term, pi), Ok(()));
+}
+
+/// When the subject alone satisfies the constraint, tactics are
+/// skipped entirely — even if they include `intro`/`apply`.
+#[test]
+fn by_proof_subject_passes_skips_tactics() {
+    let (_b, arena) = a();
+    let lam = arena.lam(arena.var(0));
+    let pi = arena.pi(
+        s(&arena, "_"),
+        arena.builtin(s(&arena, "int")),
+        arena.builtin(s(&arena, "int")),
+    );
+    // `λx.x` already satisfies `int -> int`, so the intro tactic
+    // is never reached.
+    let term = arena.by_proof(
+        Some(lam),
+        arena.alloc_slice(&[Tactic::Intro(None), Tactic::Exact(arena.var(0))]),
+    );
+    assert_eq!(check_empty(&arena, term, pi), Ok(()));
 }

@@ -13,7 +13,7 @@
 //!   `Lam` or `PrimOp` application.
 
 use crate::core::pool::{SubstitutionContext, TermArena};
-use crate::core::syntax::Term;
+use crate::core::syntax::{Tactic, Term};
 
 /// Weak Head Normal Form evaluator.
 ///
@@ -51,7 +51,14 @@ impl<'bump> WhnfEvaluator<'bump> {
             Term::Let(_name, val, body, _mconstr) => self.whnf(self.sub.beta(body, val)),
             Term::IfThenElse(cond, tbranch, fbranch) => self.whnf_if(cond, tbranch, fbranch),
             Term::Annot(inner, _) => self.whnf(inner),
-            Term::ByProof(inner, _) => self.whnf(inner),
+            Term::ByProof(inner, tactics) => {
+                if let Some(inner) = inner {
+                    self.whnf(inner)
+                } else {
+                    let expanded = self.expand_proof_tactics(tactics)?;
+                    self.whnf(expanded)
+                }
+            }
             Term::Refine(name, parent, p) => {
                 let parent_val = self.whnf(parent)?;
                 let p_val = self.whnf(p)?;
@@ -61,7 +68,6 @@ impl<'bump> WhnfEvaluator<'bump> {
                 let d = crate::core::desugar::Desugarer::new(self.arena).desugar(t);
                 self.whnf(d)
             }
-            Term::ProofBlock(inner) => self.whnf(inner),
             // Leaf values — already in WHNF
             _ => Ok(t),
         }
@@ -119,6 +125,35 @@ impl<'bump> WhnfEvaluator<'bump> {
             Term::LitBool(false) => self.whnf(fbranch),
             _ => Ok(self.arena.if_then_else(cond_val, tbranch, fbranch)),
         }
+    }
+
+    /// Mechanically expand `intro*; exact t` tactics to a lambda term.
+    fn expand_proof_tactics(
+        &self,
+        tactics: &'bump [Tactic<'bump>],
+    ) -> Result<&'bump Term<'bump>, String> {
+        let mut intro_count = 0usize;
+        let n = tactics.len();
+        for (i, tactic) in tactics.iter().enumerate() {
+            let is_last = i == n - 1;
+            match tactic {
+                Tactic::Intro(_) if !is_last => intro_count += 1,
+                Tactic::Exact(t) if is_last => {
+                    let mut result = *t;
+                    for _ in 0..intro_count {
+                        result = self.arena.lam(result);
+                    }
+                    return Ok(result);
+                }
+                _ => {
+                    return Err(
+                        "Only `intro`+`exact` tactics are supported in standalone proof eval"
+                            .into(),
+                    );
+                }
+            }
+        }
+        Err("Proof block must end with `exact`".into())
     }
 }
 

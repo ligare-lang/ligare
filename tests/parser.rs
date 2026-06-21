@@ -3,7 +3,7 @@ mod common;
 use bumpalo::Bump;
 use common::{bin, leak_bump, parse, s};
 use ligare::core::pool::TermArena;
-use ligare::core::syntax::{PrimOp, Term};
+use ligare::core::syntax::{PrimOp, Tactic, Term};
 use ligare::front::parser::{TopLevel, parse_def_top, parse_expr_top, parse_program};
 
 fn a() -> (&'static Bump, TermArena<'static>) {
@@ -288,11 +288,12 @@ fn and_in_expression() {
 #[test]
 fn let_with_by() {
     let (b, arena) = a();
+    let tactics = arena.alloc_slice(&[Tactic::Exact(arena.lit_bool(true))]);
     assert_eq!(
         *parse("let x : int by true := 5 in x", b, &arena),
         *arena.let_(
             s(&arena, "x"),
-            arena.by_proof(arena.lit_int(5), arena.lit_bool(true)),
+            arena.by_proof(Some(arena.lit_int(5)), tactics),
             arena.var(0),
             Some(arena.builtin(s(&arena, "int")))
         )
@@ -328,10 +329,7 @@ fn def_with_params() {
     let pt = Some(arena.builtin(s(&arena, "int")) as &Term<'_>);
     let params: &[(&str, Option<&Term>)] =
         arena.alloc_slice(&[(s(&arena, "a"), pt), (s(&arena, "b"), pt)]);
-    assert_eq!(
-        *term,
-        *arena.func(s(&arena, "add"), params, pt, inner)
-    );
+    assert_eq!(*term, *arena.func(s(&arena, "add"), params, pt, inner));
 }
 
 #[test]
@@ -503,10 +501,7 @@ fn def_with_binary_sub_in_body() {
     let body = bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1));
     let pt = Some(arena.builtin(s(&arena, "int")) as &Term<'_>);
     let params: &[(&str, Option<&Term>)] = arena.alloc_slice(&[(s(&arena, "n"), pt)]);
-    assert_eq!(
-        *term,
-        *arena.func(s(&arena, "dec"), params, pt, body)
-    );
+    assert_eq!(*term, *arena.func(s(&arena, "dec"), params, pt, body));
 }
 
 #[test]

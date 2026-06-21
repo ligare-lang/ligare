@@ -75,6 +75,21 @@ impl PrimOp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tactic<'bump> {
+    /// `exact <term>` — the proof is exactly this term.
+    Exact(&'bump Term<'bump>),
+    /// `apply <term>` — backward reasoning: if goal is B and term : A -> B,
+    /// the new goal becomes A.
+    Apply(&'bump Term<'bump>),
+    /// `intro` or `intro <name>` — introduce a hypothesis for Pi goals.
+    /// Produces a lambda that binds the introduced variable.
+    Intro(Option<Name<'bump>>),
+    /// `have <name> := <term>` — prove an intermediate lemma, add it to
+    /// the context as a theorem, and continue.
+    Have(Name<'bump>, &'bump Term<'bump>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Term<'bump> {
     Var(usize),
     App(&'bump Term<'bump>, &'bump Term<'bump>),
@@ -94,7 +109,7 @@ pub enum Term<'bump> {
     IfThenElse(&'bump Term<'bump>, &'bump Term<'bump>, &'bump Term<'bump>),
     Refine(Name<'bump>, &'bump Term<'bump>, &'bump Term<'bump>),
     Annot(&'bump Term<'bump>, &'bump Term<'bump>),
-    ByProof(&'bump Term<'bump>, &'bump Term<'bump>),
+    ByProof(Option<&'bump Term<'bump>>, &'bump [Tactic<'bump>]),
     AutoProof,
     RefParam,
     This,
@@ -104,7 +119,6 @@ pub enum Term<'bump> {
         Option<&'bump Term<'bump>>,
         &'bump Term<'bump>,
     ),
-    ProofBlock(&'bump Term<'bump>),
 }
 
 #[cfg(test)]
