@@ -4,6 +4,7 @@ use bumpalo::Bump;
 
 use crate::checker::TypeChecker;
 use crate::checker::context::empty_ctx;
+use crate::core::erase::erase;
 use crate::core::eval::Evaluator;
 use crate::core::pool::TermArena;
 use crate::core::syntax::Term;
@@ -57,19 +58,31 @@ impl<'bump> Compiler<'bump> {
         for top in &tops {
             self.process_top_level(top.clone())?;
         }
-        // Evaluate TLShow/TLExpr terms for codegen (C backend can't handle
-        // higher-order terms like standalone `by` blocks).
+        // Evaluate TLShow/TLExpr terms for codegen, then erase all
+        // proof-irrelevant subterms (prop / theorem / proof universes)
+        // so the C backend only sees pure data.
         let evald_tops: Vec<TopLevel<'bump>> = tops
             .into_iter()
             .map(|top| match top {
                 TopLevel::TLShow(term) | TopLevel::TLExpr(term) => {
                     let resolved = self.subst_top_level(term);
                     match self.evaluator.eval(resolved) {
-                        Ok(val) => TopLevel::TLShow(val),
+                        Ok(val) => TopLevel::TLShow(erase(self.arena, val)),
                         Err(_) => top,
                     }
                 }
+                TopLevel::TLDef(name, term) => TopLevel::TLDef(name, erase(self.arena, term)),
                 other => other,
+            })
+            // Drop zero-param definitions whose body is a bare builtin
+            // (type aliases like `def nat := int where ...`).
+            .filter(|top| match top {
+                TopLevel::TLDef(_, Term::Func(_, [], _, body))
+                    if matches!(body, Term::Builtin(_)) =>
+                {
+                    false
+                }
+                _ => true,
             })
             .collect();
         self.tops.extend(evald_tops);

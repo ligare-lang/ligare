@@ -15,9 +15,7 @@ pub fn emit_c(tops: &[TopLevel<'_>]) -> String {
     for top in tops {
         match top {
             TopLevel::TLDef(name, term) => {
-                if !matches!(term, Term::Refine(_, _, _)) {
-                    defs.push((name, term));
-                }
+                defs.push((name, term));
             }
             TopLevel::TLCheck(_, _) => {}
             TopLevel::TLShow(term) | TopLevel::TLExpr(term) => outputs.push(term),
@@ -53,20 +51,12 @@ fn emit_def(name: &str, term: &Term<'_>) -> String {
             Some(name),
         )
     } else {
-        let inner = match term {
-            Term::Annot(t, _) => t,
-            _ => term,
-        };
-        let arity = count_lams(inner);
+        let arity = count_lams(term);
         if arity == 0 {
-            return format!(
-                "const int64_t {} = {};\n",
-                name,
-                emit_expr(inner, &[], None)
-            );
+            return format!("const int64_t {} = {};\n", name, emit_expr(term, &[], None));
         }
         let pns: Vec<String> = (0..arity).rev().map(|i| format!("arg_{}", i)).collect();
-        (peel_lams(inner, arity), pns, None)
+        (peel_lams(term, arity), pns, None)
     };
     if params.is_empty() {
         return format!(
@@ -116,9 +106,6 @@ fn emit_expr(term: &Term<'_>, bound: &[String], self_name: Option<&str>) -> Stri
         Term::Var(i) => bound[*i].clone(),
         Term::This => self_name.unwrap_or("__self__").to_string(),
         Term::Builtin(name) => (*name).to_string(),
-        Term::Annot(inner, _) => emit_expr(inner, bound, self_name),
-        Term::ByProof(Some(inner), _) => emit_expr(inner, bound, self_name),
-        Term::ByProof(None, _) => "0".into(),
         Term::IfThenElse(c, t, f) => format!(
             "({}) ? ({}) : ({})",
             emit_expr(c, bound, self_name),
@@ -137,6 +124,8 @@ fn emit_expr(term: &Term<'_>, bound: &[String], self_name: Option<&str>) -> Stri
             )
         }
         Term::App(_, _) => emit_app(term, bound, self_name),
+        // After erasure, all remaining terms should be data.
+        // Fallback for any unexpected term: emit 0.
         _ => "0".into(),
     }
 }
