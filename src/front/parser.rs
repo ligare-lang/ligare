@@ -282,13 +282,9 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             env.extend_from_slice(outer_env);
             self.parse_expr(&env)?
         };
-        // subst_this replaces self-references for recursive functions.
-        // Union definitions don't have a self-reference body — skip them.
-        let body = if matches!(body_expr, Term::UnionDef(..)) {
-            body_expr
-        } else {
-            subst_this(self.arena, name, body_expr)
-        };
+        // All self-references stay as Builtin(name) — the evaluator
+        // injects the self-reference at beta-reduction time.
+        let body = body_expr;
         let params_slice = self.arena.alloc_slice(&params);
         let func_def = FuncDef {
             name,
@@ -979,22 +975,6 @@ pub fn replace_var_zero<'bump>(
     arena.map(term, &|t| {
         if matches!(t, Term::Var(0)) {
             Some(arena.ref_param())
-        } else {
-            None
-        }
-    })
-}
-
-pub fn subst_this<'bump>(
-    arena: &TermArena<'bump>,
-    name: Name<'bump>,
-    term: &'bump Term<'bump>,
-) -> &'bump Term<'bump> {
-    arena.map(term, &|t| {
-        if let Term::Builtin(n) = t
-            && *n == name
-        {
-            Some(arena.this_())
         } else {
             None
         }

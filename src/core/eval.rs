@@ -1,14 +1,14 @@
 //! Strong evaluator — reduces terms to (full) normal form.
 //!
 //! Unlike `whnf`, this evaluator fully computes recursive function calls
-//! (via `replace_this`) and evaluates arguments eagerly for primitive
+//! (via `inject_self`) and evaluates arguments eagerly for primitive
 //! operations.  It is used at the top level (`--eval`, `#show`) where
 //! the user explicitly requests runtime computation.
 //!
 //! During type checking, prefer `WhnfEvaluator` from `crate::core::whnf`.
 
 use crate::core::pool::{SubstitutionContext, TermArena};
-use crate::core::syntax::{Tactic, Term};
+use crate::core::syntax::{Name, Tactic, Term};
 use crate::pretty::pretty;
 
 /// Strong evaluator — reduces terms to normal form using a bump arena
@@ -19,6 +19,9 @@ use crate::pretty::pretty;
 pub struct Evaluator<'bump> {
     arena: &'bump TermArena<'bump>,
     sub: SubstitutionContext<'bump>,
+    /// If set, `Builtin(self_name)` in function bodies is replaced
+    /// with the self-term during beta-reduction (enables recursion).
+    self_name: Option<Name<'bump>>,
 }
 
 impl<'bump> Evaluator<'bump> {
@@ -26,7 +29,13 @@ impl<'bump> Evaluator<'bump> {
         Self {
             arena,
             sub: SubstitutionContext::new(arena),
+            self_name: None,
         }
+    }
+
+    /// Set the name used for self-reference injection during beta-reduction.
+    pub fn set_self_name(&mut self, name: Name<'bump>) {
+        self.self_name = Some(name);
     }
 
     /// Access the underlying arena.
@@ -70,7 +79,6 @@ impl<'bump> Evaluator<'bump> {
             }
             Term::AutoProof => Ok(t),
             Term::RefParam => Ok(t),
-            Term::This => Ok(t),
             // Leaf values
             Term::Pi(_, _, _)
             | Term::Var(_)
@@ -121,7 +129,7 @@ impl<'bump> Evaluator<'bump> {
     ) -> Result<&'bump Term<'bump>, String> {
         match f {
             Term::Lam(body) => {
-                let body2 = self.replace_this(f, body);
+                let body2 = self.inject_self(f, body);
                 let b = self.sub.beta(body2, a);
                 self.eval(b)
             }
@@ -141,19 +149,29 @@ impl<'bump> Evaluator<'bump> {
         }
     }
 
-    /// Replace all `This` references with the self-reference (the Lam itself).
-    fn replace_this(
+    /// Replace `Builtin(self_name)` references with the self-term in a body.
+    ///
+    /// If `self_name` is `Some(name)`, every `Builtin(name)` in `t` is
+    /// replaced by `self_term` (the enclosing `Lam`).  This enables
+    /// recursion without a dedicated `This` AST node.
+    fn inject_self(
         &self,
         self_term: &'bump Term<'bump>,
         t: &'bump Term<'bump>,
     ) -> &'bump Term<'bump> {
-        self.arena.map(t, &|node| {
-            if matches!(node, Term::This) {
-                Some(self_term)
-            } else {
-                None
-            }
-        })
+        if let Some(name) = self.self_name {
+            self.arena.map(t, &|node| {
+                if let Term::Builtin(n) = node
+                    && *n == name
+                {
+                    Some(self_term)
+                } else {
+                    None
+                }
+            })
+        } else {
+            t
+        }
     }
 
     fn eval_if(
@@ -231,4 +249,15 @@ pub fn eval<'bump>(
     t: &'bump Term<'bump>,
 ) -> Result<&'bump Term<'bump>, String> {
     Evaluator::new(arena).eval(t)
+}
+
+/// Evaluate with self-reference injection (for recursive functions).
+pub fn eval_with_self<'bump>(
+    arena: &'bump TermArena<'bump>,
+    t: &'bump Term<'bump>,
+    self_name: Name<'bump>,
+) -> Result<&'bump Term<'bump>, String> {
+    let mut ev = Evaluator::new(arena);
+    ev.set_self_name(self_name);
+    ev.eval(t)
 }

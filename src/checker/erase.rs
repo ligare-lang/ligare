@@ -63,7 +63,6 @@ impl<'bump> Eraser<'bump> {
             | Term::Lam(_)
             | Term::PrimOp(_)
             | Term::RefParam
-            | Term::This
             | Term::Var(_) => t,
             Term::UnionDef(..) => self.unit(),
             Term::Variant(name, idx, payloads) => {

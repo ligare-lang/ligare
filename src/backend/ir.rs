@@ -45,19 +45,19 @@ impl FunSig {
         m_ret: Option<&crate::core::syntax::Term<'_>>,
         body: &crate::core::syntax::Term<'_>,
         union_names: &HashSet<String>,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let param_types: Vec<CType> = params
             .iter()
-            .map(|(_, mc)| mc.map_or(CType::Int64, |c| constraint_to_ctype(c, union_names)))
-            .collect();
+            .map(|(_, mc)| mc.map_or(Ok(CType::Int64), |c| constraint_to_ctype(c, union_names)))
+            .collect::<Result<Vec<_>, _>>()?;
         let ret_type = match m_ret {
-            Some(t) => constraint_to_ctype(t, union_names),
+            Some(t) => constraint_to_ctype(t, union_names)?,
             None => infer_ret_ctype(body, &param_types),
         };
-        FunSig {
+        Ok(FunSig {
             param_types,
             ret_type,
-        }
+        })
     }
 }
 
@@ -80,20 +80,21 @@ fn infer_ret_ctype(body: &crate::core::syntax::Term<'_>, param_types: &[CType]) 
 }
 
 /// Map a constraint Term to its C type.  Recognizes builtin type names
-/// and user-defined union types; everything else defaults to Int64.
+/// and user-defined union types; returns an error for unrecognized types.
 pub fn constraint_to_ctype(
     t: &crate::core::syntax::Term<'_>,
     union_names: &HashSet<String>,
-) -> CType {
+) -> Result<CType, String> {
     match t {
-        crate::core::syntax::Term::Builtin(name) if *name == "str" => CType::Str,
+        crate::core::syntax::Term::Builtin(name) if *name == "str" => Ok(CType::Str),
         crate::core::syntax::Term::Builtin(name) if union_names.contains(&name.to_string()) => {
-            CType::Union(name.to_string())
+            Ok(CType::Union(name.to_string()))
         }
-        // This in a type position means self-reference (e.g. recursive union field).
-        // Without the enclosing union name we can't resolve it here;
-        // callers should handle This explicitly.
-        crate::core::syntax::Term::This => CType::Int64,
-        _ => CType::Int64,
+        crate::core::syntax::Term::Builtin(_)
+        | crate::core::syntax::Term::LitInt(_)
+        | crate::core::syntax::Term::LitBool(_)
+        | crate::core::syntax::Term::Var(_)
+        | crate::core::syntax::Term::Universe(_) => Ok(CType::Int64),
+        _ => Err(format!("Cannot map constraint {:?} to C type", t)),
     }
 }

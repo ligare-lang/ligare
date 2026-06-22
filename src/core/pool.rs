@@ -201,10 +201,6 @@ impl<'bump> TermArena<'bump> {
         self.alloc(Term::RefParam)
     }
 
-    pub fn this_(&self) -> &'bump Term<'bump> {
-        self.alloc(Term::This)
-    }
-
     // ── recursive constructors ──
 
     pub fn app(&self, f: &'bump Term<'bump>, a: &'bump Term<'bump>) -> &'bump Term<'bump> {

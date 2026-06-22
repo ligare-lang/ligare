@@ -1,0 +1,22 @@
+-- Comprehensive union / match test for C codegen
+def Color : prop := union
+  | Red
+  | Green
+  | Blue
+
+def describe (c : Color) : str :=
+  match c with
+  | Red   => "red"
+  | Green => "green"
+  | Blue  => "blue"
+
+def to_int (c : Color) : int :=
+  match c with
+  | Red   => 1
+  | Green => 2
+  | Blue  => 3
+
+-- Test zero-arg variants
+#show describe Red
+#show describe Green
+#show to_int Blue

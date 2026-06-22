@@ -21,9 +21,8 @@ use crate::pretty::PrettyPrinter;
 pub struct Compiler<'bump> {
     bump: &'bump Bump,
     arena: &'bump TermArena<'bump>,
-    evaluator: Evaluator<'bump>,
     checker: TypeChecker<'bump>,
-    /// Environment: maps top-level names to their defining terms (O(1) lookup).
+    /// Environment: maps top-level names to their desugared defining terms.
     env: HashMap<&'bump str, &'bump Term<'bump>>,
     /// Accumulated top-level items (for code generation).
     pub tops: Vec<TopLevel<'bump>>,
@@ -40,7 +39,6 @@ impl<'bump> Compiler<'bump> {
         Self {
             bump,
             arena,
-            evaluator: Evaluator::new(arena),
             checker: TypeChecker::new(arena),
             env: HashMap::new(),
             tops: vec![],
@@ -91,7 +89,6 @@ impl<'bump> Compiler<'bump> {
         }
         // Extract function signatures from the original (un-erased) FuncDef
         // so the C backend can emit correct parameter and return types.
-        // First pass: collect union names
         let union_names: std::collections::HashSet<String> = tops
             .iter()
             .filter_map(|top| match top {
@@ -110,15 +107,13 @@ impl<'bump> Compiler<'bump> {
                     if func_def.params.is_empty() && matches!(func_def.body, Term::UnionDef(..)) {
                         self.union_types.push((name, func_def.body));
                     } else {
-                        self.fun_sigs.push((
-                            name,
-                            FunSig::from_func(
-                                func_def.params,
-                                func_def.ret,
-                                func_def.body,
-                                &union_names,
-                            ),
-                        ));
+                        let sig = FunSig::from_func(
+                            func_def.params,
+                            func_def.ret,
+                            func_def.body,
+                            &union_names,
+                        )?;
+                        self.fun_sigs.push((name, sig));
                     }
                 }
                 _ => {}
@@ -134,14 +129,20 @@ impl<'bump> Compiler<'bump> {
                 {
                     None // Skip union type definitions (emitted as typedefs)
                 }
-                TopLevel::TLDef(name, func_def) => {
-                    let term = self.arena.desugar_func_def(func_def);
+                TopLevel::TLDef(name, _func_def) => {
+                    // Use the already-desugared term from env (set by process_top_level)
+                    // instead of re-desugaring from the original FuncDef.
+                    let term = self
+                        .env
+                        .get(name)
+                        .copied()
+                        .unwrap_or_else(|| self.arena.desugar_func_def(_func_def));
                     let resolved = self.subst_top_level(term);
                     let erased = eraser.erase(resolved);
                     let erased_func_def = FuncDef {
                         name,
-                        params: func_def.params,
-                        ret: func_def.ret,
+                        params: _func_def.params,
+                        ret: _func_def.ret,
                         body: erased,
                     };
                     Some(TopLevel::TLDef(
@@ -166,8 +167,8 @@ impl<'bump> Compiler<'bump> {
                 }
                 TopLevel::TLCheck(_, _) => None,
             })
-            // Drop zero-param definitions whose body is a bare builtin
-            // (type aliases like `def nat := int where ...`).
+            // Drop zero-param definitions that are type aliases
+            // (bare builtins or union defs with empty body after erasure).
             .filter(|top| {
                 !matches!(
                     top,
@@ -185,8 +186,13 @@ impl<'bump> Compiler<'bump> {
     pub fn eval_expr(&self, expr: &str) -> Result<(), String> {
         let term = parse_expr_top(expr, self.bump, self.arena)
             .map_err(|err| format!("--eval parse error: {}", err))?;
-        let resolved = self.subst_top_level(term);
-        match self.evaluator.eval(resolved) {
+        let resolved = self.resolve_all(term);
+        let self_name = self.extract_func_name(term);
+        let mut ev = Evaluator::new(self.arena);
+        if let Some(n) = self_name {
+            ev.set_self_name(n);
+        }
+        match ev.eval(resolved) {
             Err(err) => Err(format!("--eval error: {}", err)),
             Ok(val) => {
                 println!("{}", PrettyPrinter::pretty(val));
@@ -273,8 +279,13 @@ impl<'bump> Compiler<'bump> {
                 if self.quiet {
                     return Ok(()); // codegen handles #show separately
                 }
-                let resolved = self.subst_top_level(_term);
-                match self.evaluator.eval(resolved) {
+                let resolved = self.resolve_all(_term);
+                let self_name = self.extract_func_name(_term);
+                let mut ev = Evaluator::new(self.arena);
+                if let Some(n) = self_name {
+                    ev.set_self_name(n);
+                }
+                match ev.eval(resolved) {
                     Err(err) => eprintln!("{}: show error: {}", file, err),
                     Ok(val) => println!("{}", PrettyPrinter::pretty(val)),
                 }
@@ -283,8 +294,13 @@ impl<'bump> Compiler<'bump> {
                 if self.quiet {
                     return Ok(()); // codegen handles #expr separately
                 }
-                let resolved = self.subst_top_level(_term);
-                match self.evaluator.eval(resolved) {
+                let resolved = self.resolve_all(_term);
+                let self_name = self.extract_func_name(_term);
+                let mut ev = Evaluator::new(self.arena);
+                if let Some(n) = self_name {
+                    ev.set_self_name(n);
+                }
+                match ev.eval(resolved) {
                     Err(err) => eprintln!("{}: eval error: {}", file, err),
                     Ok(val) => println!("{}", PrettyPrinter::pretty(val)),
                 }
@@ -293,20 +309,59 @@ impl<'bump> Compiler<'bump> {
         Ok(())
     }
 
-    /// Substitute known top-level definitions into a term (O(1) lookup).
-    /// Also resolves variant constructors to Variant terms.
-    /// Only substitutes zero-param definitions (constants), not functions.
-    fn subst_top_level(&self, term: &'bump Term<'bump>) -> &'bump Term<'bump> {
-        // First pass: resolve env lookups only (no variants, no functions)
+    /// Resolve ALL `Builtin(name)` references from the env (constants AND functions).
+    /// Used for eval paths where function bodies need to be available.
+    fn resolve_all(&self, term: &'bump Term<'bump>) -> &'bump Term<'bump> {
         let t = self.arena.map(term, &|t| {
             if let Term::Builtin(name) = t {
                 if let Some(def) = self.env.get(name) {
-                    // Only substitute zero-param definitions (constants).
-                    // Desugared form: Annot(body, type) where body is NOT a Lam.
-                    // Functions have Annot(Lam(...), Pi(...)) — not substituted.
-                    if let Term::Annot(body, _) = def
-                        && !matches!(body, Term::Lam(_))
-                    {
+                    return Some(def);
+                }
+            }
+            None
+        });
+        // Also resolve variant apps and zero-arg constructors
+        let t = self.resolve_variant_apps(t);
+        self.arena.map(t, &|t| {
+            if let Term::Builtin(name) = t {
+                if let Some((uname, idx, field_specs)) = self.checker.lookup_variant(name) {
+                    if field_specs.is_empty() {
+                        return Some(self.arena.variant(uname, idx, &[]));
+                    }
+                }
+            }
+            None
+        })
+    }
+
+    /// Extract the function name from a term if it's a recursive call.
+    /// Only returns `Some(name)` if the head is a `Builtin(name)` that
+    /// maps to a function (i.e., has `Lam` body) in the env.
+    fn extract_func_name(&self, term: &'bump Term<'bump>) -> Option<Name<'bump>> {
+        let mut head = term;
+        while let Term::App(f, _) = head {
+            head = f;
+        }
+        if let Term::Builtin(name) = head {
+            if let Some(def) = self.env.get(name) {
+                if def.is_constant() {
+                    return None; // constants don't need self-reference
+                }
+                return Some(name);
+            }
+        }
+        None
+    }
+
+    /// Substitute known top-level definitions into a term (O(1) lookup).
+    /// Also resolves variant constructors to Variant terms.
+    /// Uses `is_constant()` to distinguish constants from functions.
+    fn subst_top_level(&self, term: &'bump Term<'bump>) -> &'bump Term<'bump> {
+        // First pass: resolve env lookups for constants only
+        let t = self.arena.map(term, &|t| {
+            if let Term::Builtin(name) = t {
+                if let Some(def) = self.env.get(name) {
+                    if def.is_constant() {
                         return Some(def);
                     }
                 }

@@ -74,8 +74,7 @@ impl<'bump> WhnfEvaluator<'bump> {
             | Term::Universe(_)
             | Term::Builtin(_)
             | Term::AutoProof
-            | Term::RefParam
-            | Term::This => Ok(t),
+            | Term::RefParam => Ok(t),
             Term::UnionDef(..) => Ok(t),
             Term::Variant(name, idx, payloads) => {
                 let ep: Vec<_> = payloads

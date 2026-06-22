@@ -56,6 +56,14 @@ impl fmt::Display for PrimOp {
     }
 }
 
+impl<'bump> Term<'bump> {
+    /// Returns true if this is a desugared zero-parameter definition
+    /// (a constant), i.e. `Annot(body, _)` where body is NOT a `Lam`.
+    pub fn is_constant(&self) -> bool {
+        matches!(self, Term::Annot(body, _) if !matches!(body, Term::Lam(_)))
+    }
+}
+
 impl PrimOp {
     pub fn apply(&self, x: i64, y: i64) -> Term<'static> {
         match self {
@@ -124,7 +132,6 @@ pub enum Term<'bump> {
     ByProof(Option<&'bump Term<'bump>>, &'bump [Tactic<'bump>]),
     AutoProof,
     RefParam,
-    This,
     /// Union type definition (in `prop`): (name, [(variant_name, [(field_name, constraint)])])
     UnionDef(
         Name<'bump>,
@@ -227,23 +234,6 @@ mod tests {
         ] {
             assert_eq!(u.to_string(), s);
         }
-    }
-
-    #[test]
-    fn map_replace_this() {
-        let (_b, arena) = a();
-        let term = arena.if_then_else(arena.lit_bool(true), arena.this_(), arena.lit_int(0));
-        let result = arena.map(term, &|t| {
-            if matches!(t, Term::This) {
-                Some(arena.lit_int(100))
-            } else {
-                None
-            }
-        });
-        assert_eq!(
-            *result,
-            Term::IfThenElse(arena.lit_bool(true), arena.lit_int(100), arena.lit_int(0))
-        );
     }
 
     #[test]

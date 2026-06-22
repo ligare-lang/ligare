@@ -1,0 +1,19 @@
+-- Option type with match bindings for C codegen
+def Option : prop := union
+  | None
+  | Some of (val : int)
+
+def unwrap_or (o : Option) (default : int) : int :=
+  match o with
+  | None   => default
+  | Some x => x
+
+def is_some (o : Option) : int :=
+  match o with
+  | None   => 0
+  | Some _ => 1
+
+#show unwrap_or (Some 42) (-1)
+#show unwrap_or None 0
+#show is_some (Some 5)
+#show is_some None

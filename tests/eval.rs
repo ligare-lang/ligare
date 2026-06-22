@@ -1,7 +1,7 @@
 mod common;
 
 use common::{bin, leak_bump, parse, s};
-use ligare::core::eval::eval;
+use ligare::core::eval::{eval, eval_with_self};
 use ligare::core::pool::TermArena;
 use ligare::core::syntax::{FuncDef, PrimOp, Tactic, Term};
 
@@ -315,12 +315,6 @@ fn proof_block_evaluates_inner() {
 }
 
 #[test]
-fn this_evaluates_to_itself() {
-    let (_b, arena) = a();
-    assert_eq!(*eval(&arena, arena.this_()).unwrap(), Term::This);
-}
-
-#[test]
 fn ref_param_evaluates_to_itself() {
     let (_b, arena) = a();
     assert_eq!(*eval(&arena, arena.ref_param()).unwrap(), Term::RefParam);
@@ -336,7 +330,7 @@ fn auto_proof_evaluates_to_itself() {
 fn recursive_fib_evaluates() {
     let (_b, arena) = a();
     // Build: fib = λn. if n < 2 then n else fib(n-1) + fib(n-2)
-    // Using This to refer to self
+    // Using a builtin to refer to self
     let body = arena.if_then_else(
         bin(&arena, PrimOp::Lt, arena.var(0), arena.lit_int(2)),
         arena.var(0),
@@ -344,18 +338,23 @@ fn recursive_fib_evaluates() {
             &arena,
             PrimOp::Add,
             arena.app(
-                arena.this_(),
+                arena.builtin(s(&arena, "fib")),
                 bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1)),
             ),
             arena.app(
-                arena.this_(),
+                arena.builtin(s(&arena, "fib")),
                 bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(2)),
             ),
         ),
     );
     let fib_lam = arena.lam(body);
     assert_eq!(
-        *eval(&arena, arena.app(fib_lam, arena.lit_int(10))).unwrap(),
+        *eval_with_self(
+            &arena,
+            arena.app(fib_lam, arena.lit_int(10)),
+            s(&arena, "fib")
+        )
+        .unwrap(),
         Term::LitInt(55)
     );
 }
@@ -370,18 +369,23 @@ fn recursive_fib_base_case_zero() {
             &arena,
             PrimOp::Add,
             arena.app(
-                arena.this_(),
+                arena.builtin(s(&arena, "fib")),
                 bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1)),
             ),
             arena.app(
-                arena.this_(),
+                arena.builtin(s(&arena, "fib")),
                 bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(2)),
             ),
         ),
     );
     let fib_lam = arena.lam(body);
     assert_eq!(
-        *eval(&arena, arena.app(fib_lam, arena.lit_int(0))).unwrap(),
+        *eval_with_self(
+            &arena,
+            arena.app(fib_lam, arena.lit_int(0)),
+            s(&arena, "fib")
+        )
+        .unwrap(),
         Term::LitInt(0)
     );
 }
@@ -396,18 +400,23 @@ fn recursive_fib_base_case_one() {
             &arena,
             PrimOp::Add,
             arena.app(
-                arena.this_(),
+                arena.builtin(s(&arena, "fib")),
                 bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1)),
             ),
             arena.app(
-                arena.this_(),
+                arena.builtin(s(&arena, "fib")),
                 bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(2)),
             ),
         ),
     );
     let fib_lam = arena.lam(body);
     assert_eq!(
-        *eval(&arena, arena.app(fib_lam, arena.lit_int(1))).unwrap(),
+        *eval_with_self(
+            &arena,
+            arena.app(fib_lam, arena.lit_int(1)),
+            s(&arena, "fib")
+        )
+        .unwrap(),
         Term::LitInt(1)
     );
 }

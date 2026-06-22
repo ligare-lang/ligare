@@ -60,7 +60,6 @@ impl PrettyPrinter {
             }
             Term::AutoProof => "auto".to_string(),
             Term::RefParam => "x".to_string(),
-            Term::This => "this".to_string(),
             Term::UnionDef(name, variants) => {
                 let vs: Vec<String> = variants
                     .iter()
@@ -86,8 +85,7 @@ impl PrettyPrinter {
                 let bs: Vec<String> = branches
                     .iter()
                     .map(|(_idx, binds, body)| {
-                        let bpat: Vec<String> =
-                            binds.iter().map(|(n, _)| n.to_string()).collect();
+                        let bpat: Vec<String> = binds.iter().map(|(n, _)| n.to_string()).collect();
                         format!("| {} => {}", bpat.join(" "), Self::pretty(body))
                     })
                     .collect();
@@ -120,7 +118,6 @@ impl PrettyPrinter {
             | Term::LitBool(_)
             | Term::Builtin(_)
             | Term::Var(_)
-            | Term::This
             | Term::RefParam
             | Term::AutoProof => format!("-{}", inner),
             _ => format!("-({})", inner),

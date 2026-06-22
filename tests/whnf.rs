@@ -59,12 +59,6 @@ fn ref_param_identity() {
 }
 
 #[test]
-fn this_identity() {
-    let (_b, arena) = a();
-    assert_eq!(*whnf(&arena, &Term::This).unwrap(), Term::This);
-}
-
-#[test]
 fn lam_identity() {
     let (_b, arena) = a();
     let lam = arena.lam(arena.var(0));
@@ -301,10 +295,10 @@ fn non_literal_primop_stops() {
     }
 }
 
-// ── Recursive call via `This` STOPS (key WHNF behavior) ──
+// ── Recursive call via self-reference STOPS (key WHNF behavior) ──
 
 #[test]
-fn recursive_call_stops_at_this() {
+fn recursive_call_stops_at_self_ref() {
     let (_b, arena) = a();
     let body = arena.if_then_else(
         bin(&arena, PrimOp::Lt, arena.var(0), arena.lit_int(2)),
@@ -313,11 +307,11 @@ fn recursive_call_stops_at_this() {
             &arena,
             PrimOp::Add,
             arena.app(
-                arena.this_(),
+                arena.builtin(arena.alloc_str("fib")),
                 bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1)),
             ),
             arena.app(
-                arena.this_(),
+                arena.builtin(arena.alloc_str("fib")),
                 bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(2)),
             ),
         ),
@@ -344,11 +338,11 @@ fn recursive_call_base_case_computes() {
             &arena,
             PrimOp::Add,
             arena.app(
-                arena.this_(),
+                arena.builtin(arena.alloc_str("fib")),
                 bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1)),
             ),
             arena.app(
-                arena.this_(),
+                arena.builtin(arena.alloc_str("fib")),
                 bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(2)),
             ),
         ),
@@ -369,11 +363,11 @@ fn recursive_call_partial_reduction() {
             &arena,
             PrimOp::Add,
             arena.app(
-                arena.this_(),
+                arena.builtin(arena.alloc_str("fib")),
                 bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1)),
             ),
             arena.app(
-                arena.this_(),
+                arena.builtin(arena.alloc_str("fib")),
                 bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(2)),
             ),
         ),
@@ -382,16 +376,16 @@ fn recursive_call_partial_reduction() {
     let app = arena.app(lam, arena.lit_int(3));
     let result = whnf(&arena, app).unwrap();
 
-    fn contains_this(t: &Term<'_>) -> bool {
+    fn contains_self_ref(t: &Term<'_>) -> bool {
         match t {
-            Term::This => true,
-            Term::App(f, a) => contains_this(f) || contains_this(a),
+            Term::Builtin(n) if *n == "fib" => true,
+            Term::App(f, a) => contains_self_ref(f) || contains_self_ref(a),
             _ => false,
         }
     }
     assert!(
-        contains_this(result),
-        "WHNF should preserve `This` references (recursion not unrolled)"
+        contains_self_ref(result),
+        "WHNF should preserve self-reference (recursion not unrolled)"
     );
     assert!(
         !matches!(result, Term::LitInt(_)),

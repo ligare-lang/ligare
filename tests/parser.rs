@@ -603,11 +603,11 @@ fn fib_def_structure_matches_expected() {
     let cond = bin(&arena, PrimOp::Lt, arena.var(0), arena.lit_int(2));
     let then_branch = arena.var(0);
     let rec_call_1 = arena.app(
-        arena.this_(),
+        arena.builtin(s(&arena, "fib")),
         bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1)),
     );
     let rec_call_2 = arena.app(
-        arena.this_(),
+        arena.builtin(s(&arena, "fib")),
         bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(2)),
     );
     let else_branch = bin(&arena, PrimOp::Add, rec_call_1, rec_call_2);
