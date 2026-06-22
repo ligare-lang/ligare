@@ -61,7 +61,7 @@ fn run_codegen(cli: &Cli, bump: &Bump, arena: &TermArena<'_>) {
         process::exit(1);
     }
 
-    let c_source = emit_c(compiler.tops());
+    let c_source = emit_c(compiler.tops(), compiler.fun_sigs());
 
     // --emit-c: print C source
     if cli.output.is_none() {

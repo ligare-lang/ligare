@@ -80,6 +80,7 @@ impl<'bump> Evaluator<'bump> {
             | Term::Var(_)
             | Term::LitInt(_)
             | Term::LitBool(_)
+            | Term::LitStr(_)
             | Term::PrimOp(_)
             | Term::Universe(_)
             | Term::Builtin(_) => Ok(t),

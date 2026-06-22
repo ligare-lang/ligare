@@ -12,6 +12,7 @@ pub const UNIVERSE_PROOF: &str = "proof";
 
 pub const BUILTIN_INT: &str = "int";
 pub const BUILTIN_BOOL: &str = "bool";
+pub const BUILTIN_STR: &str = "str";
 pub const BUILTIN_DATA: &str = "data";
 pub const BUILTIN_THEOREM: &str = "theorem";
 pub const BUILTIN_PROOF: &str = "proof";

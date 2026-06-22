@@ -161,6 +161,10 @@ impl<'bump> TermArena<'bump> {
         self.alloc(Term::LitBool(b))
     }
 
+    pub fn lit_str(&self, s: Name<'bump>) -> &'bump Term<'bump> {
+        self.alloc(Term::LitStr(s))
+    }
+
     pub fn prim_op(&self, op: PrimOp) -> &'bump Term<'bump> {
         self.alloc(Term::PrimOp(op))
     }

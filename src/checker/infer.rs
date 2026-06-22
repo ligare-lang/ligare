@@ -42,8 +42,13 @@ impl<'bump> TypeChecker<'bump> {
                 }
             }
             None => {
-                // No type information — evaluate and check the result.
+                // No type information — check for undefined names first.
                 let f_dsg = self.desugarer.desugar(f);
+                if let Term::Builtin(name) = f_dsg {
+                    if check_builtin(name).is_none() && lookup_refine(name, &self.table).is_none() {
+                        return Err(format!("Undefined variable: {}", name));
+                    }
+                }
                 let f_val = self.evaluator.whnf(f_dsg)?;
                 let evald = self.evaluator.whnf(self.arena.app(f_val, a))?;
                 self.check_by_constraint(ctx, evald, constraint)

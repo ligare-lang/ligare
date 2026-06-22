@@ -1365,3 +1365,76 @@ fn theorem_refinement_with_by_fails() {
         .is_err()
     );
 }
+
+// ── String literal tests ──
+
+#[test]
+fn str_literal_checks_as_str() {
+    let (_b, arena) = a();
+    let term = arena.lit_str(s(&arena, "hello"));
+    let constraint = arena.builtin(s(&arena, "str"));
+    assert_eq!(check_empty(&arena, term, constraint), Ok(()));
+}
+
+#[test]
+fn str_literal_checks_as_data() {
+    let (_b, arena) = a();
+    let term = arena.lit_str(s(&arena, "hello"));
+    let constraint = arena.builtin(s(&arena, "data"));
+    assert_eq!(check_empty(&arena, term, constraint), Ok(()));
+}
+
+#[test]
+fn str_literal_fails_as_int() {
+    let (_b, arena) = a();
+    let term = arena.lit_str(s(&arena, "hello"));
+    let constraint = arena.builtin(s(&arena, "int"));
+    assert!(check_empty(&arena, term, constraint).is_err());
+}
+
+// ── Undefined variable must fail ──
+
+/// `#check s some_sth : str` where `s` is not defined — must fail.
+#[test]
+fn undefined_variable_rejected() {
+    let (_b, arena) = a();
+    // App(Builtin("s"), LitStr("hello")) — "s" is not a defined function
+    let term = arena.app(
+        arena.builtin(s(&arena, "s")),
+        arena.lit_str(s(&arena, "hello")),
+    );
+    assert!(check_empty(&arena, term, arena.builtin(s(&arena, "str"))).is_err());
+}
+
+/// `#check s 42 : int` — undefined function "s" with int argument, must fail.
+#[test]
+fn undefined_variable_int_rejected() {
+    let (_b, arena) = a();
+    let term = arena.app(arena.builtin(s(&arena, "s")), arena.lit_int(42));
+    assert!(check_empty(&arena, term, arena.builtin(s(&arena, "int"))).is_err());
+}
+
+// ── Function return type inference for C backend ──
+
+/// Simulate `some_fn "hi" : str` where some_fn has an explicit `: str` return constraint.
+/// The checker uses the function's Pi type to verify the result.
+#[test]
+fn function_with_str_return_checks() {
+    let (_b, arena) = a();
+    // def some_fn (s : str) : str := s
+    // Desugars to: Annot(Lam(Var(0)), Pi("s", str, str))
+    let func = arena.annot(
+        arena.lam(arena.var(0)),
+        arena.pi(
+            s(&arena, "s"),
+            arena.builtin(s(&arena, "str")),
+            arena.builtin(s(&arena, "str")),
+        ),
+    );
+    // Apply to a string literal
+    let call = arena.app(func, arena.lit_str(s(&arena, "hi")));
+    assert_eq!(
+        check_empty(&arena, call, arena.builtin(s(&arena, "str"))),
+        Ok(())
+    );
+}

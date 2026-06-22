@@ -472,3 +472,15 @@ fn lambda_applied_to_lambda_returns_lambda() {
     let app = arena.app(k, arena.lit_int(5));
     assert_eq!(*eval(&arena, app).unwrap(), Term::Lam(arena.lit_int(5)));
 }
+
+// ── String tests ──
+
+#[test]
+fn string_identity() {
+    let (_b, arena) = a();
+    let s = arena.lit_str(arena.alloc_str("hello"));
+    assert_eq!(
+        *eval(&arena, s).unwrap(),
+        Term::LitStr(arena.alloc_str("hello"))
+    );
+}

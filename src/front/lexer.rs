@@ -122,6 +122,15 @@ pub enum Token {
     #[regex(r"[0-9]+", |lex| lex.slice().parse::<i64>().ok())]
     IntLit(i64),
 
+    /// String literal: `"..."` — the captured slice excludes the surrounding quotes.
+    #[regex(r#""([^"\\]|\\.)*""#, |lex| {
+        let raw = lex.slice();
+        // Strip surrounding quotes and unescape
+        let inner = &raw[1..raw.len()-1];
+        inner.to_string()
+    })]
+    StrLit(String),
+
     // Identifier: starts with letter, followed by alphanumerics or underscore
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice().to_string())]
     Ident(String),

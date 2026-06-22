@@ -2,6 +2,7 @@ use std::fs;
 
 use bumpalo::Bump;
 
+use crate::backend::ir::FunSig;
 use crate::checker::TypeChecker;
 use crate::checker::context::empty_ctx;
 use crate::checker::erase::Eraser;
@@ -25,6 +26,8 @@ pub struct Compiler<'bump> {
     env: Vec<(&'bump str, &'bump Term<'bump>)>,
     /// Accumulated top-level items (for code generation).
     pub tops: Vec<TopLevel<'bump>>,
+    /// Function signatures extracted before erasure (for C codegen).
+    fun_sigs: Vec<(&'bump str, FunSig)>,
 }
 
 impl<'bump> Compiler<'bump> {
@@ -36,6 +39,7 @@ impl<'bump> Compiler<'bump> {
             checker: TypeChecker::new(arena),
             env: vec![],
             tops: vec![],
+            fun_sigs: vec![],
         }
     }
 
@@ -58,31 +62,51 @@ impl<'bump> Compiler<'bump> {
         for top in &tops {
             self.process_top_level(top.clone())?;
         }
-        // Evaluate TLShow/TLExpr terms for codegen, then erase all
-        // proof-irrelevant subterms (prop / theorem / proof universes)
-        // so the C backend only sees pure data.
+        // Extract function signatures from the original (un-erased) terms
+        // so the C backend can emit correct parameter and return types.
+        for top in &tops {
+            match top {
+                TopLevel::TLDef(name, term) => {
+                    if let Term::Func(_, params, m_ret, _) = term {
+                        self.fun_sigs
+                            .push((name, FunSig::from_func(params, *m_ret)));
+                    }
+                }
+                TopLevel::TLTheorem(name, _, body) => {
+                    if let Term::Func(_, params, m_ret, _) = body {
+                        self.fun_sigs
+                            .push((name, FunSig::from_func(params, *m_ret)));
+                    }
+                }
+                _ => {}
+            }
+        }
         let eraser = Eraser::new(self.arena);
         let evald_tops: Vec<TopLevel<'bump>> = tops
             .into_iter()
-            .map(|top| match top {
+            .filter_map(|top| match top {
+                TopLevel::TLDef(name, term) => {
+                    let resolved = self.subst_top_level(term);
+                    Some(TopLevel::TLDef(name, eraser.erase(resolved)))
+                }
                 TopLevel::TLShow(term) | TopLevel::TLExpr(term) => {
                     let resolved = self.subst_top_level(term);
                     match self.evaluator.eval(resolved) {
-                        Ok(val) => TopLevel::TLShow(eraser.erase(val)),
-                        Err(_) => top,
+                        Ok(val) => Some(TopLevel::TLShow(eraser.erase(val))),
+                        Err(_) => Some(TopLevel::TLShow(eraser.erase(resolved))),
                     }
                 }
-                TopLevel::TLDef(name, term) => TopLevel::TLDef(name, eraser.erase(term)),
-                TopLevel::TLTheorem(name, prop, body) => {
-                    TopLevel::TLTheorem(name, eraser.erase(prop), eraser.erase(body))
+                TopLevel::TLTheorem(name, _, body) => {
+                    let resolved_body = self.subst_top_level(body);
+                    Some(TopLevel::TLDef(name, eraser.erase(resolved_body)))
                 }
-                other => other,
+                TopLevel::TLCheck(_, _) => None,
             })
             // Drop zero-param definitions whose body is a bare builtin
             // (type aliases like `def nat := int where ...`).
             .filter(|top| match top {
-                TopLevel::TLDef(_, Term::Func(_, [], _, body))
-                    if matches!(body, Term::Builtin(_)) =>
+                TopLevel::TLDef(_, Term::Func(_, params, _, body))
+                    if params.is_empty() && matches!(body, Term::Builtin(_)) =>
                 {
                     false
                 }
@@ -110,6 +134,11 @@ impl<'bump> Compiler<'bump> {
     /// Get the collected top-level items (for code generation).
     pub fn tops(&self) -> &[TopLevel<'bump>] {
         &self.tops
+    }
+
+    /// Get the function signatures extracted before erasure (for C codegen).
+    pub fn fun_sigs(&self) -> &[(&'bump str, FunSig)] {
+        &self.fun_sigs
     }
 
     // ── private helpers ──

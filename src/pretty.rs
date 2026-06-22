@@ -17,6 +17,7 @@ impl PrettyPrinter {
             Term::Builtin(s) => (*s).to_string(),
             Term::PrimOp(op) => op.to_string(),
             Term::LitBool(b) => b.to_string(),
+            Term::LitStr(s) => format!("\"{}\"", s),
             Term::Let(name, val, body, mconstr) => {
                 let c = mconstr.map_or(String::new(), |c| format!(" : {}", Self::pretty(c)));
                 format!(

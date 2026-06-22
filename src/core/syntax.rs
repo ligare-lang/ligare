@@ -96,6 +96,7 @@ pub enum Term<'bump> {
     Lam(&'bump Term<'bump>),
     LitInt(i64),
     LitBool(bool),
+    LitStr(Name<'bump>),
     PrimOp(PrimOp),
     Universe(Universe),
     Builtin(Name<'bump>),
@@ -247,5 +248,16 @@ mod tests {
             *result,
             *bin(&arena, PrimOp::Ge, arena.lit_int(5), arena.lit_int(0))
         );
+    }
+
+    #[test]
+    fn lit_str_roundtrip() {
+        let (_b, arena) = a();
+        let s = arena.alloc_str("hello");
+        let t = Term::LitStr(s);
+        match t {
+            Term::LitStr(name) => assert_eq!(name, "hello"),
+            _ => panic!("expected LitStr"),
+        }
     }
 }

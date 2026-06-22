@@ -30,6 +30,9 @@ pub struct Parser<'a, 'bump> {
     /// When true, `parse_suffixes` skips the `by` suffix (used for
     /// parsing type annotations where `by` belongs to the outer context).
     no_by: bool,
+    /// When true, `parse_suffixes` skips the `:` type-annotation suffix
+    /// (used for `#check` so that `:` is reserved as the constraint separator).
+    no_annot: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +65,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             pool,
             arena,
             no_by: false,
+            no_annot: false,
         }
     }
 
@@ -162,7 +166,11 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         }
         if self.peek_token() == Some(Token::HashCheck) {
             self.advance();
+            // Suppress `:` type-annotation suffix so that `:` is reserved
+            // for the constraint separator (e.g. `#check s some_sth : str`).
+            self.no_annot = true;
             let full_term = self.parse_expr(&[])?;
+            self.no_annot = false;
             // If `parse_expr` already returned an annotation (from `:`),
             // split it; otherwise expect `:` and parse constraint.
             let (term, constraint) = if let Term::Annot(t, c) = full_term {
@@ -463,18 +471,23 @@ impl<'a, 'bump> Parser<'a, 'bump> {
     ) -> Result<&'bump Term<'bump>, ParseError> {
         match self.try_parse_refine_suffix(t) {
             Ok(t2) => self.parse_suffixes(env, t2),
-            Err(_) => match self.try_parse(Token::Colon, |s| s.parse_expr(env)) {
-                Some(c) => self.parse_suffixes(env, self.arena.annot(t, c)),
-                None => {
-                    // `by` suffix: term by tactic1; tactic2; ...
-                    if !self.no_by {
-                        if let Some(tactics) = self.parse_by_proof_clause(env) {
-                            return self.parse_suffixes(env, self.arena.by_proof(Some(t), tactics));
-                        }
+            Err(_) => {
+                // `:` type-annotation suffix — suppressed in `#check`
+                // context so that `:` is reserved for the constraint
+                // separator (e.g. `#check s some_sth : str`).
+                if !self.no_annot {
+                    if let Some(c) = self.try_parse(Token::Colon, |s| s.parse_expr(env)) {
+                        return self.parse_suffixes(env, self.arena.annot(t, c));
                     }
-                    Ok(t)
                 }
-            },
+                // `by` suffix: term by tactic1; tactic2; ...
+                if !self.no_by {
+                    if let Some(tactics) = self.parse_by_proof_clause(env) {
+                        return self.parse_suffixes(env, self.arena.by_proof(Some(t), tactics));
+                    }
+                }
+                Ok(t)
+            }
         }
     }
 
@@ -490,6 +503,11 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             Some(Token::IntLit(n)) => {
                 self.advance();
                 Ok(self.arena.lit_int(n))
+            }
+            Some(Token::StrLit(s)) => {
+                self.advance();
+                let name = self.pool.intern(&s);
+                Ok(self.arena.lit_str(name))
             }
             Some(Token::True) => {
                 self.advance();
@@ -600,7 +618,12 @@ impl<'a, 'bump> Parser<'a, 'bump> {
 
     fn parse_parens(&mut self, env: &[Name<'bump>]) -> Result<&'bump Term<'bump>, ParseError> {
         self.expect(&Token::LParen)?;
+        // Inside parentheses, restore full annotation support even when
+        // the outer context (e.g. `#check`) suppresses `:` annotations.
+        let saved = self.no_annot;
+        self.no_annot = false;
         let t = self.parse_expr(env)?;
+        self.no_annot = saved;
         self.expect(&Token::RParen)?;
         Ok(t)
     }

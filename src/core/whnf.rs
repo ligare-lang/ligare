@@ -69,7 +69,17 @@ impl<'bump> WhnfEvaluator<'bump> {
                 self.whnf(d)
             }
             // Leaf values — already in WHNF
-            _ => Ok(t),
+            Term::Pi(_, _, _)
+            | Term::Var(_)
+            | Term::LitInt(_)
+            | Term::LitBool(_)
+            | Term::LitStr(_)
+            | Term::PrimOp(_)
+            | Term::Universe(_)
+            | Term::Builtin(_)
+            | Term::AutoProof
+            | Term::RefParam
+            | Term::This => Ok(t),
         }
     }
 

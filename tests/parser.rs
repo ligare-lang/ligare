@@ -687,3 +687,39 @@ fn theorem_with_refinement_type() {
     assert_eq!(tops.len(), 1);
     assert!(matches!(tops[0], TopLevel::TLTheorem(..)));
 }
+
+// ── String literal tests ──
+
+#[test]
+fn string_literal() {
+    let (b, arena) = a();
+    let result = parse_expr_top("\"hello\"", b, &arena);
+    assert!(result.is_ok());
+    let term = result.unwrap();
+    match term {
+        Term::LitStr(s) => assert_eq!(*s, "hello"),
+        _ => panic!("expected LitStr, got {:?}", term),
+    }
+}
+
+#[test]
+fn string_literal_empty() {
+    let (b, arena) = a();
+    let result = parse_expr_top("\"\"", b, &arena);
+    assert!(result.is_ok());
+    let term = result.unwrap();
+    match term {
+        Term::LitStr(s) => assert_eq!(*s, ""),
+        _ => panic!("expected LitStr"),
+    }
+}
+
+#[test]
+fn program_with_str_check() {
+    let (b, arena) = a();
+    let result = parse_program("#check \"hello\" : str", b, &arena);
+    assert!(result.is_ok());
+    let tops = result.unwrap();
+    assert_eq!(tops.len(), 1);
+    assert!(matches!(tops[0], TopLevel::TLCheck(..)));
+}

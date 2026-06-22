@@ -4,6 +4,7 @@ pub mod erase;
 pub mod infer;
 pub mod prove;
 
+use crate::checker::builtin::check_builtin;
 use crate::checker::context::{ConstraintTable, Context, add_refine, empty_table, lookup_refine};
 use crate::core::desugar::Desugarer;
 use crate::core::pool::TermArena;
@@ -129,6 +130,15 @@ impl<'bump> TypeChecker<'bump> {
             // Application: use the function's type rather than forcing
             // full evaluation (which would compute recursive calls).
             Term::App(f, a) => self.check_app(ctx, f, a, constraint),
+            // A bare Builtin name may be a type (int, str, etc.) or a
+            // refinement (nat).  If neither, it's an undefined variable.
+            Term::Builtin(name) => {
+                if check_builtin(name).is_some() || lookup_refine(name, &self.table).is_some() {
+                    self.check_by_constraint(ctx, desugared, constraint)
+                } else {
+                    Err(format!("Undefined variable: {}", name))
+                }
+            }
             _ => self.check_by_constraint(ctx, desugared, constraint),
         }
     }

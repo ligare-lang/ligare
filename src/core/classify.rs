@@ -9,6 +9,7 @@ impl Classifier {
         match t {
             Term::LitInt(_)
             | Term::LitBool(_)
+            | Term::LitStr(_)
             | Term::Lam(_)
             | Term::PrimOp(_)
             | Term::RefParam

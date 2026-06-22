@@ -40,3 +40,11 @@ theorem identity : int -> int := \x. x
 
 -- Theorem can be used as a value
 #check identity 5 : int
+
+def some_sth : str := "hello"
+def some_fn (s : str) := s
+
+-- String literal tests
+#check s some_sth : str
+#check "hello" : data
+#show some_fn some_sth
