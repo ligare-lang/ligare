@@ -148,6 +148,12 @@ pub enum Term<'bump> {
             &'bump Term<'bump>,
         )],
     ),
+    /// Struct type definition (in `prop`): (name, [(field_name, constraint)])
+    StructDef(Name<'bump>, &'bump [(Name<'bump>, &'bump Term<'bump>)]),
+    /// Struct value construction (in `data`): (struct_name, field_values in order)
+    StructCons(Name<'bump>, &'bump [&'bump Term<'bump>]),
+    /// Struct field projection (in `data`): (subject, field_index)
+    StructProj(&'bump Term<'bump>, usize),
 }
 
 #[cfg(test)]

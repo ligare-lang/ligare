@@ -43,6 +43,25 @@ impl<'bump> TypeChecker<'bump> {
                 let variant_term = self.arena.variant(uname, idx, self.arena.alloc_slice(&[a]));
                 return self.check_by_constraint(ctx, variant_term, constraint);
             }
+            // Check if f is a struct constructor (Name.mk)
+            if let Some((sname, field_specs)) = self.lookup_struct_ctor(name) {
+                if field_specs.len() != 1 {
+                    return Err(format!(
+                        "Struct constructor {}.mk expects {} field(s), got 1",
+                        sname,
+                        field_specs.len()
+                    ));
+                }
+                let field_constraint = field_specs[0].1;
+                self.check(ctx, a, field_constraint)?;
+                let sc = self.arena.struct_cons(sname, self.arena.alloc_slice(&[a]));
+                return self.check_by_constraint(ctx, sc, constraint);
+            }
+            // Check if f is a struct projector (Name.field)
+            if let Some(idx) = self.lookup_struct_proj(name) {
+                let proj = self.arena.struct_proj(a, idx);
+                return self.check(ctx, proj, constraint);
+            }
         }
         match self.infer_fun_type(ctx, f)? {
             Some(ty) => {
@@ -231,6 +250,21 @@ impl<'bump> TypeChecker<'bump> {
                     } else {
                         Err(format!(
                             "Expected a variant of {}, got {}",
+                            name,
+                            PrettyPrinter::pretty(term)
+                        ))
+                    }
+                } else if self.lookup_struct(name).is_some() {
+                    // Struct type — check if term is a StructCons of this struct
+                    if let Term::StructCons(sname, _) = term {
+                        if sname == name {
+                            Ok(())
+                        } else {
+                            Err(format!("Expected struct {}, got struct {}", name, sname))
+                        }
+                    } else {
+                        Err(format!(
+                            "Expected a struct {}, got {}",
                             name,
                             PrettyPrinter::pretty(term)
                         ))
@@ -479,5 +513,86 @@ impl<'bump> TypeChecker<'bump> {
             self.arena.lit_bool(true),
         );
         self.arena.app(self.arena.lam(body), t)
+    }
+
+    /// Check a struct construction against a constraint.
+    pub(crate) fn check_struct_cons(
+        &self,
+        ctx: &Context<'bump>,
+        sname: Name<'bump>,
+        field_values: &'bump [&'bump Term<'bump>],
+        constraint: &'bump Term<'bump>,
+    ) -> Result<(), String> {
+        // Look up the struct definition
+        let sdef = self
+            .lookup_struct(sname)
+            .ok_or_else(|| format!("Unknown struct type: {}", sname))?;
+        let Term::StructDef(_, fields) = sdef else {
+            return Err(format!("{} is not a struct type", sname));
+        };
+        if field_values.len() != fields.len() {
+            return Err(format!(
+                "Struct {} expects {} field(s), got {}",
+                sname,
+                fields.len(),
+                field_values.len()
+            ));
+        }
+        // Check each field value against its constraint
+        for (i, (fname, fconstraint)) in fields.iter().enumerate() {
+            self.check(ctx, field_values[i], fconstraint)
+                .map_err(|e| format!("In field '{}' of struct {}: {}", fname, sname, e))?;
+        }
+        // Now check the constructed struct against the target constraint
+        self.check_by_constraint(ctx, self.arena.struct_cons(sname, field_values), constraint)
+    }
+
+    /// Check a struct field projection against a constraint.
+    pub(crate) fn check_struct_proj(
+        &self,
+        ctx: &Context<'bump>,
+        subject: &'bump Term<'bump>,
+        idx: usize,
+        constraint: &'bump Term<'bump>,
+    ) -> Result<(), String> {
+        // First try to evaluate the subject to see if it's a StructCons.
+        let subject_val = self.evaluator.whnf(subject)?;
+        if let Term::StructCons(sname, field_values) = subject_val {
+            // Subject is a concrete struct — get the field value
+            if let Some(field_val) = field_values.get(idx) {
+                return self.check(ctx, field_val, constraint);
+            } else {
+                return Err(format!("Struct {} has no field at index {}", sname, idx));
+            }
+        }
+        // For variables, look up the type in the context
+        if let Term::Var(i) = subject_val {
+            if let Some(ty) = ctx.lookup(*i) {
+                let ty_nf = self.evaluator.whnf(ty)?;
+                if let Term::Builtin(sname) = ty_nf {
+                    if let Some(sdef) = self.lookup_struct(sname) {
+                        if let Term::StructDef(_, fields) = sdef {
+                            if let Some((_, field_constraint)) = fields.get(idx) {
+                                // The projection type is the field's constraint
+                                return self.check_domain_match(field_constraint, constraint);
+                            }
+                        }
+                    }
+                }
+            }
+            return Err(format!("Variable has no struct type in context"));
+        }
+        // Subject is a literal or non-struct type — reject
+        if matches!(
+            subject_val,
+            Term::LitInt(_) | Term::LitBool(_) | Term::LitStr(_) | Term::Lam(_)
+        ) {
+            return Err(format!(
+                "Cannot project field from {}: expected a struct",
+                PrettyPrinter::pretty(subject_val)
+            ));
+        }
+        // Subject is not yet concretely known — accept (conservative)
+        Ok(())
     }
 }

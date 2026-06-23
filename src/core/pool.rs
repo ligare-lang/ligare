@@ -159,6 +159,18 @@ impl<'bump> TermArena<'bump> {
                     .collect();
                 self.match_(s, self.alloc_slice(&mapped))
             }
+            Term::StructDef(name, fields) => {
+                let mf: Vec<_> = fields
+                    .iter()
+                    .map(|(fnm, fc)| (*fnm, self.map(fc, f)))
+                    .collect();
+                self.struct_def(name, self.alloc_slice(&mf))
+            }
+            Term::StructCons(name, field_values) => {
+                let mapped: Vec<_> = field_values.iter().map(|v| self.map(v, f)).collect();
+                self.struct_cons(name, self.alloc_slice(&mapped))
+            }
+            Term::StructProj(subject, idx) => self.struct_proj(self.map(subject, f), *idx),
             _ => t,
         }
     }
@@ -287,6 +299,30 @@ impl<'bump> TermArena<'bump> {
         )],
     ) -> &'bump Term<'bump> {
         self.alloc(Term::Match(scrutinee, branches))
+    }
+
+    pub fn struct_def(
+        &self,
+        name: Name<'bump>,
+        fields: &'bump [(Name<'bump>, &'bump Term<'bump>)],
+    ) -> &'bump Term<'bump> {
+        self.alloc(Term::StructDef(name, fields))
+    }
+
+    pub fn struct_cons(
+        &self,
+        name: Name<'bump>,
+        field_values: &'bump [&'bump Term<'bump>],
+    ) -> &'bump Term<'bump> {
+        self.alloc(Term::StructCons(name, field_values))
+    }
+
+    pub fn struct_proj(
+        &self,
+        subject: &'bump Term<'bump>,
+        field_index: usize,
+    ) -> &'bump Term<'bump> {
+        self.alloc(Term::StructProj(subject, field_index))
     }
 
     /// Desugar a `FuncDef` into `Annot(Lam(body), Pi(params..., ret))`.
@@ -444,6 +480,21 @@ impl<'bump> SubstitutionContext<'bump> {
                     })
                     .collect();
                 self.arena.match_(s, self.arena.alloc_slice(&mapped))
+            }
+            Term::StructDef(name, fields) => {
+                let mf: Vec<_> = fields
+                    .iter()
+                    .map(|(fnm, fc)| (*fnm, recurse(fc, cutoff)))
+                    .collect();
+                self.arena.struct_def(name, self.arena.alloc_slice(&mf))
+            }
+            Term::StructCons(name, field_values) => {
+                let mapped: Vec<_> = field_values.iter().map(|v| recurse(v, cutoff)).collect();
+                self.arena
+                    .struct_cons(name, self.arena.alloc_slice(&mapped))
+            }
+            Term::StructProj(subject, idx) => {
+                self.arena.struct_proj(recurse(subject, cutoff), *idx)
             }
             // Leaf nodes — returned unchanged (Var handled by callers)
             _ => t,

@@ -13,6 +13,8 @@ pub enum CType {
     Str,
     /// Named union type (for tagged unions)
     Union(String),
+    /// Named struct type (for product types)
+    Struct(String),
 }
 
 impl CType {
@@ -21,6 +23,7 @@ impl CType {
             CType::Int64 => "int64_t".into(),
             CType::Str => "const char*".into(),
             CType::Union(name) => name.clone(),
+            CType::Struct(name) => name.clone(),
         }
     }
 }
@@ -45,13 +48,18 @@ impl FunSig {
         m_ret: Option<&crate::core::syntax::Term<'_>>,
         body: &crate::core::syntax::Term<'_>,
         union_names: &HashSet<String>,
+        struct_names: &HashSet<String>,
     ) -> Result<Self, String> {
         let param_types: Vec<CType> = params
             .iter()
-            .map(|(_, mc)| mc.map_or(Ok(CType::Int64), |c| constraint_to_ctype(c, union_names)))
+            .map(|(_, mc)| {
+                mc.map_or(Ok(CType::Int64), |c| {
+                    constraint_to_ctype(c, union_names, struct_names)
+                })
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let ret_type = match m_ret {
-            Some(t) => constraint_to_ctype(t, union_names)?,
+            Some(t) => constraint_to_ctype(t, union_names, struct_names)?,
             None => infer_ret_ctype(body, &param_types),
         };
         Ok(FunSig {
@@ -79,14 +87,19 @@ fn infer_ret_ctype(body: &crate::core::syntax::Term<'_>, param_types: &[CType]) 
     }
 }
 
-/// Map a constraint Term to its C type.  Recognizes builtin type names
-/// and user-defined union types; returns an error for unrecognized types.
+/// Map a constraint Term to its C type.  Recognizes builtin type names,
+/// user-defined struct types, and union types;
+/// returns an error for unrecognized types.
 pub fn constraint_to_ctype(
     t: &crate::core::syntax::Term<'_>,
     union_names: &HashSet<String>,
+    struct_names: &HashSet<String>,
 ) -> Result<CType, String> {
     match t {
         crate::core::syntax::Term::Builtin(name) if *name == "str" => Ok(CType::Str),
+        crate::core::syntax::Term::Builtin(name) if struct_names.contains(&name.to_string()) => {
+            Ok(CType::Struct(name.to_string()))
+        }
         crate::core::syntax::Term::Builtin(name) if union_names.contains(&name.to_string()) => {
             Ok(CType::Union(name.to_string()))
         }
@@ -95,6 +108,25 @@ pub fn constraint_to_ctype(
         | crate::core::syntax::Term::LitBool(_)
         | crate::core::syntax::Term::Var(_)
         | crate::core::syntax::Term::Universe(_) => Ok(CType::Int64),
+        crate::core::syntax::Term::Refine(_, parent, _) => {
+            constraint_to_ctype(parent, union_names, struct_names)
+        }
+        crate::core::syntax::Term::Annot(_, c) => constraint_to_ctype(c, union_names, struct_names),
+        crate::core::syntax::Term::Pi(_, _, _)
+        | crate::core::syntax::Term::Lam(_)
+        | crate::core::syntax::Term::App(..)
+        | crate::core::syntax::Term::Let(..)
+        | crate::core::syntax::Term::IfThenElse(..)
+        | crate::core::syntax::Term::ByProof(..)
+        | crate::core::syntax::Term::AutoProof
+        | crate::core::syntax::Term::RefParam
+        | crate::core::syntax::Term::PrimOp(_)
+        | crate::core::syntax::Term::UnionDef(..)
+        | crate::core::syntax::Term::Variant(..)
+        | crate::core::syntax::Term::Match(..)
+        | crate::core::syntax::Term::StructDef(..)
+        | crate::core::syntax::Term::StructCons(..)
+        | crate::core::syntax::Term::StructProj(..) => Ok(CType::Int64),
         _ => Err(format!("Cannot map constraint {:?} to C type", t)),
     }
 }

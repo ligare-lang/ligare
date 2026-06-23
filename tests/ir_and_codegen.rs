@@ -23,7 +23,7 @@ fn s<'bump>(arena: &TermArena<'bump>, s: &str) -> &'bump str {
 fn constraint_int_is_int64() {
     let names = HashSet::new();
     assert_eq!(
-        constraint_to_ctype(&Term::Builtin("int"), &names).unwrap(),
+        constraint_to_ctype(&Term::Builtin("int"), &names, &names).unwrap(),
         CType::Int64
     );
 }
@@ -32,7 +32,7 @@ fn constraint_int_is_int64() {
 fn constraint_str_is_str() {
     let names = HashSet::new();
     assert_eq!(
-        constraint_to_ctype(&Term::Builtin("str"), &names).unwrap(),
+        constraint_to_ctype(&Term::Builtin("str"), &names, &names).unwrap(),
         CType::Str
     );
 }
@@ -40,23 +40,37 @@ fn constraint_str_is_str() {
 #[test]
 fn constraint_union_name_returns_union() {
     let names: HashSet<String> = ["MyUnion".into()].into();
+    let empty = HashSet::new();
     assert_eq!(
-        constraint_to_ctype(&Term::Builtin("MyUnion"), &names).unwrap(),
+        constraint_to_ctype(&Term::Builtin("MyUnion"), &names, &empty).unwrap(),
         CType::Union("MyUnion".into())
     );
 }
 
 #[test]
-fn constraint_unknown_returns_err() {
+fn constraint_struct_name_returns_struct() {
+    let names: HashSet<String> = ["Point".into()].into();
+    let empty = HashSet::new();
+    assert_eq!(
+        constraint_to_ctype(&Term::Builtin("Point"), &empty, &names).unwrap(),
+        CType::Struct("Point".into())
+    );
+}
+
+#[test]
+fn constraint_lam_defaults_to_int64() {
     let names = HashSet::new();
-    assert!(constraint_to_ctype(&Term::Lam(&Term::Var(0)), &names).is_err());
+    assert_eq!(
+        constraint_to_ctype(&Term::Lam(&Term::Var(0)), &names, &names).unwrap(),
+        CType::Int64
+    );
 }
 
 #[test]
 fn constraint_var_is_int64() {
     let names = HashSet::new();
     assert_eq!(
-        constraint_to_ctype(&Term::Var(0), &names).unwrap(),
+        constraint_to_ctype(&Term::Var(0), &names, &names).unwrap(),
         CType::Int64
     );
 }
@@ -66,7 +80,14 @@ fn constraint_var_is_int64() {
 #[test]
 fn funsig_zero_params_default_ret() {
     let (_b, arena) = setup();
-    let sig = FunSig::from_func(&[], None, arena.lit_int(42), &HashSet::new()).unwrap();
+    let sig = FunSig::from_func(
+        &[],
+        None,
+        arena.lit_int(42),
+        &HashSet::new(),
+        &HashSet::new(),
+    )
+    .unwrap();
     assert!(sig.param_types.is_empty());
     assert_eq!(sig.ret_type, CType::Int64);
 }
@@ -76,16 +97,19 @@ fn funsig_with_str_param() {
     let (_b, arena) = setup();
     let params: &[(&str, Option<&Term>)] =
         arena.alloc_slice(&[(s(&arena, "s"), Some(arena.builtin(s(&arena, "str"))))]);
-    let sig = FunSig::from_func(params, None, arena.var(0), &HashSet::new()).unwrap();
+    let sig =
+        FunSig::from_func(params, None, arena.var(0), &HashSet::new(), &HashSet::new()).unwrap();
     assert_eq!(sig.param_types, vec![CType::Str]);
 }
 
 #[test]
-fn funsig_with_unknown_constraint_errs() {
+fn funsig_with_autoproof_defaults_to_int64() {
     let (_b, arena) = setup();
     let params: &[(&str, Option<&Term>)] =
         arena.alloc_slice(&[(s(&arena, "x"), Some(arena.auto_proof()))]);
-    assert!(FunSig::from_func(params, None, arena.var(0), &HashSet::new()).is_err());
+    let sig =
+        FunSig::from_func(params, None, arena.var(0), &HashSet::new(), &HashSet::new()).unwrap();
+    assert_eq!(sig.param_types, vec![CType::Int64]);
 }
 
 // ── C codegen: match with str payload ──
@@ -99,8 +123,13 @@ fn codegen_match_with_str_payload() {
             "def Msg : prop := union\n  | Text of (s : str)\n  | Code of (n : int)\n#show match Text \"hi\" with | Text s => s | Code n => \"err\"\n",
         )
         .unwrap();
-    let c = emit_c(compiler.tops(), compiler.fun_sigs(), &compiler.union_types)
-        .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(
+        compiler.tops(),
+        compiler.fun_sigs(),
+        &compiler.union_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     assert!(c.contains("const char*"), "missing str support:\n{c}");
 }
 
@@ -115,8 +144,13 @@ fn codegen_multiple_unions() {
             "def A : prop := union\n  | A1\n  | A2\ndef B : prop := union\n  | B1\n  | B2\ndef a : A := A1\ndef b : B := B2\n#show a\n#show b\n",
         )
         .unwrap();
-    let c = emit_c(compiler.tops(), compiler.fun_sigs(), &compiler.union_types)
-        .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(
+        compiler.tops(),
+        compiler.fun_sigs(),
+        &compiler.union_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     assert!(c.contains("typedef struct A"), "missing typedef A:\n{c}");
     assert!(c.contains("typedef struct B"), "missing typedef B:\n{c}");
     assert!(c.contains("const A a"), "missing const A:\n{c}");
@@ -134,8 +168,13 @@ fn codegen_function_with_match_body() {
             "def Color : prop := union\n  | Red\n  | Green\ndef f (c : Color) : int := match c with | Red => 1 | Green => 2\n#show f Red\n",
         )
         .unwrap();
-    let c = emit_c(compiler.tops(), compiler.fun_sigs(), &compiler.union_types)
-        .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(
+        compiler.tops(),
+        compiler.fun_sigs(),
+        &compiler.union_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     assert!(c.contains("int64_t f(Color"), "missing fun sig:\n{c}");
     assert!(c.contains("switch"), "missing switch in fun body:\n{c}");
 }
@@ -151,8 +190,13 @@ fn codegen_wildcard_match_no_decl() {
             "def Opt : prop := union\n  | None\n  | Some of (val : int)\n#show match Some 7 with | None => 0 | Some _ => 1\n",
         )
         .unwrap();
-    let c = emit_c(compiler.tops(), compiler.fun_sigs(), &compiler.union_types)
-        .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(
+        compiler.tops(),
+        compiler.fun_sigs(),
+        &compiler.union_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     // Should NOT declare the wildcard variable
     assert!(
         !c.contains("int64_t _ ="),
@@ -171,8 +215,13 @@ fn codegen_constant_constructed_from_match() {
             "def Color : prop := union\n  | Red\n  | Green\ndef x : Color := Red\n#show x\n",
         )
         .unwrap();
-    let c = emit_c(compiler.tops(), compiler.fun_sigs(), &compiler.union_types)
-        .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(
+        compiler.tops(),
+        compiler.fun_sigs(),
+        &compiler.union_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     assert!(c.contains("const Color x"), "missing const:\n{c}");
     assert!(c.contains("printf"), "missing printf:\n{c}");
 }

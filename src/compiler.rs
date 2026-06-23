@@ -30,6 +30,8 @@ pub struct Compiler<'bump> {
     fun_sigs: Vec<(&'bump str, FunSig)>,
     /// Union type definitions collected before erasure (for C codegen).
     pub union_types: Vec<(&'bump str, &'bump Term<'bump>)>,
+    /// Struct type definitions collected before erasure (for C codegen).
+    pub struct_types: Vec<(&'bump str, &'bump Term<'bump>)>,
     /// Suppress diagnostic output (set during codegen).
     quiet: bool,
 }
@@ -44,6 +46,7 @@ impl<'bump> Compiler<'bump> {
             tops: vec![],
             fun_sigs: vec![],
             union_types: vec![],
+            struct_types: vec![],
             quiet: false,
         }
     }
@@ -100,18 +103,34 @@ impl<'bump> Compiler<'bump> {
                 _ => None,
             })
             .collect();
+        let struct_names: std::collections::HashSet<String> = tops
+            .iter()
+            .filter_map(|top| match top {
+                TopLevel::TLDef(name, fd)
+                    if fd.params.is_empty() && matches!(fd.body, Term::StructDef(..)) =>
+                {
+                    Some(name.to_string())
+                }
+                _ => None,
+            })
+            .collect();
         for top in &tops {
             match top {
                 TopLevel::TLDef(name, func_def) => {
                     // Collect union types for C codegen
                     if func_def.params.is_empty() && matches!(func_def.body, Term::UnionDef(..)) {
                         self.union_types.push((name, func_def.body));
+                    } else if func_def.params.is_empty()
+                        && matches!(func_def.body, Term::StructDef(..))
+                    {
+                        self.struct_types.push((name, func_def.body));
                     } else {
                         let sig = FunSig::from_func(
                             func_def.params,
                             func_def.ret,
                             func_def.body,
                             &union_names,
+                            &struct_names,
                         )?;
                         self.fun_sigs.push((name, sig));
                     }
@@ -125,9 +144,10 @@ impl<'bump> Compiler<'bump> {
             .filter_map(|top| match top {
                 TopLevel::TLDef(_name, func_def)
                     if func_def.params.is_empty()
-                        && matches!(func_def.body, Term::UnionDef(..)) =>
+                        && (matches!(func_def.body, Term::UnionDef(..))
+                            || matches!(func_def.body, Term::StructDef(..))) =>
                 {
-                    None // Skip union type definitions (emitted as typedefs)
+                    None // Skip union/struct type definitions (emitted as typedefs)
                 }
                 TopLevel::TLDef(name, _func_def) => {
                     // Use the already-desugared term from env (set by process_top_level)
@@ -168,13 +188,13 @@ impl<'bump> Compiler<'bump> {
                 TopLevel::TLCheck(_, _) => None,
             })
             // Drop zero-param definitions that are type aliases
-            // (bare builtins or union defs with empty body after erasure).
+            // (bare builtins or union/struct defs with empty body after erasure).
             .filter(|top| {
                 !matches!(
                     top,
                     TopLevel::TLDef(_, FuncDef { params, body, .. })
                         if params.is_empty()
-                            && matches!(body, Term::Builtin(_) | Term::UnionDef(..))
+                            && matches!(body, Term::Builtin(_) | Term::UnionDef(..) | Term::StructDef(..))
                 )
             })
             .collect();
@@ -226,6 +246,12 @@ impl<'bump> Compiler<'bump> {
                         println!("[union] {}", name);
                     }
                     self.checker.add_union(name, func_def.body);
+                } else if func_def.params.is_empty() && matches!(func_def.body, Term::StructDef(..))
+                {
+                    if !self.quiet {
+                        println!("[struct] {}", name);
+                    }
+                    self.checker.add_struct(name, func_def.body);
                 } else if func_def.params.is_empty()
                     && matches!(func_def.body, Term::Refine(_, _, _))
                 {
@@ -245,8 +271,8 @@ impl<'bump> Compiler<'bump> {
                 }
             }
             TopLevel::TLCheck(term, constraint) => {
-                let resolved = self.subst_top_level(term);
-                let resolved_constraint = self.subst_top_level(constraint);
+                let resolved = self.resolve_all(term);
+                let resolved_constraint = self.resolve_all(constraint);
                 match self
                     .checker
                     .check(&empty_ctx(), resolved, resolved_constraint)
@@ -260,8 +286,8 @@ impl<'bump> Compiler<'bump> {
                 }
             }
             TopLevel::TLTheorem(name, prop, body) => {
-                let resolved_body = self.subst_top_level(body);
-                let resolved_prop = self.subst_top_level(prop);
+                let resolved_body = self.resolve_all(body);
+                let resolved_prop = self.resolve_all(prop);
                 match self
                     .checker
                     .check(&empty_ctx(), resolved_body, resolved_prop)
@@ -320,14 +346,26 @@ impl<'bump> Compiler<'bump> {
             }
             None
         });
-        // Also resolve variant apps and zero-arg constructors
+        // Also resolve variant apps, struct constructors, and zero-arg constructors
         let t = self.resolve_variant_apps(t);
+        let t = self.resolve_struct_ctors(t);
+        let t = self.resolve_struct_projs(t);
         self.arena.map(t, &|t| {
             if let Term::Builtin(name) = t {
                 if let Some((uname, idx, field_specs)) = self.checker.lookup_variant(name) {
                     if field_specs.is_empty() {
                         return Some(self.arena.variant(uname, idx, &[]));
                     }
+                }
+                // Zero-arg struct constructor
+                if let Some((sname, fields)) = self.checker.lookup_struct_ctor(name) {
+                    if fields.is_empty() {
+                        return Some(self.arena.struct_cons(sname, &[]));
+                    }
+                }
+                // Struct projector
+                if let Some(_idx) = self.checker.lookup_struct_proj(name) {
+                    // Can't resolve without subject — leave as-is
                 }
             }
             None
@@ -354,7 +392,7 @@ impl<'bump> Compiler<'bump> {
     }
 
     /// Substitute known top-level definitions into a term (O(1) lookup).
-    /// Also resolves variant constructors to Variant terms.
+    /// Also resolves variant/struct constructors to their term forms.
     /// Uses `is_constant()` to distinguish constants from functions.
     fn subst_top_level(&self, term: &'bump Term<'bump>) -> &'bump Term<'bump> {
         // First pass: resolve env lookups for constants only
@@ -368,14 +406,21 @@ impl<'bump> Compiler<'bump> {
             }
             None
         });
-        // Second pass: resolve variant apps
+        // Second pass: resolve variant apps, struct constructors, and projectors
         let t = self.resolve_variant_apps(t);
-        // Third pass: resolve remaining zero-arg variant constructors
+        let t = self.resolve_struct_ctors(t);
+        let t = self.resolve_struct_projs(t);
+        // Third pass: resolve remaining zero-arg variant/struct constructors
         self.arena.map(t, &|t| {
             if let Term::Builtin(name) = t {
                 if let Some((uname, idx, field_specs)) = self.checker.lookup_variant(name) {
                     if field_specs.is_empty() {
                         return Some(self.arena.variant(uname, idx, &[]));
+                    }
+                }
+                if let Some((sname, fields)) = self.checker.lookup_struct_ctor(name) {
+                    if fields.is_empty() {
+                        return Some(self.arena.struct_cons(sname, &[]));
                     }
                 }
             }
@@ -435,5 +480,66 @@ impl<'bump> Compiler<'bump> {
             }
         }
         None
+    }
+
+    /// Convert `App*(Builtin("name.mk"), args...)` to `StructCons(name, args)`.
+    fn resolve_struct_ctors(&self, t: &'bump Term<'bump>) -> &'bump Term<'bump> {
+        if let Some((sname, field_specs, args)) = self.collect_struct_args(t) {
+            if args.len() == field_specs.len() {
+                let sc = self.arena.struct_cons(sname, self.arena.alloc_slice(&args));
+                return self.resolve_struct_ctors(sc);
+            }
+        }
+        self.arena.map(t, &|node| {
+            if let Some((sname, field_specs, args)) = self.collect_struct_args(node) {
+                if args.len() == field_specs.len() {
+                    let sc = self.arena.struct_cons(sname, self.arena.alloc_slice(&args));
+                    return Some(self.resolve_struct_ctors(sc));
+                }
+            }
+            None
+        })
+    }
+
+    /// Unwrap an App chain to find a struct constructor (Name.mk) and collect its args.
+    fn collect_struct_args(
+        &self,
+        t: &'bump Term<'bump>,
+    ) -> Option<(
+        Name<'bump>,
+        &'bump [(Name<'bump>, &'bump Term<'bump>)],
+        Vec<&'bump Term<'bump>>,
+    )> {
+        let mut args: Vec<&'bump Term<'bump>> = Vec::new();
+        let mut current = t;
+        loop {
+            if let Term::App(f, a) = current {
+                args.push(*a);
+                current = f;
+            } else {
+                break;
+            }
+        }
+        args.reverse();
+        if let Term::Builtin(name) = current {
+            if let Some((sname, field_specs)) = self.checker.lookup_struct_ctor(name) {
+                return Some((sname, field_specs, args));
+            }
+        }
+        None
+    }
+
+    /// Convert `App(Builtin("Name.field"), arg)` to `StructProj(arg, idx)`.
+    fn resolve_struct_projs(&self, t: &'bump Term<'bump>) -> &'bump Term<'bump> {
+        self.arena.map(t, &|node| {
+            if let Term::App(f, arg) = node {
+                if let Term::Builtin(name) = f {
+                    if let Some(idx) = self.checker.lookup_struct_proj(name) {
+                        return Some(self.arena.struct_proj(arg, idx));
+                    }
+                }
+            }
+            None
+        })
     }
 }

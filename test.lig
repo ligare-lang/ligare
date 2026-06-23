@@ -48,3 +48,27 @@ def some_fn (s : str) := s
 #check some_fn some_sth : str
 #check "hello" : data
 #show some_fn some_sth
+
+-- Struct types
+def Point : prop := struct
+  x : int
+  y : int
+
+#check Point.mk 3 4 : Point
+
+def p : Point := Point.mk 10 20
+#check Point.x p : int
+#check Point.y p : int
+#show Point.x p
+
+-- Struct arithmetic
+def add (a : Point) (b : Point) : Point :=
+  Point.mk (Point.x a + Point.x b) (Point.y a + Point.y b)
+
+#show Point.x (add p p)
+
+-- Destructuring let
+def dist_sq (pt : Point) : int :=
+  let Point{x, y} := pt in x * x + y * y
+
+#show dist_sq p

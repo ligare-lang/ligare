@@ -125,8 +125,13 @@ fn codegen_recursive_union_typedef() {
             "def Nat : prop := union\n  | Zero\n  | Succ of (pred : Nat)\ndef zero : Nat := Zero\n",
         )
         .unwrap();
-    let c = emit_c(compiler.tops(), compiler.fun_sigs(), &compiler.union_types)
-        .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(
+        compiler.tops(),
+        compiler.fun_sigs(),
+        &compiler.union_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     assert!(
         c.contains("struct Nat* pred;"),
         "typedef missing struct Nat*:\n{c}"
@@ -143,8 +148,13 @@ fn codegen_recursive_variant_address_of() {
             "def Nat : prop := union\n  | Zero\n  | Succ of (pred : Nat)\ndef one : Nat := Succ Zero\n",
         )
         .unwrap();
-    let c = emit_c(compiler.tops(), compiler.fun_sigs(), &compiler.union_types)
-        .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(
+        compiler.tops(),
+        compiler.fun_sigs(),
+        &compiler.union_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     assert!(c.contains("&((Nat)"), "recursive field missing &:\n{c}");
 }
 
@@ -252,8 +262,13 @@ fn codegen_match_with_binding_emits_decl() {
             "def Option : prop := union\n  | None\n  | Some of (val : int)\n#show match Some 42 with | None => -1 | Some x => x\n",
         )
         .unwrap();
-    let c = emit_c(compiler.tops(), compiler.fun_sigs(), &compiler.union_types)
-        .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(
+        compiler.tops(),
+        compiler.fun_sigs(),
+        &compiler.union_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     assert!(c.contains("int64_t x ="), "missing bind decl:\n{c}");
     assert!(
         c.contains("_s0.data.Some.val"),
@@ -270,8 +285,13 @@ fn codegen_multiple_matches_unique_vars() {
             "def Color : prop := union\n  | Red\n  | Green\n#show match Red with | Red => 1 | Green => 2\n#show match Green with | Red => 10 | Green => 20\n",
         )
         .unwrap();
-    let c = emit_c(compiler.tops(), compiler.fun_sigs(), &compiler.union_types)
-        .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(
+        compiler.tops(),
+        compiler.fun_sigs(),
+        &compiler.union_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     assert!(c.contains("_s0"), "missing _s0:\n{c}");
     assert!(c.contains("_s1"), "missing _s1:\n{c}");
     assert!(c.contains("_r0"), "missing _r0:\n{c}");
@@ -287,8 +307,13 @@ fn codegen_function_returning_union() {
             "def Option : prop := union\n  | None\n  | Some of (val : int)\ndef some_val : Option := Some 42\n#show some_val\n",
         )
         .unwrap();
-    let c = emit_c(compiler.tops(), compiler.fun_sigs(), &compiler.union_types)
-        .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(
+        compiler.tops(),
+        compiler.fun_sigs(),
+        &compiler.union_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     assert!(
         c.contains("const Option some_val"),
         "missing union const:\n{c}"
@@ -305,8 +330,13 @@ fn codegen_tagged_union_typedef() {
             "def Shape : prop := union\n  | Circle\n  | Square\n  | Triangle\ndef s : Shape := Square\ndef c : Shape := Circle\n#show s\n#show c\n",
         )
         .unwrap();
-    let c = emit_c(compiler.tops(), compiler.fun_sigs(), &compiler.union_types)
-        .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(
+        compiler.tops(),
+        compiler.fun_sigs(),
+        &compiler.union_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     assert!(c.contains("typedef struct Shape"), "missing typedef:\n{c}");
     assert!(c.contains("int tag;"), "missing tag:\n{c}");
     // Should have both variant names in the typedef
@@ -323,8 +353,13 @@ fn codegen_empty_main_with_no_output() {
     compiler
         .collect_file_str("def Color : prop := union\n  | Red\n  | Green\ndef x : Color := Red\n")
         .unwrap();
-    let c = emit_c(compiler.tops(), compiler.fun_sigs(), &compiler.union_types)
-        .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(
+        compiler.tops(),
+        compiler.fun_sigs(),
+        &compiler.union_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     assert!(
         c.contains("int main(void)"),
         "missing main:

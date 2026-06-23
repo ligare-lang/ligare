@@ -89,6 +89,25 @@ impl<'bump> Evaluator<'bump> {
             | Term::Universe(_)
             | Term::Builtin(_) => Ok(t),
             Term::UnionDef(..) => Ok(t),
+            Term::StructDef(..) => Ok(t),
+            Term::StructCons(name, field_values) => {
+                let ev: Vec<_> = field_values
+                    .iter()
+                    .map(|v| self.eval(v))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(self.arena.struct_cons(name, self.arena.alloc_slice(&ev)))
+            }
+            Term::StructProj(subject, idx) => {
+                let s = self.eval(subject)?;
+                if let Term::StructCons(_, field_values) = s {
+                    field_values
+                        .get(*idx)
+                        .copied()
+                        .ok_or_else(|| format!("Struct projection index {} out of bounds", idx))
+                } else {
+                    Ok(self.arena.struct_proj(s, *idx))
+                }
+            }
             Term::Variant(name, idx, payloads) => {
                 let ep: Vec<_> = payloads
                     .iter()

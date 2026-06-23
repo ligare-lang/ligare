@@ -61,7 +61,12 @@ fn run_codegen(cli: &Cli, bump: &Bump, arena: &TermArena<'_>) {
         process::exit(1);
     }
 
-    let c_source = match emit_c(compiler.tops(), compiler.fun_sigs(), &compiler.union_types) {
+    let c_source = match emit_c(
+        compiler.tops(),
+        compiler.fun_sigs(),
+        &compiler.union_types,
+        &compiler.struct_types,
+    ) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Code generation error: {e}");

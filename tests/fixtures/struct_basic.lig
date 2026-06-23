@@ -1,0 +1,46 @@
+-- Struct type feature tour: definition, construction, projection, codegen
+
+def Point : prop := struct
+  x : int
+  y : int
+
+-- Construction and type check
+#check Point.mk 3 4 : Point
+
+-- Named struct value
+def origin : Point := Point.mk 0 0
+#check origin : Point
+
+-- Field projection
+#check Point.x origin : int
+#check Point.y origin : int
+
+-- Show projection result
+#show Point.x (Point.mk 7 8)
+
+-- Function taking struct param
+def get_x (p : Point) : int := Point.x p
+#check get_x origin : int
+
+-- Struct with mixed types
+def Person : prop := struct
+  name : str
+  age : int
+
+def alice : Person := Person.mk "Alice" 30
+#check Person.name alice : str
+#show Person.name alice
+
+-- Struct with bool
+def Flag : prop := struct
+  enabled : bool
+  value : int
+
+#check Flag.mk true 42 : Flag
+
+-- Single-field struct
+def Wrapper : prop := struct
+  inner : int
+
+#check Wrapper.mk 99 : Wrapper
+#check Wrapper.inner (Wrapper.mk 99) : int

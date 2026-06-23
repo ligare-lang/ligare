@@ -70,12 +70,40 @@ struct UnionInfo {
     variants: Vec<VariantInfo>,
 }
 
+/// Struct type info for C codegen.
+struct StructInfo {
+    fields: Vec<(String, CType)>,
+}
+
+/// Build a map from struct name to its field info.
+fn build_struct_map(
+    struct_types: &[(&str, &Term<'_>)],
+    union_names: &HashSet<String>,
+    struct_names: &HashSet<String>,
+) -> Result<HashMap<String, StructInfo>, String> {
+    let mut map = HashMap::new();
+    for (name, sdef) in struct_types {
+        if let Term::StructDef(_, fields) = sdef {
+            let fs: Vec<(String, CType)> = fields
+                .iter()
+                .map(|(fnm, fc)| {
+                    constraint_to_ctype(fc, union_names, struct_names)
+                        .map(|ct| (fnm.to_string(), ct))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            map.insert(name.to_string(), StructInfo { fields: fs });
+        }
+    }
+    Ok(map)
+}
+
 /// Build a map from union name to its variant info.
 fn build_union_map(
     union_types: &[(&str, &Term<'_>)],
+    union_names: &HashSet<String>,
+    struct_names: &HashSet<String>,
 ) -> Result<HashMap<String, UnionInfo>, String> {
     let mut map = HashMap::new();
-    let union_names: HashSet<String> = union_types.iter().map(|(n, _)| n.to_string()).collect();
     for (name, udef) in union_types {
         if let Term::UnionDef(_, variants) = udef {
             let mut vis = Vec::new();
@@ -83,7 +111,8 @@ fn build_union_map(
                 let fs: Vec<(String, CType)> = fields
                     .iter()
                     .map(|(fnm, fc)| {
-                        constraint_to_ctype(fc, &union_names).map(|ct| (fnm.to_string(), ct))
+                        constraint_to_ctype(fc, union_names, struct_names)
+                            .map(|ct| (fnm.to_string(), ct))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 vis.push(VariantInfo {
@@ -97,22 +126,174 @@ fn build_union_map(
     Ok(map)
 }
 
+/// Extract type dependencies from a type definition (struct or union).
+/// Returns the set of user-defined type names referenced by value.
+fn type_dependencies(
+    def: &Term<'_>,
+    union_names: &HashSet<String>,
+    struct_names: &HashSet<String>,
+) -> HashSet<String> {
+    let mut deps = HashSet::new();
+    let fields: Option<&[(crate::core::syntax::Name<'_>, &Term<'_>)]> = match def {
+        Term::StructDef(_, f) => Some(*f),
+        Term::UnionDef(_, variants) => {
+            // Collect all payload fields from all variants
+            let all: Vec<_> = variants
+                .iter()
+                .flat_map(|(_, fields)| fields.iter().map(|(n, t)| (*n, *t)))
+                .collect();
+            if all.is_empty() {
+                return deps;
+            }
+            // Can't easily return a slice, just iterate
+            for (_name, fty) in &all {
+                collect_type_refs(fty, union_names, struct_names, &mut deps);
+            }
+            return deps;
+        }
+        _ => return deps,
+    };
+    if let Some(fs) = fields {
+        for (_name, fty) in fs {
+            collect_type_refs(fty, union_names, struct_names, &mut deps);
+        }
+    }
+    deps
+}
+
+/// Recursively collect user-defined type names from a constraint term.
+fn collect_type_refs(
+    t: &Term<'_>,
+    union_names: &HashSet<String>,
+    struct_names: &HashSet<String>,
+    deps: &mut HashSet<String>,
+) {
+    match t {
+        Term::Builtin(name) => {
+            let s = name.to_string();
+            if union_names.contains(&s) || struct_names.contains(&s) {
+                deps.insert(s);
+            }
+        }
+        Term::Pi(_, a, b) => {
+            collect_type_refs(a, union_names, struct_names, deps);
+            collect_type_refs(b, union_names, struct_names, deps);
+        }
+        Term::App(f, a) => {
+            collect_type_refs(f, union_names, struct_names, deps);
+            collect_type_refs(a, union_names, struct_names, deps);
+        }
+        _ => {}
+    }
+}
+
+/// Emit a struct typedef using pointers for union-typed fields (for cyclic deps).
+fn emit_struct_typedef_ptr(
+    name: &str,
+    sdef: &Term<'_>,
+    union_names: &HashSet<String>,
+    struct_names: &HashSet<String>,
+) -> Result<String, String> {
+    let Term::StructDef(_, fields) = sdef else {
+        return Ok(String::new());
+    };
+    let mut out = format!("// struct {name} (ptr cycle)\n");
+    out.push_str(&format!("typedef struct {name} {{\n"));
+    for (fname, fty) in fields.iter() {
+        let cty = constraint_to_ctype(fty, union_names, struct_names)?;
+        if matches!(cty, CType::Union(_)) {
+            out.push_str(&format!("    {}* {};\n", cty.c_name(), fname));
+        } else {
+            out.push_str(&format!("    {} {};\n", cty.c_name(), fname));
+        }
+    }
+    out.push_str(&format!("}} {name};\n"));
+    Ok(out)
+}
+
 /// Emit a complete C source file from a list of top-level items.
 pub fn emit_c(
     tops: &[TopLevel<'_>],
     fun_sigs: &[(&str, FunSig)],
     union_types: &[(&str, &Term<'_>)],
+    struct_types: &[(&str, &Term<'_>)],
 ) -> Result<String, String> {
     let mut out = String::from("#include <stdio.h>\n#include <stdint.h>\n#include <stddef.h>\n\n");
 
-    // Emit union type definitions
+    // Build separate name sets for struct and union resolution
     let union_names: HashSet<String> = union_types.iter().map(|(n, _)| n.to_string()).collect();
-    for (name, udef) in union_types {
-        out.push_str(&emit_union_typedef(name, udef, &union_names)?);
-        out.push('\n');
+    let struct_names: HashSet<String> = struct_types.iter().map(|(n, _)| n.to_string()).collect();
+
+    // Emit forward declarations for all types first
+    for (name, _sdef) in struct_types {
+        out.push_str(&format!("typedef struct {name} {name};\n"));
+    }
+    for (name, _udef) in union_types {
+        out.push_str(&format!("typedef struct {name} {name};\n"));
+    }
+    out.push('\n');
+
+    // Topological sort: emit types in dependency order.
+    // A union variant payload may reference a struct by value → struct first.
+    // A struct field may reference a union by value → union first.
+    // For mutual cycles, we fall back to pointers in struct→union direction.
+    let mut emitted: HashSet<String> = HashSet::new();
+    let mut remaining: Vec<(&str, &Term<'_>, bool)> = Vec::new(); // (name, def, is_struct)
+    for (n, s) in struct_types {
+        remaining.push((n, *s, true));
+    }
+    for (n, u) in union_types {
+        remaining.push((n, *u, false));
     }
 
-    let union_map = build_union_map(union_types)?;
+    // Simple fixpoint: keep trying until all emitted or stuck
+    let mut changed = true;
+    while changed && !remaining.is_empty() {
+        changed = false;
+        let mut next: Vec<(&str, &Term<'_>, bool)> = Vec::new();
+        for (name, def, is_struct) in remaining.drain(..) {
+            let deps = type_dependencies(def, &union_names, &struct_names);
+            let all_deps_emitted = deps.iter().all(|d| emitted.contains(d.as_str()));
+            if all_deps_emitted || deps.is_empty() {
+                if is_struct {
+                    out.push_str(&emit_struct_typedef(
+                        name,
+                        def,
+                        &union_names,
+                        &struct_names,
+                    )?);
+                } else {
+                    out.push_str(&emit_union_typedef(name, def, &union_names, &struct_names)?);
+                }
+                out.push('\n');
+                emitted.insert(name.to_string());
+                changed = true;
+            } else {
+                next.push((name, def, is_struct));
+            }
+        }
+        remaining = next;
+    }
+
+    // Emit any remaining types (cycles) — struct fields with union deps use pointers
+    if !remaining.is_empty() {
+        for (name, def, is_struct) in remaining {
+            if is_struct {
+                out.push_str(&emit_struct_typedef_ptr(
+                    name,
+                    def,
+                    &union_names,
+                    &struct_names,
+                )?);
+            } else {
+                out.push_str(&emit_union_typedef(name, def, &union_names, &struct_names)?);
+            }
+            out.push('\n');
+        }
+    }
+
+    let union_map = build_union_map(union_types, &union_names, &struct_names)?;
+    let struct_map = build_struct_map(struct_types, &union_names, &struct_names)?;
 
     let mut defs: Vec<(&str, &FuncDef<'_>)> = Vec::new();
     let mut outputs: Vec<&Term<'_>> = Vec::new();
@@ -128,7 +309,13 @@ pub fn emit_c(
     }
 
     for (name, func_def) in &defs {
-        out.push_str(&emit_def(name, func_def, fun_sigs, &union_map)?);
+        out.push_str(&emit_def(
+            name,
+            func_def,
+            fun_sigs,
+            &union_map,
+            &struct_map,
+        )?);
         out.push('\n');
     }
 
@@ -136,7 +323,15 @@ pub fn emit_c(
         out.push_str("int main(void) {\n");
         let mut match_counter: u32 = 0;
         for term in &outputs {
-            let (expr, ctype) = emit_expr(term, &[], &mut Vec::new(), None, fun_sigs, &union_map)?;
+            let (expr, ctype) = emit_expr(
+                term,
+                &[],
+                &mut Vec::new(),
+                None,
+                fun_sigs,
+                &union_map,
+                &struct_map,
+            )?;
             // Handle match sentinels at top level (not inside a function)
             if expr.starts_with("match__") {
                 let block = emit_match_block(&expr, &ctype, match_counter, &union_map);
@@ -152,6 +347,7 @@ pub fn emit_c(
                     CType::Union(_) => {
                         out.push_str(&format!("    printf(\"%d\\n\", {}.tag);\n", r_var))
                     }
+                    CType::Struct(_) => out.push_str(&format!("    printf(\"<struct>\\n\");\n")),
                 }
             } else {
                 match ctype {
@@ -163,6 +359,9 @@ pub fn emit_c(
                     }
                     CType::Union(_) => {
                         out.push_str(&format!("    printf(\"%d\\n\", ({}).tag);\n", expr));
+                    }
+                    CType::Struct(_) => {
+                        out.push_str(&format!("    printf(\"<struct>\\n\");\n"));
                     }
                 }
             }
@@ -180,6 +379,7 @@ fn emit_union_typedef(
     name: &str,
     udef: &Term<'_>,
     union_names: &HashSet<String>,
+    struct_names: &HashSet<String>,
 ) -> Result<String, String> {
     let Term::UnionDef(_, variants) = udef else {
         return Ok(String::new());
@@ -199,7 +399,7 @@ fn emit_union_typedef(
                 if is_self_ref {
                     out.push_str(&format!("struct {}* {}; ", name, fname));
                 } else {
-                    let cty = constraint_to_ctype(fty, union_names)?;
+                    let cty = constraint_to_ctype(fty, union_names, struct_names)?;
                     out.push_str(&format!("{} {}; ", cty.c_name(), fname));
                 }
             }
@@ -211,19 +411,48 @@ fn emit_union_typedef(
     Ok(out)
 }
 
+/// Emit a C typedef for a struct type (product type with named fields).
+fn emit_struct_typedef(
+    name: &str,
+    sdef: &Term<'_>,
+    union_names: &HashSet<String>,
+    struct_names: &HashSet<String>,
+) -> Result<String, String> {
+    let Term::StructDef(_, fields) = sdef else {
+        return Ok(String::new());
+    };
+    let mut out = format!("// struct {name}\n");
+    out.push_str(&format!("typedef struct {name} {{\n"));
+    for (fname, fty) in fields.iter() {
+        let cty = constraint_to_ctype(fty, union_names, struct_names)?;
+        out.push_str(&format!("    {} {};\n", cty.c_name(), fname));
+    }
+    out.push_str(&format!("}} {name};\n"));
+    Ok(out)
+}
+
 /// Emit a top-level definition as a C function or constant.
 fn emit_def(
     name: &str,
     func_def: &FuncDef<'_>,
     fun_sigs: &[(&str, FunSig)],
     union_map: &HashMap<String, UnionInfo>,
+    struct_map: &HashMap<String, StructInfo>,
 ) -> Result<String, String> {
     let params = func_def.params;
     let body = func_def.body;
     if params.is_empty() {
         let arity = count_lams(body);
         if arity == 0 {
-            let (code, ctype) = emit_expr(body, &[], &mut Vec::new(), None, fun_sigs, union_map)?;
+            let (code, ctype) = emit_expr(
+                body,
+                &[],
+                &mut Vec::new(),
+                None,
+                fun_sigs,
+                union_map,
+                struct_map,
+            )?;
             Ok(format!(
                 "const {} {} = {};\n",
                 ctype.c_name(),
@@ -234,7 +463,15 @@ fn emit_def(
             let pns: Vec<String> = (0..arity).map(|i| format!("arg_{}", i)).collect();
             let peeled = peel_lams(body, arity);
             let param_types = vec![CType::Int64; arity];
-            emit_fun(name, &pns, &param_types, peeled, fun_sigs, union_map)
+            emit_fun(
+                name,
+                &pns,
+                &param_types,
+                peeled,
+                fun_sigs,
+                union_map,
+                struct_map,
+            )
         }
     } else {
         let pns: Vec<String> = params.iter().map(|(n, _)| n.to_string()).collect();
@@ -244,7 +481,15 @@ fn emit_def(
             .map(|(_, sig)| sig.param_types.clone())
             .unwrap_or_else(|| vec![CType::Int64; params.len()]);
         let peeled = peel_lams(body, params.len());
-        emit_fun(name, &pns, &param_types, peeled, fun_sigs, union_map)
+        emit_fun(
+            name,
+            &pns,
+            &param_types,
+            peeled,
+            fun_sigs,
+            union_map,
+            struct_map,
+        )
     }
 }
 
@@ -259,6 +504,7 @@ fn emit_fun(
     body: &Term<'_>,
     fun_sigs: &[(&str, FunSig)],
     union_map: &HashMap<String, UnionInfo>,
+    struct_map: &HashMap<String, StructInfo>,
 ) -> Result<String, String> {
     let cps: Vec<String> = params
         .iter()
@@ -267,8 +513,15 @@ fn emit_fun(
         .collect();
     let bd: Vec<String> = params.iter().rev().map(|p| escape_c_name(p)).collect();
     let mut var_types: Vec<CType> = param_types.iter().rev().cloned().collect();
-    let (body_code, ret_ty) =
-        emit_expr(body, &bd, &mut var_types, Some(name), fun_sigs, union_map)?;
+    let (body_code, ret_ty) = emit_expr(
+        body,
+        &bd,
+        &mut var_types,
+        Some(name),
+        fun_sigs,
+        union_map,
+        struct_map,
+    )?;
     // If the body is a match, wrap it as a proper C block instead of
     // GCC statement expression.
     let return_stmt = if body_code.starts_with("match__") {
@@ -406,6 +659,7 @@ fn emit_expr(
     self_name: Option<&str>,
     fun_sigs: &[(&str, FunSig)],
     union_map: &HashMap<String, UnionInfo>,
+    struct_map: &HashMap<String, StructInfo>,
 ) -> Result<(String, CType), String> {
     match term {
         Term::LitInt(n) => Ok((n.to_string(), CType::Int64)),
@@ -418,12 +672,16 @@ fn emit_expr(
         }
 
         Term::Let(name, val, body, _) => {
-            let (v, val_ty) = emit_expr(val, bound, var_types, self_name, fun_sigs, union_map)?;
+            let (v, val_ty) = emit_expr(
+                val, bound, var_types, self_name, fun_sigs, union_map, struct_map,
+            )?;
             let ty_name = val_ty.c_name();
             var_types.insert(0, val_ty);
             let mut ext: Vec<String> = vec![(*name).to_string()];
             ext.extend_from_slice(bound);
-            let (b, body_ty) = emit_expr(body, &ext, var_types, self_name, fun_sigs, union_map)?;
+            let (b, body_ty) = emit_expr(
+                body, &ext, var_types, self_name, fun_sigs, union_map, struct_map,
+            )?;
             var_types.remove(0);
             Ok((
                 format!("({{ {} {} = {}; {}; }})", ty_name, name, v, b),
@@ -433,7 +691,9 @@ fn emit_expr(
 
         Term::Lam(body) => {
             var_types.insert(0, CType::Int64);
-            let (b, ret_ty) = emit_expr(body, bound, var_types, self_name, fun_sigs, union_map)?;
+            let (b, ret_ty) = emit_expr(
+                body, bound, var_types, self_name, fun_sigs, union_map, struct_map,
+            )?;
             var_types.remove(0);
             // Lambda wrapping is done by emit_fun via emit_def.
             // We return the body code + return type for inference.
@@ -441,16 +701,26 @@ fn emit_expr(
         }
 
         Term::IfThenElse(c, t, f) => {
-            let (cc, _) = emit_expr(c, bound, var_types, self_name, fun_sigs, union_map)?;
-            let (ct, t_ty) = emit_expr(t, bound, var_types, self_name, fun_sigs, union_map)?;
-            let (cf, _) = emit_expr(f, bound, var_types, self_name, fun_sigs, union_map)?;
+            let (cc, _) = emit_expr(
+                c, bound, var_types, self_name, fun_sigs, union_map, struct_map,
+            )?;
+            let (ct, t_ty) = emit_expr(
+                t, bound, var_types, self_name, fun_sigs, union_map, struct_map,
+            )?;
+            let (cf, _) = emit_expr(
+                f, bound, var_types, self_name, fun_sigs, union_map, struct_map,
+            )?;
             Ok((format!("({}) ? ({}) : ({})", cc, ct, cf), t_ty))
         }
 
         // Function calls: look up the called function's return type.
-        Term::App(_, _) => emit_app(term, bound, var_types, self_name, fun_sigs, union_map),
+        Term::App(_, _) => emit_app(
+            term, bound, var_types, self_name, fun_sigs, union_map, struct_map,
+        ),
 
-        Term::Annot(inner, _) => emit_expr(inner, bound, var_types, self_name, fun_sigs, union_map),
+        Term::Annot(inner, _) => emit_expr(
+            inner, bound, var_types, self_name, fun_sigs, union_map, struct_map,
+        ),
         Term::Builtin(name) => {
             let ty = fun_sigs
                 .iter()
@@ -460,6 +730,38 @@ fn emit_expr(
             Ok((escape_c_name(name), ty))
         }
         Term::UnionDef(..) => Ok((String::new(), CType::Int64)),
+        Term::StructDef(..) => Ok((String::new(), CType::Int64)),
+        Term::StructCons(sname, field_values) => {
+            let type_name: String = sname.to_string();
+            let field_codes: Vec<String> = field_values
+                .iter()
+                .map(|v| {
+                    let (code, _) = emit_expr(
+                        v, bound, var_types, self_name, fun_sigs, union_map, struct_map,
+                    )?;
+                    Ok(code)
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok((
+                format!("(({}){{ {} }})", type_name, field_codes.join(", ")),
+                CType::Struct(type_name),
+            ))
+        }
+        Term::StructProj(subject, idx) => {
+            let (scode, sty) = emit_expr(
+                subject, bound, var_types, self_name, fun_sigs, union_map, struct_map,
+            )?;
+            // Look up the struct type to get the real field name and type
+            if let CType::Struct(ref sname) = sty {
+                if let Some(info) = struct_map.get(sname) {
+                    if let Some((fname, ftype)) = info.fields.get(*idx) {
+                        return Ok((format!("({}).{}", scode, fname), ftype.clone()));
+                    }
+                }
+            }
+            // Fallback: use index-based access
+            Ok((format!("({})._f{}", scode, idx), CType::Int64))
+        }
         Term::Variant(uname, idx, payloads) => {
             let type_name: String = uname.to_string();
             // Look up variant info for field names
@@ -473,8 +775,9 @@ fn emit_expr(
                             .iter()
                             .zip(payloads.iter())
                             .map(|((fnm, fty), p)| {
-                                let (code, pty) =
-                                    emit_expr(p, bound, var_types, self_name, fun_sigs, union_map)?;
+                                let (code, pty) = emit_expr(
+                                    p, bound, var_types, self_name, fun_sigs, union_map, struct_map,
+                                )?;
                                 // Recursive field? Check field type AND payload type.
                                 let is_rec = if let CType::Union(un) = fty {
                                     un == &type_name
@@ -508,7 +811,9 @@ fn emit_expr(
         }
         Term::Match(_scrut, branches) => {
             // Emit as "match__<sc_ty>__<sc>__<ret_ty>__<idx>__<n>__<name>__<type>__...__<body>__..."
-            let (sc, sc_ty) = emit_expr(_scrut, bound, var_types, self_name, fun_sigs, union_map)?;
+            let (sc, sc_ty) = emit_expr(
+                _scrut, bound, var_types, self_name, fun_sigs, union_map, struct_map,
+            )?;
             let mut parts = vec!["match".to_string(), sc_ty.c_name(), sc];
             let mut ret_ty = CType::Int64;
             for (idx, binds, body) in branches.iter() {
@@ -518,8 +823,15 @@ fn emit_expr(
                     ext.insert(0, (*name).to_string());
                     ext_types.insert(0, CType::Int64);
                 }
-                let (bc, bty) =
-                    emit_expr(body, &ext, &mut ext_types, self_name, fun_sigs, union_map)?;
+                let (bc, bty) = emit_expr(
+                    body,
+                    &ext,
+                    &mut ext_types,
+                    self_name,
+                    fun_sigs,
+                    union_map,
+                    struct_map,
+                )?;
                 ret_ty = bty;
                 let escaped = bc.replace(',', "\x1e");
                 parts.push(idx.to_string());
@@ -527,8 +839,10 @@ fn emit_expr(
                 parts.push(binds.len().to_string());
                 for (name, ty) in binds.iter() {
                     parts.push((*name).to_string());
-                    parts
-                        .push(constraint_to_ctype(ty, &std::collections::HashSet::new())?.c_name());
+                    // Look up the C type using both union and struct name sets
+                    let un: HashSet<String> = union_map.keys().cloned().collect();
+                    let sn: HashSet<String> = struct_map.keys().cloned().collect();
+                    parts.push(constraint_to_ctype(ty, &un, &sn)?.c_name());
                 }
                 parts.push(escaped);
             }
@@ -547,6 +861,7 @@ fn emit_app(
     self_name: Option<&str>,
     fun_sigs: &[(&str, FunSig)],
     union_map: &HashMap<String, UnionInfo>,
+    struct_map: &HashMap<String, StructInfo>,
 ) -> Result<(String, CType), String> {
     let Term::App(f, a) = term else {
         unreachable!()
@@ -555,19 +870,25 @@ fn emit_app(
     if let Term::App(prim, left) = *f
         && let Term::PrimOp(op) = *prim
     {
-        let (ls, _) = emit_expr(left, bound, var_types, self_name, fun_sigs, union_map)?;
-        let (rs, _) = emit_expr(a, bound, var_types, self_name, fun_sigs, union_map)?;
+        let (ls, _) = emit_expr(
+            left, bound, var_types, self_name, fun_sigs, union_map, struct_map,
+        )?;
+        let (rs, _) = emit_expr(
+            a, bound, var_types, self_name, fun_sigs, union_map, struct_map,
+        )?;
         return Ok((emit_binop(*op, &ls, &rs), CType::Int64));
     }
     // Unary / partial application: just emit the argument.
     if matches!(*f, Term::PrimOp(_)) {
-        let (as_, ty) = emit_expr(a, bound, var_types, self_name, fun_sigs, union_map)?;
+        let (as_, ty) = emit_expr(
+            a, bound, var_types, self_name, fun_sigs, union_map, struct_map,
+        )?;
         return Ok((as_, ty));
     }
     // Function call.
     let mut args: Vec<String> = Vec::new();
     let func = collect_call_args(
-        term, bound, var_types, self_name, fun_sigs, union_map, &mut args,
+        term, bound, var_types, self_name, fun_sigs, union_map, struct_map, &mut args,
     )?;
     let ret_ty = fun_sigs
         .iter()
@@ -584,18 +905,24 @@ fn collect_call_args(
     self_name: Option<&str>,
     fun_sigs: &[(&str, FunSig)],
     union_map: &HashMap<String, UnionInfo>,
+    struct_map: &HashMap<String, StructInfo>,
     args: &mut Vec<String>,
 ) -> Result<String, String> {
     match term {
         Term::App(f, a) => {
-            let func =
-                collect_call_args(f, bound, var_types, self_name, fun_sigs, union_map, args)?;
-            let (as_, _) = emit_expr(a, bound, var_types, self_name, fun_sigs, union_map)?;
+            let func = collect_call_args(
+                f, bound, var_types, self_name, fun_sigs, union_map, struct_map, args,
+            )?;
+            let (as_, _) = emit_expr(
+                a, bound, var_types, self_name, fun_sigs, union_map, struct_map,
+            )?;
             args.push(as_);
             Ok(func)
         }
         _ => {
-            let (s, _) = emit_expr(term, bound, var_types, self_name, fun_sigs, union_map)?;
+            let (s, _) = emit_expr(
+                term, bound, var_types, self_name, fun_sigs, union_map, struct_map,
+            )?;
             Ok(s)
         }
     }
@@ -642,7 +969,7 @@ mod tests {
     }
 
     fn emit(tops: &[TopLevel<'_>], fun_sigs: &[(&str, FunSig)]) -> String {
-        emit_c(tops, fun_sigs, &[]).unwrap()
+        emit_c(tops, fun_sigs, &[], &[]).unwrap()
     }
 
     // ── Literals ──
@@ -882,7 +1209,7 @@ mod tests {
         });
         let tops = &[TopLevel::TLDef(top_name, func_def)];
 
-        let c = emit_c(tops, &[], union_types).unwrap();
+        let c = emit_c(tops, &[], union_types, &[]).unwrap();
         // Typedef uses struct pointer for recursive field
         assert!(
             c.contains("struct Nat* pred;"),
@@ -923,7 +1250,7 @@ mod tests {
         });
         let tops = &[TopLevel::TLDef(arena.alloc_str("one"), func_def)];
 
-        let c = emit_c(tops, &[], union_types).unwrap();
+        let c = emit_c(tops, &[], union_types, &[]).unwrap();
         // Recursive reference must emit & (address-of) for the pointer field
         assert!(
             c.contains("&((Nat)"),

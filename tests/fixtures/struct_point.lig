@@ -1,0 +1,31 @@
+-- Struct arithmetic: vector-like operations on Point
+
+def Point : prop := struct
+  x : int
+  y : int
+
+-- Construct a point
+def p : Point := Point.mk 3 4
+
+-- Add two points
+def add (a : Point) (b : Point) : Point :=
+  Point.mk (Point.x a + Point.x b) (Point.y a + Point.y b)
+
+-- Scale a point
+def scale (p : Point) (s : int) : Point :=
+  Point.mk (Point.x p * s) (Point.y p * s)
+
+-- Dot product-like (sum of coordinates)
+def sum (p : Point) : int := Point.x p + Point.y p
+
+#check add p p : Point
+#check scale p 2 : Point
+#show sum p
+
+-- Origin test
+def origin : Point := Point.mk 0 0
+#show sum origin
+
+-- Distance comparison
+#show Point.x p > 0
+#show Point.x p == 3

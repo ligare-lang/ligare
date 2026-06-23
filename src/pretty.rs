@@ -91,6 +91,20 @@ impl PrettyPrinter {
                     .collect();
                 format!("match {} with\n  {}", Self::pretty(scrut), bs.join("\n  "))
             }
+            Term::StructDef(name, fields) => {
+                let fs: Vec<String> = fields
+                    .iter()
+                    .map(|(fnm, fc)| format!("{} : {}", fnm, Self::pretty(fc)))
+                    .collect();
+                format!("struct {}\n  {}", name, fs.join("\n  "))
+            }
+            Term::StructCons(name, field_values) => {
+                let vs: Vec<String> = field_values.iter().map(|v| Self::pretty(v)).collect();
+                format!("({}.mk {})", name, vs.join(" "))
+            }
+            Term::StructProj(subject, idx) => {
+                format!("({}._{})", Self::pretty(subject), idx)
+            }
         }
     }
 

@@ -26,6 +26,9 @@ impl Classifier {
             Term::Builtin(name) => classify_builtin(name).or(Some(Universe::UData)),
             Term::UnionDef(..) => Some(Universe::UProp),
             Term::Variant(..) => Some(Universe::UData),
+            Term::StructDef(..) => Some(Universe::UProp),
+            Term::StructCons(..) => Some(Universe::UData),
+            Term::StructProj(subject, _) => Self::classify(ctx, subject),
             Term::Match(_, branches) => {
                 // Match type = type of first branch (all branches must agree)
                 branches

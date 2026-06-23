@@ -197,32 +197,43 @@ int -> bool               -- non-dependent arrow
 ¬ P      -- negation: ¬P
 ```
 
-## 9. Structs *(planned)*
-
-> ⚠️ This feature is not yet implemented. The syntax below represents the intended design.
+## 9. Structs
 
 A struct definition is a **constraint** — it lives in the `prop` universe and is erased after type checking.  Struct *values* (constructed instances) live in `data` and are retained at runtime.
 
-A struct has named fields and optional invariants.  It is the **product type** (∧) of Ligare: all fields exist simultaneously.
+A struct has named fields.  It is the **product type** (∧) of Ligare: all fields exist simultaneously.  Since refinement types (`where` clauses) already handle invariants, structs focus solely on bundling named data.
 
-**Planned syntax**
+**Syntax**
 ```ligare
 def Point : prop := struct
   x : int
   y : int
-invariant: x >= 0 ∧ y >= 0
 ```
 
 **Construction**
-When constructing a struct value, a `proof` that the invariant holds must be provided:
 ```ligare
-def p : Point := Point.mk 3 4 by
-  exact (∧-intro (3 >= 0) (4 >= 0))
+def p : Point := Point.mk 3 4
 ```
-The compiler will automatically generate:
-- A constructor function with proof obligations
-- Field projection functions (e.g. `Point.x p`)
-- A `theorem` corresponding to the invariant (e.g., for any `p : Point`, `p.x >= 0` is an available theorem)
+
+**Field projection**
+```ligare
+#check Point.x p : int
+def get_x (pt : Point) : int := Point.x pt
+```
+
+**How it works**
+- `Point.mk` is an auto-generated constructor that takes field values in order.
+- `Point.x` is an auto-generated projector that extracts the named field from a struct value.
+- The compiler automatically generates these from the struct definition.
+- Field constraints are verified at construction time.
+
+**C representation**
+```c
+typedef struct Point {
+    int64_t x;
+    int64_t y;
+} Point;
+```
 
 ## 10. Union Types *(planned)*
 

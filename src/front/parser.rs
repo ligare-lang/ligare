@@ -272,10 +272,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         let body_expr = if self.peek_token() == Some(Token::KwUnion) {
             self.parse_union_body(name)?
         } else if self.peek_token() == Some(Token::KwStruct) {
-            return Err(ParseError {
-                message: "struct definitions are not yet implemented".into(),
-                span: self.current_span(),
-            });
+            self.parse_struct_body(name)?
         } else {
             let param_names: Vec<Name<'bump>> = params.iter().map(|(n, _)| *n).collect();
             let mut env: Vec<Name<'bump>> = param_names.iter().rev().copied().collect();
@@ -448,6 +445,38 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             .union_def(name, self.arena.alloc_slice(&variants_slice)))
     }
 
+    /// Parse a struct body: `struct\n  field1 : Type1\n  field2 : Type2`
+    fn parse_struct_body(&mut self, name: Name<'bump>) -> Result<&'bump Term<'bump>, ParseError> {
+        self.expect(&Token::KwStruct)?;
+        let mut fields: Vec<(Name<'bump>, &'bump Term<'bump>)> = Vec::new();
+        // Parse indented fields: each field is `name : type` (the `:` is optional).
+        // Use `parse_term_no_annot` for field types to avoid greedy application
+        // that would consume the next field name as an argument.
+        loop {
+            let saved = self.pos;
+            let fname = match self.parse_ident() {
+                Ok(n) => n,
+                Err(_) => {
+                    self.pos = saved;
+                    break;
+                }
+            };
+            let fty = if self.try_expect(&Token::Colon) {
+                self.parse_term_no_annot(&[])?
+            } else {
+                self.arena.builtin(self.pool.intern("data"))
+            };
+            fields.push((fname, fty));
+        }
+        if fields.is_empty() {
+            return Err(ParseError {
+                message: "struct must have at least one field".into(),
+                span: self.current_span(),
+            });
+        }
+        Ok(self.arena.struct_def(name, self.arena.alloc_slice(&fields)))
+    }
+
     fn parse_operators(
         &mut self,
         env: &[Name<'bump>],
@@ -475,6 +504,10 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             });
         }
         let name = self.parse_ident()?;
+        // Check for destructuring: `let Name{field1, field2, ...} := val in body`
+        if self.try_expect(&Token::LBrace) {
+            return self.parse_let_destruct(env, name);
+        }
         let m_constraint = self.parse_type_annotation(env);
         let m_proof = self.parse_by_proof_clause(env);
         self.expect(&Token::ColonEq)?;
@@ -488,6 +521,82 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         extended_env.extend_from_slice(env);
         let body = self.parse_expr(&extended_env)?;
         Ok(self.arena.let_(name, val, body, m_constraint))
+    }
+
+    /// Parse destructuring let: `let Name{field1, field2, ...} := val in body`
+    /// Desugars to nested `let field1 := Name.field1 val in let field2 := ... in body`
+    fn parse_let_destruct(
+        &mut self,
+        env: &[Name<'bump>],
+        struct_name: Name<'bump>,
+    ) -> Result<&'bump Term<'bump>, ParseError> {
+        let mut field_names: Vec<Name<'bump>> = Vec::new();
+        loop {
+            let fname = self.parse_ident()?;
+            field_names.push(fname);
+            if !self.try_expect(&Token::Comma) {
+                break;
+            }
+        }
+        self.expect(&Token::RBrace)?;
+        if field_names.is_empty() {
+            return Err(ParseError {
+                message: "destructuring pattern must have at least one field".into(),
+                span: self.current_span(),
+            });
+        }
+        // Optional type annotation on the whole struct value
+        let _m_constraint = self.parse_type_annotation(env);
+        self.expect(&Token::ColonEq)?;
+        let val = self.parse_expr(env)?;
+        self.expect(&Token::KwIn)?;
+        // Build nested let bindings.
+        // Desugar `let Point{x, y} := val in body` to:
+        //   let x := Point.x val in let y := Point.y val in body
+        // where each inner `val` has its De Bruijn indices shifted by 1.
+
+        // First, extend the env with ALL field names and parse the body.
+        // Execution order: `let x := ... in let y := ... in body`
+        // means the execution stack is [y, x, pt] (y at index 0).
+        // So build env in the same order: innermost first.
+        let mut ext_env: Vec<Name<'bump>> = env.to_vec();
+        for fname in field_names.iter() {
+            ext_env.insert(0, fname);
+        }
+        let mut body = self.parse_expr(&ext_env)?;
+
+        // Then wrap with lets, outermost first (not reversed).
+        // The field_names are in declaration order [x, y].
+        // Build all projections first to avoid borrowing conflicts.
+        let arena = self.arena;
+        let mut projs: Vec<&'bump Term<'bump>> = Vec::new();
+        for (i, fname) in field_names.iter().enumerate() {
+            let dotted = self.pool.intern(&format!("{}.{}", struct_name, fname));
+            // val starts at index 0; each wrapping shifts it by i
+            let val_shifted = if i == 0 {
+                val
+            } else {
+                // Manual shift: add i to all De Bruijn indices in val
+                let shift = i as i32;
+                arena.map(val, &move |t| {
+                    if let Term::Var(j) = t {
+                        Some(arena.var((*j as i32 + shift) as usize))
+                    } else {
+                        None
+                    }
+                })
+            };
+            let proj = arena.app(arena.builtin(dotted), val_shifted);
+            projs.push(proj);
+        }
+        // Now build nested lets using the projections.
+        // Iterate in reverse so that the first-declared field (e.g. x)
+        // is the outermost let, matching the De Bruijn shifts computed
+        // above and the ext_env order used when parsing the body.
+        for (fname, proj) in field_names.iter().rev().zip(projs.iter().rev()) {
+            body = arena.let_(fname, proj, body, None);
+        }
+        Ok(body)
     }
 
     fn try_parse<T>(
@@ -616,6 +725,15 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                     && let Some(tactics) = self.parse_by_proof_clause(env)
                 {
                     return self.parse_suffixes(env, self.arena.by_proof(Some(t), tactics));
+                }
+                // `.field` suffix: dotted name access (struct construction/projection)
+                if self.peek_token() == Some(Token::Dot) {
+                    if let Term::Builtin(name) = t {
+                        self.advance(); // consume `.`
+                        let field = self.parse_ident()?;
+                        let dotted = self.pool.intern(&format!("{}.{}", name, field));
+                        return self.parse_suffixes(env, self.arena.builtin(dotted));
+                    }
                 }
                 Ok(t)
             }
