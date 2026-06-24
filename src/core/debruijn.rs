@@ -104,7 +104,7 @@ impl<'bump> Desugarer<'bump> {
                         Tactic::Exact(t) => Tactic::Exact(self.desugar_with_env(t, env)),
                         Tactic::Apply(t) => Tactic::Apply(self.desugar_with_env(t, env)),
                         Tactic::Intro(n) => Tactic::Intro(*n),
-                        Tactic::Have(n, t) => Tactic::Have(*n, self.desugar_with_env(t, env)),
+                        Tactic::Have(n, t) => Tactic::Have(n, self.desugar_with_env(t, env)),
                     })
                     .collect();
                 self.arena
@@ -118,11 +118,10 @@ impl<'bump> Desugarer<'bump> {
                 // desugar_with_env because the latter could resolve
                 // Named(name) to Var(i) if name shadows an outer binding.
                 let pred_with_param = self.arena.map(p, &|node| {
-                    if let Term::Named(n) = node {
-                        if *n == *name {
+                    if let Term::Named(n) = node
+                        && *n == *name {
                             return Some(self.arena.ref_param());
                         }
-                    }
                     None
                 });
                 let pred2 = self.desugar_with_env(pred_with_param, env);

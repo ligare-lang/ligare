@@ -9,6 +9,13 @@ use crate::checker::context::{ConstraintTable, Context, add_refine, empty_table,
 use crate::core::debruijn::Desugarer;
 use crate::core::pool::TermArena;
 use crate::core::syntax::{Name, Tactic, Term};
+
+/// Result of looking up a variant constructor: (union_name, variant_index, field_specs).
+type VariantInfo<'bump> = (
+    Name<'bump>,
+    usize,
+    &'bump [(Name<'bump>, &'bump Term<'bump>)],
+);
 use crate::core::whnf::WhnfEvaluator;
 
 /// The type checker — bundles arena, constraint table, and checking logic.
@@ -74,14 +81,7 @@ impl<'bump> TypeChecker<'bump> {
     }
 
     /// Look up a variant constructor name → (union_name, variant_index, field_specs).
-    pub fn lookup_variant(
-        &self,
-        ctor_name: &str,
-    ) -> Option<(
-        Name<'bump>,
-        usize,
-        &'bump [(Name<'bump>, &'bump Term<'bump>)],
-    )> {
+    pub fn lookup_variant(&self, ctor_name: &str) -> Option<VariantInfo<'bump>> {
         for (uname, udef, _) in &self.union_table {
             if let Term::UnionDef(_, variants) = udef {
                 for (idx, (vname, fields)) in variants.iter().enumerate() {
@@ -119,10 +119,10 @@ impl<'bump> TypeChecker<'bump> {
         // Check if name ends with ".mk"
         if let Some(struct_name) = ctor_name.strip_suffix(".mk") {
             for (sname, sdef, _) in &self.struct_table {
-                if *sname == struct_name {
-                    if let Term::StructDef(_, fields) = sdef {
-                        return Some((*sname, *fields));
-                    }
+                if *sname == struct_name
+                    && let Term::StructDef(_, fields) = sdef
+                {
+                    return Some((*sname, *fields));
                 }
             }
         }
@@ -136,10 +136,10 @@ impl<'bump> TypeChecker<'bump> {
             let struct_name = &proj_name[..dot_pos];
             let field_name = &proj_name[dot_pos + 1..];
             for (sname, sdef, _) in &self.struct_table {
-                if *sname == struct_name {
-                    if let Term::StructDef(_, fields) = sdef {
-                        return fields.iter().position(|(fnm, _)| *fnm == field_name);
-                    }
+                if *sname == struct_name
+                    && let Term::StructDef(_, fields) = sdef
+                {
+                    return fields.iter().position(|(fnm, _)| *fnm == field_name);
                 }
             }
         }

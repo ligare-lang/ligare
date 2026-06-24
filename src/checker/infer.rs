@@ -6,7 +6,7 @@ use crate::checker::context::{
     Context, add_refine, add_theorem, expand_constraint, extend_ctx, extend_ctx_term, lookup_refine,
 };
 use crate::config::{BUILTIN_BOOL, BUILTIN_DATA};
-use crate::core::syntax::{Name, Term, Universe};
+use crate::core::syntax::{MatchBranch, Name, Term, Universe};
 use crate::pretty::PrettyPrinter;
 
 impl<'bump> TypeChecker<'bump> {
@@ -194,11 +194,7 @@ impl<'bump> TypeChecker<'bump> {
         &self,
         ctx: &Context<'bump>,
         _scrutinee: &'bump Term<'bump>,
-        branches: &'bump [(
-            usize,
-            &'bump [(Name<'bump>, &'bump Term<'bump>)],
-            &'bump Term<'bump>,
-        )],
+        branches: &'bump [MatchBranch<'bump>],
         constraint: &'bump Term<'bump>,
     ) -> Result<(), String> {
         // For each branch, bind payload variables and check the body
@@ -245,10 +241,10 @@ impl<'bump> TypeChecker<'bump> {
         match norm {
             Term::Builtin(name) | Term::Named(name) => {
                 // Check if term is a Variant — verify union name matches constraint
-                if let Term::Variant(uname, _, _) = term {
-                    if uname == name {
-                        return Ok(());
-                    }
+                if let Term::Variant(uname, _, _) = term
+                    && uname == name
+                {
+                    return Ok(());
                 }
                 if let Some(builtin_checker) = check_builtin(name) {
                     let evald = self.evaluator.whnf(term)?;
@@ -458,20 +454,20 @@ impl<'bump> TypeChecker<'bump> {
 
     /// Returns true if a field constraint is a type parameter of the given union.
     fn is_union_type_param(&self, union_name: &str, constraint: &Term<'bump>) -> bool {
-        if let Term::Builtin(name) | Term::Named(name) = constraint {
-            if let Some((_, type_params)) = self.lookup_union(union_name) {
-                return type_params.iter().any(|p| **p == **name);
-            }
+        if let Term::Builtin(name) | Term::Named(name) = constraint
+            && let Some((_, type_params)) = self.lookup_union(union_name)
+        {
+            return type_params.iter().any(|p| **p == **name);
         }
         false
     }
 
     /// Returns true if a field constraint is a type parameter of the given struct.
     fn is_struct_type_param(&self, struct_name: &str, constraint: &Term<'bump>) -> bool {
-        if let Term::Builtin(name) | Term::Named(name) = constraint {
-            if let Some((_, type_params)) = self.lookup_struct(struct_name) {
-                return type_params.iter().any(|p| **p == **name);
-            }
+        if let Term::Builtin(name) | Term::Named(name) = constraint
+            && let Some((_, type_params)) = self.lookup_struct(struct_name)
+        {
+            return type_params.iter().any(|p| **p == **name);
         }
         false
     }
@@ -752,18 +748,16 @@ impl<'bump> TypeChecker<'bump> {
         if let Term::Var(i) = subject_val {
             if let Some(ty) = ctx.lookup(*i) {
                 let ty_nf = self.evaluator.whnf(ty)?;
-                if let Term::Builtin(sname) | Term::Named(sname) = ty_nf {
-                    if let Some((sdef, _)) = self.lookup_struct(sname) {
-                        if let Term::StructDef(_, fields) = sdef {
-                            if let Some((_, field_constraint)) = fields.get(idx) {
-                                // The projection constraint is the field's constraint
-                                return self.check_domain_match(field_constraint, constraint);
-                            }
-                        }
-                    }
+                if let Term::Builtin(sname) | Term::Named(sname) = ty_nf
+                    && let Some((sdef, _)) = self.lookup_struct(sname)
+                    && let Term::StructDef(_, fields) = sdef
+                    && let Some((_, field_constraint)) = fields.get(idx)
+                {
+                    // The projection constraint is the field's constraint
+                    return self.check_domain_match(field_constraint, constraint);
                 }
             }
-            return Err(format!("term has no struct constraint"));
+            return Err("term has no struct constraint".to_string());
         }
         // Subject is a literal — reject
         if matches!(
@@ -793,10 +787,10 @@ impl<'bump> TypeChecker<'bump> {
             return t;
         }
         self.arena.map(t, &|node| {
-            if let Term::Builtin(n) | Term::Named(n) = node {
-                if *n == pname {
-                    return Some(arg);
-                }
+            if let Term::Builtin(n) | Term::Named(n) = node
+                && *n == pname
+            {
+                return Some(arg);
             }
             None
         })

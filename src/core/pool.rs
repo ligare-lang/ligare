@@ -2,7 +2,7 @@ use bumpalo::Bump;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crate::core::syntax::{Name, PrimOp, Tactic, Term, Universe};
+use crate::core::syntax::{MatchBranch, Name, PrimOp, Tactic, Term, Universe};
 
 /// A bumpalo-backed string interner.
 ///
@@ -334,11 +334,7 @@ impl<'bump> TermArena<'bump> {
     pub fn match_(
         &self,
         scrutinee: &'bump Term<'bump>,
-        branches: &'bump [(
-            usize,
-            &'bump [(Name<'bump>, &'bump Term<'bump>)],
-            &'bump Term<'bump>,
-        )],
+        branches: &'bump [MatchBranch<'bump>],
     ) -> &'bump Term<'bump> {
         self.alloc(Term::Match(scrutinee, branches))
     }

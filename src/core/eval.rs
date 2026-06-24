@@ -121,15 +121,14 @@ impl<'bump> Evaluator<'bump> {
             }
             Term::Match(scrut, branches) => {
                 let s = self.eval(scrut)?;
-                if let Term::Variant(_, idx, payloads) = s {
-                    if let Some((_, _, body)) = branches.get(*idx) {
+                if let Term::Variant(_, idx, payloads) = s
+                    && let Some((_, _, body)) = branches.get(*idx) {
                         let mut result = *body;
                         for payload in payloads.iter().rev() {
                             result = self.sub.beta(result, payload);
                         }
                         return self.eval(result);
                     }
-                }
                 // Stuck — keep the match expression
                 let bs: Vec<_> = branches
                     .iter()

@@ -42,8 +42,7 @@ impl Classifier {
                 // Match type = type of first branch (all branches must agree)
                 branches
                     .first()
-                    .map(|(_, _, body)| Self::classify(ctx, body))
-                    .flatten()
+                    .and_then(|(_, _, body)| Self::classify(ctx, body))
             }
         }
     }

@@ -36,6 +36,28 @@ const BUILTIN_NAMES: &[&str] = &[
 
 type SpannedToken = (Token, std::ops::Range<usize>);
 
+/// Parsed top-level definition: (name, params, ret_annotation, body).
+type ParsedDef<'bump> = (
+    Name<'bump>,
+    &'bump [(Name<'bump>, Option<&'bump Term<'bump>>)],
+    Option<&'bump Term<'bump>>,
+    &'bump Term<'bump>,
+);
+
+/// Parsed function body: (params, ret_annotation, body).
+type ParsedFuncBody<'bump> = (
+    Vec<(Name<'bump>, Option<&'bump Term<'bump>>)>,
+    Option<&'bump Term<'bump>>,
+    &'bump Term<'bump>,
+);
+
+/// Parsed match branch (with Vec instead of slice during parsing).
+type ParsedMatchBranch<'bump> = (
+    usize,
+    Vec<(Name<'bump>, &'bump Term<'bump>)>,
+    &'bump Term<'bump>,
+);
+
 pub struct Parser<'a, 'bump> {
     tokens: &'a [SpannedToken],
     pos: usize,
@@ -164,17 +186,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         Ok(t)
     }
 
-    pub fn parse_def_top(
-        &mut self,
-    ) -> Result<
-        (
-            Name<'bump>,
-            &'bump [(Name<'bump>, Option<&'bump Term<'bump>>)],
-            Option<&'bump Term<'bump>>,
-            &'bump Term<'bump>,
-        ),
-        ParseError,
-    > {
+    pub fn parse_def_top(&mut self) -> Result<ParsedDef<'bump>, ParseError> {
         self.parse_def()
     }
 
@@ -294,17 +306,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
 
     // ── Definitions ──
 
-    fn parse_def(
-        &mut self,
-    ) -> Result<
-        (
-            Name<'bump>,
-            &'bump [(Name<'bump>, Option<&'bump Term<'bump>>)],
-            Option<&'bump Term<'bump>>,
-            &'bump Term<'bump>,
-        ),
-        ParseError,
-    > {
+    fn parse_def(&mut self) -> Result<ParsedDef<'bump>, ParseError> {
         self.expect(&Token::KwDef)?;
         let name = self.parse_ident()?;
         let (params, m_ret, body) = self.parse_func_body(name, &[])?;
@@ -343,14 +345,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         &mut self,
         name: Name<'bump>,
         outer_env: &[Name<'bump>],
-    ) -> Result<
-        (
-            Vec<(Name<'bump>, Option<&'bump Term<'bump>>)>,
-            Option<&'bump Term<'bump>>,
-            &'bump Term<'bump>,
-        ),
-        ParseError,
-    > {
+    ) -> Result<ParsedFuncBody<'bump>, ParseError> {
         let params = self.parse_many_curried_params();
         let m_ret = self.parse_type_annotation(&[], outer_env);
         self.expect(&Token::ColonEq)?;
@@ -429,11 +424,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         let scrutinee = self.parse_expr(env)?;
         self.expect(&Token::KwWith)?;
         // Parse branches: `| Pattern => body` repeated
-        let mut branches: Vec<(
-            usize,
-            Vec<(Name<'bump>, &'bump Term<'bump>)>,
-            &'bump Term<'bump>,
-        )> = Vec::new();
+        let mut branches: Vec<ParsedMatchBranch<'bump>> = Vec::new();
         loop {
             if !self.try_expect(&Token::Bar) {
                 break;
@@ -443,7 +434,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             let mut binds: Vec<(Name<'bump>, &'bump Term<'bump>)> = Vec::new();
             while self
                 .peek_token()
-                .map_or(false, |t| matches!(t, Token::Ident(_)))
+                .is_some_and(|t| matches!(t, Token::Ident(_)))
             {
                 let bind_name = self.parse_ident()?;
                 // Infer constraint as `data` for bindings
@@ -796,13 +787,13 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                     return self.parse_suffixes(env, self.arena.by_proof(Some(t), tactics));
                 }
                 // `.field` suffix: dotted name access (struct construction/projection)
-                if self.peek_token() == Some(Token::Dot) {
-                    if let Term::Builtin(name) | Term::Named(name) = t {
-                        self.advance(); // consume `.`
-                        let field = self.parse_ident()?;
-                        let dotted = self.pool.intern(&format!("{}.{}", name, field));
-                        return self.parse_suffixes(env, self.arena.named(dotted));
-                    }
+                if self.peek_token() == Some(Token::Dot)
+                    && let Term::Builtin(name) | Term::Named(name) = t
+                {
+                    self.advance(); // consume `.`
+                    let field = self.parse_ident()?;
+                    let dotted = self.pool.intern(&format!("{}.{}", name, field));
+                    return self.parse_suffixes(env, self.arena.named(dotted));
                 }
                 Ok(t)
             }
@@ -933,7 +924,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         let mut params = vec![self.parse_ident()?];
         while self
             .peek_token()
-            .map_or(false, |t| matches!(t, Token::Ident(_)))
+            .is_some_and(|t| matches!(t, Token::Ident(_)))
         {
             params.push(self.parse_ident()?);
         }
@@ -1246,15 +1237,7 @@ pub fn parse_def_top<'bump>(
     input: &str,
     bump: &'bump Bump,
     arena: &'bump TermArena<'bump>,
-) -> Result<
-    (
-        Name<'bump>,
-        &'bump [(Name<'bump>, Option<&'bump Term<'bump>>)],
-        Option<&'bump Term<'bump>>,
-        &'bump Term<'bump>,
-    ),
-    String,
-> {
+) -> Result<ParsedDef<'bump>, String> {
     let pool = StringPool::new(bump);
     Parser::new(&tokenize(input), &pool, arena)
         .parse_def_top()

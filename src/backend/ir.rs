@@ -54,7 +54,7 @@ impl FunSig {
         // by universe-level constraints (data, prop, theorem, proof).
         let data_params: Vec<_> = params
             .iter()
-            .filter(|(_, mc)| !mc.map_or(false, |c| is_type_universe(c)))
+            .filter(|(_, mc)| !mc.is_some_and(|c| is_type_universe(c)))
             .collect();
         let param_types: Vec<CType> = data_params
             .iter()

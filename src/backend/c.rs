@@ -311,19 +311,20 @@ pub fn emit_c(
     // Emit constants (zero-param, zero-lambda definitions) unconditionally.
     // These have no type params to erase and are pure data.
     for top in tops {
-        if let TopLevel::TLDef(name, params, m_ret, body, _) = top {
-            if params.is_empty() && count_lams(body) == 0 {
-                out.push_str(&emit_def(
-                    name,
-                    params,
-                    *m_ret,
-                    body,
-                    fun_sigs,
-                    &union_map,
-                    &struct_map,
-                )?);
-                out.push('\n');
-            }
+        if let TopLevel::TLDef(name, params, m_ret, body, _) = top
+            && params.is_empty()
+            && count_lams(body) == 0
+        {
+            out.push_str(&emit_def(
+                name,
+                params,
+                *m_ret,
+                body,
+                fun_sigs,
+                &union_map,
+                &struct_map,
+            )?);
+            out.push('\n');
         }
     }
 
@@ -397,7 +398,7 @@ pub fn emit_c(
                     CType::Union(_) => {
                         out.push_str(&format!("    printf(\"%d\\n\", {}.tag);\n", r_var))
                     }
-                    CType::Struct(_) => out.push_str(&format!("    printf(\"<struct>\\n\");\n")),
+                    CType::Struct(_) => out.push_str("    printf(\"<struct>\\n\");\n"),
                 }
             } else {
                 match ctype {
@@ -411,7 +412,7 @@ pub fn emit_c(
                         out.push_str(&format!("    printf(\"%d\\n\", ({}).tag);\n", expr));
                     }
                     CType::Struct(_) => {
-                        out.push_str(&format!("    printf(\"<struct>\\n\");\n"));
+                        out.push_str("    printf(\"<struct>\\n\");\n");
                     }
                 }
             }
@@ -501,7 +502,7 @@ fn collect_called_names<'bump>(
     let mut called = HashSet::new();
     // Seed with names found in output expressions.
     for term in outputs {
-        collect_names_in_term(*term, &def_names, &mut called);
+        collect_names_in_term(term, &def_names, &mut called);
     }
     // Transitive closure: also walk bodies of already-called functions
     // to discover indirect dependencies.
@@ -510,10 +511,10 @@ fn collect_called_names<'bump>(
         changed = false;
         let prev_len = called.len();
         for raw_def in raw_defs {
-            if let TopLevel::TLDef(name, _, _, body, _) = raw_def {
-                if called.contains(*name) {
-                    collect_names_in_term(body, &def_names, &mut called);
-                }
+            if let TopLevel::TLDef(name, _, _, body, _) = raw_def
+                && called.contains(*name)
+            {
+                collect_names_in_term(body, &def_names, &mut called);
             }
         }
         if called.len() > prev_len {
@@ -662,7 +663,7 @@ fn emit_def(
         // Filter out type-level (generic) params to match FunSig.
         let data_params: Vec<_> = params
             .iter()
-            .filter(|(_, mc)| !mc.map_or(false, |c| is_type_universe(c)))
+            .filter(|(_, mc)| !mc.is_some_and(|c| is_type_universe(c)))
             .collect();
         let pns: Vec<String> = data_params.iter().map(|(n, _)| n.to_string()).collect();
         let param_types: Vec<CType> = fun_sigs
@@ -743,7 +744,7 @@ fn emit_match_block(
     // Format: match__<scrut_type>__<scrut>__<ret_ty>__<idx>__<body>__...
     let parts: Vec<&str> = code.split("__").collect();
     if parts.len() < 5 {
-        return format!("    return 0;\n");
+        return "    return 0;\n".to_string();
     }
     let scrut_ty = parts[1];
     let scrut = parts[2];
@@ -955,12 +956,11 @@ fn emit_expr(
                 subject, bound, var_types, self_name, fun_sigs, union_map, struct_map,
             )?;
             // Look up the struct type to get the real field name and type
-            if let CType::Struct(ref sname) = sty {
-                if let Some(info) = struct_map.get(sname) {
-                    if let Some((fname, ftype)) = info.fields.get(*idx) {
-                        return Ok((format!("({}).{}", scode, fname), ftype.clone()));
-                    }
-                }
+            if let CType::Struct(ref sname) = sty
+                && let Some(info) = struct_map.get(sname)
+                && let Some((fname, ftype)) = info.fields.get(*idx)
+            {
+                return Ok((format!("({}).{}", scode, fname), ftype.clone()));
             }
             // Fallback: use index-based access
             Ok((format!("({})._f{}", scode, idx), CType::Int64))
@@ -1089,9 +1089,8 @@ fn emit_app(
         return Ok((as_, ty));
     }
     // Function call.
-    let mut args: Vec<String> = Vec::new();
-    let func = collect_call_args(
-        term, bound, var_types, self_name, fun_sigs, union_map, struct_map, &mut args,
+    let (func, args) = collect_call_args(
+        term, bound, var_types, self_name, fun_sigs, union_map, struct_map,
     )?;
     let param_count = fun_sigs
         .iter()
@@ -1121,24 +1120,23 @@ fn collect_call_args(
     fun_sigs: &[(&str, FunSig)],
     union_map: &HashMap<String, UnionInfo>,
     struct_map: &HashMap<String, StructInfo>,
-    args: &mut Vec<String>,
-) -> Result<String, String> {
+) -> Result<(String, Vec<String>), String> {
     match term {
         Term::App(f, a) => {
-            let func = collect_call_args(
-                f, bound, var_types, self_name, fun_sigs, union_map, struct_map, args,
+            let (func, mut args) = collect_call_args(
+                f, bound, var_types, self_name, fun_sigs, union_map, struct_map,
             )?;
             let (as_, _) = emit_expr(
                 a, bound, var_types, self_name, fun_sigs, union_map, struct_map,
             )?;
             args.push(as_);
-            Ok(func)
+            Ok((func, args))
         }
         _ => {
             let (s, _) = emit_expr(
                 term, bound, var_types, self_name, fun_sigs, union_map, struct_map,
             )?;
-            Ok(s)
+            Ok((s, Vec::new()))
         }
     }
 }

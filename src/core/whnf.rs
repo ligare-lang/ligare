@@ -170,13 +170,12 @@ impl<'bump> WhnfEvaluator<'bump> {
             }
             _ => {
                 // Normalize arrow type: App(App(->, A), B) → Pi("", A, B)
-                if let Term::App(builtin, dom) = f {
-                    if matches!(*builtin, Term::Builtin(n) | Term::Named(n) if *n == "->") {
+                if let Term::App(builtin, dom) = f
+                    && matches!(*builtin, Term::Builtin(n) | Term::Named(n) if *n == "->") {
                         let dom_nf = self.whnf(dom)?;
                         let cod_nf = self.whnf(a)?;
                         return Ok(self.arena.pi(self.arena.alloc_str(""), dom_nf, cod_nf));
                     }
-                }
                 let f_val = self.whnf(f)?;
                 if matches!(f_val, Term::Lam(_)) {
                     self.whnf(self.arena.app(f_val, a))
