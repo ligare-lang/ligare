@@ -172,7 +172,7 @@ impl<'bump> TypeChecker<'bump> {
             }
             Term::ByProof(t_opt, tactics) => {
                 let c_nf = self.evaluator.whnf(constraint)?;
-                // Expand Builtin constraints (like `nat`) that are
+                // Expand Builtin constraints (like `Nat`) that are
                 // actually refinement constraints in the table.
                 let expanded = match c_nf {
                     Term::Builtin(name) | Term::Named(name) => lookup_refine(name, &self.table)
@@ -241,7 +241,7 @@ impl<'bump> TypeChecker<'bump> {
             // full evaluation (which would compute recursive calls).
             Term::App(f, a) => self.check_app(ctx, f, a, constraint),
             // A bare Builtin/Named name may be a type (int, str, etc.) or a
-            // refinement (nat).  If neither, check if it's a variant constructor
+            // refinement (Nat).  If neither, check if it's a variant constructor
             // or a struct constructor / projector.
             Term::Builtin(name) | Term::Named(name) => {
                 if self.builtins.checker(name).is_some()

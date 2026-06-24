@@ -264,12 +264,12 @@ fn refine_evaluates_children() {
     let (_b, arena) = a();
     let pred = arena.lam(bin(&arena, PrimOp::Ge, arena.var(0), arena.lit_int(0)));
     let annot = arena.annot(arena.lit_int(42), arena.builtin(s(&arena, "int")));
-    let refine_inner = arena.refine(s(&arena, "nat"), annot, pred);
+    let refine_inner = arena.refine(s(&arena, "Nat"), annot, pred);
     let result = whnf(&arena, refine_inner).unwrap();
     // After WHNF: the inner Annot is stripped, parent is LitInt(42)
     assert_eq!(
         *result,
-        Term::Refine(s(&arena, "nat"), arena.lit_int(42), pred)
+        Term::Refine(s(&arena, "Nat"), arena.lit_int(42), pred)
     );
 }
 

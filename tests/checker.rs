@@ -421,21 +421,21 @@ fn var_in_context_mismatch_type() {
 #[test]
 fn var_from_context_satisfies_refinement() {
     let (_b, arena) = a();
-    // Define nat as int where (x => x >= 0)
+    // Define Nat as int where (x => x >= 0)
     let table = add_refine(
-        s(&arena, "nat"),
+        s(&arena, "Nat"),
         arena.builtin(s(&arena, "int")),
         bin(&arena, PrimOp::Ge, arena.ref_param(), arena.lit_int(0)),
         &empty_table(),
     );
-    // Check that 5 has type nat when nat is in the table
+    // Check that 5 has type Nat when Nat is in the table
     assert_eq!(
         check(
             &arena,
             &table,
             &empty_ctx(),
             arena.lit_int(5),
-            arena.builtin(s(&arena, "nat"))
+            arena.builtin(s(&arena, "Nat"))
         ),
         Ok(())
     );
@@ -913,13 +913,13 @@ fn by_proof<'bump>(
 fn tactic_exact_true_passes() {
     let (_b, arena) = a();
     let nat = arena.refine(
-        s(&arena, "nat"),
+        s(&arena, "Nat"),
         arena.builtin(s(&arena, "int")),
         bin(&arena, PrimOp::Ge, arena.ref_param(), arena.lit_int(0)),
     );
-    // Register nat in the constraint table so ByProof can expand it.
+    // Register Nat in the constraint table so ByProof can expand it.
     let table = add_refine(
-        s(&arena, "nat"),
+        s(&arena, "Nat"),
         arena.builtin(s(&arena, "int")),
         bin(&arena, PrimOp::Ge, arena.ref_param(), arena.lit_int(0)),
         &empty_table(),
@@ -937,12 +937,12 @@ fn tactic_exact_true_passes() {
 fn tactic_exact_false_fails() {
     let (_b, arena) = a();
     let nat = arena.refine(
-        s(&arena, "nat"),
+        s(&arena, "Nat"),
         arena.builtin(s(&arena, "int")),
         bin(&arena, PrimOp::Ge, arena.ref_param(), arena.lit_int(0)),
     );
     let table = add_refine(
-        s(&arena, "nat"),
+        s(&arena, "Nat"),
         arena.builtin(s(&arena, "int")),
         bin(&arena, PrimOp::Ge, arena.ref_param(), arena.lit_int(0)),
         &empty_table(),
@@ -1316,13 +1316,13 @@ fn theorem_lambda_matches_arrow_type() {
     assert_eq!(check_empty(&arena, body, prop), Ok(()));
 }
 
-/// Simulate `theorem t : nat := 5 by exact true` — refinement with by-block.
+/// Simulate `theorem t : Nat := 5 by exact true` — refinement with by-block.
 #[test]
 fn theorem_refinement_with_by_passes() {
     let (_b, arena) = a();
-    // Register nat in constraint table
+    // Register Nat in constraint table
     let table = add_refine(
-        s(&arena, "nat"),
+        s(&arena, "Nat"),
         arena.builtin(s(&arena, "int")),
         bin(&arena, PrimOp::Ge, arena.ref_param(), arena.lit_int(0)),
         &empty_table(),
@@ -1337,18 +1337,18 @@ fn theorem_refinement_with_by_passes() {
             &table,
             &empty_ctx(),
             body,
-            arena.builtin(s(&arena, "nat"))
+            arena.builtin(s(&arena, "Nat"))
         ),
         Ok(())
     );
 }
 
-/// Simulate `theorem t : nat := 5 by exact false` — proof evaluates to false so check fails.
+/// Simulate `theorem t : Nat := 5 by exact false` — proof evaluates to false so check fails.
 #[test]
 fn theorem_refinement_with_by_fails() {
     let (_b, arena) = a();
     let table = add_refine(
-        s(&arena, "nat"),
+        s(&arena, "Nat"),
         arena.builtin(s(&arena, "int")),
         bin(&arena, PrimOp::Ge, arena.ref_param(), arena.lit_int(0)),
         &empty_table(),
@@ -1363,7 +1363,7 @@ fn theorem_refinement_with_by_fails() {
             &table,
             &empty_ctx(),
             body,
-            arena.builtin(s(&arena, "nat"))
+            arena.builtin(s(&arena, "Nat"))
         )
         .is_err()
     );

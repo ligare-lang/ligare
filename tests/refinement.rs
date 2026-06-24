@@ -13,7 +13,7 @@ fn a() -> (&'static bumpalo::Bump, TermArena<'static>) {
 
 fn nat_def<'a>(arena: &TermArena<'a>) -> (&'a str, &'a Term<'a>, &'a Term<'a>) {
     (
-        "nat",
+        "Nat",
         arena.builtin(s(arena, "int")),
         bin(arena, PrimOp::Ge, arena.ref_param(), arena.lit_int(0)),
     )
@@ -21,7 +21,7 @@ fn nat_def<'a>(arena: &TermArena<'a>) -> (&'a str, &'a Term<'a>, &'a Term<'a>) {
 
 fn pos_def<'a>(arena: &TermArena<'a>) -> (&'a str, &'a Term<'a>, &'a Term<'a>) {
     (
-        "pos",
+        "Pos",
         arena.builtin(s(arena, "int")),
         bin(arena, PrimOp::Gt, arena.ref_param(), arena.lit_int(0)),
     )
@@ -48,7 +48,7 @@ fn nat_accepts_5() {
             &arena,
             &[nat],
             &Term::LitInt(5),
-            arena.builtin(s(&arena, "nat"))
+            arena.builtin(s(&arena, "Nat"))
         ),
         Ok(())
     );
@@ -63,7 +63,7 @@ fn nat_rejects_negative_1() {
             &arena,
             &[nat],
             parse("-1", b, &arena),
-            arena.builtin(s(&arena, "nat"))
+            arena.builtin(s(&arena, "Nat"))
         )
         .is_err()
     );
@@ -78,7 +78,7 @@ fn nat_accepts_0() {
             &arena,
             &[nat],
             &Term::LitInt(0),
-            arena.builtin(s(&arena, "nat"))
+            arena.builtin(s(&arena, "Nat"))
         ),
         Ok(())
     );
@@ -93,7 +93,7 @@ fn pos_rejects_0() {
             &arena,
             &[pos],
             &Term::LitInt(0),
-            arena.builtin(s(&arena, "pos"))
+            arena.builtin(s(&arena, "Pos"))
         )
         .is_err()
     );
@@ -108,7 +108,7 @@ fn pos_accepts_3() {
             &arena,
             &[pos],
             &Term::LitInt(3),
-            arena.builtin(s(&arena, "pos"))
+            arena.builtin(s(&arena, "Pos"))
         ),
         Ok(())
     );
@@ -123,7 +123,7 @@ fn nat_is_subtype_of_int_variable_check() {
             &arena,
             &[nat],
             parse("\\x. x", b, &arena),
-            parse_constraint("nat -> int", b, &arena)
+            parse_constraint("Nat -> int", b, &arena)
         ),
         Ok(())
     );
@@ -138,7 +138,7 @@ fn pos_is_subtype_of_int_parent_chain() {
             &arena,
             &[pos],
             parse("\\x. x", b, &arena),
-            parse_constraint("pos -> int", b, &arena)
+            parse_constraint("Pos -> int", b, &arena)
         ),
         Ok(())
     );
@@ -150,7 +150,7 @@ fn pos_is_subtype_of_int_parent_chain() {
 fn neq_refinement_accepts_nonzero() {
     let (_b, arena) = a();
     let table = add_refine(
-        s(&arena, "nonzero"),
+        s(&arena, "NonZero"),
         arena.builtin(s(&arena, "int")),
         bin(&arena, PrimOp::Neq, arena.ref_param(), arena.lit_int(0)),
         &empty_table(),
@@ -161,7 +161,7 @@ fn neq_refinement_accepts_nonzero() {
             &table,
             &empty_ctx(),
             arena.lit_int(5),
-            arena.builtin(s(&arena, "nonzero"))
+            arena.builtin(s(&arena, "NonZero"))
         ),
         Ok(())
     );
@@ -171,7 +171,7 @@ fn neq_refinement_accepts_nonzero() {
 fn neq_refinement_rejects_zero() {
     let (_b, arena) = a();
     let table = add_refine(
-        s(&arena, "nonzero"),
+        s(&arena, "NonZero"),
         arena.builtin(s(&arena, "int")),
         bin(&arena, PrimOp::Neq, arena.ref_param(), arena.lit_int(0)),
         &empty_table(),
@@ -182,7 +182,7 @@ fn neq_refinement_rejects_zero() {
             &table,
             &empty_ctx(),
             arena.lit_int(0),
-            arena.builtin(s(&arena, "nonzero"))
+            arena.builtin(s(&arena, "NonZero"))
         )
         .is_err()
     );
@@ -192,7 +192,7 @@ fn neq_refinement_rejects_zero() {
 fn neq_refinement_accepts_negative() {
     let (b, arena) = a();
     let table = add_refine(
-        s(&arena, "nonzero"),
+        s(&arena, "NonZero"),
         arena.builtin(s(&arena, "int")),
         bin(&arena, PrimOp::Neq, arena.ref_param(), arena.lit_int(0)),
         &empty_table(),
@@ -204,7 +204,7 @@ fn neq_refinement_accepts_negative() {
             &table,
             &empty_ctx(),
             neg_one,
-            arena.builtin(s(&arena, "nonzero"))
+            arena.builtin(s(&arena, "NonZero"))
         ),
         Ok(())
     );
@@ -212,10 +212,10 @@ fn neq_refinement_accepts_negative() {
 
 // ── New refinement tests ──
 
-/// even: int where (x => x % 2 == 0)
+/// Even: int where (x => x % 2 == 0)
 fn even_def<'a>(arena: &TermArena<'a>) -> (&'a str, &'a Term<'a>, &'a Term<'a>) {
     (
-        "even",
+        "Even",
         arena.builtin(s(arena, "int")),
         bin(
             arena,
@@ -235,7 +235,7 @@ fn even_accepts_4() {
             &arena,
             &[even],
             arena.lit_int(4),
-            arena.builtin(s(&arena, "even"))
+            arena.builtin(s(&arena, "Even"))
         ),
         Ok(())
     );
@@ -250,7 +250,7 @@ fn even_rejects_3() {
             &arena,
             &[even],
             arena.lit_int(3),
-            arena.builtin(s(&arena, "even"))
+            arena.builtin(s(&arena, "Even"))
         )
         .is_err()
     );
@@ -265,7 +265,7 @@ fn even_accepts_0() {
             &arena,
             &[even],
             arena.lit_int(0),
-            arena.builtin(s(&arena, "even"))
+            arena.builtin(s(&arena, "Even"))
         ),
         Ok(())
     );
@@ -280,7 +280,7 @@ fn even_accepts_negative_2() {
             &arena,
             &[even],
             parse("-2", b, &arena),
-            arena.builtin(s(&arena, "even"))
+            arena.builtin(s(&arena, "Even"))
         ),
         Ok(())
     );
@@ -295,7 +295,7 @@ fn nat_accepts_large_number() {
             &arena,
             &[nat],
             arena.lit_int(99999),
-            arena.builtin(s(&arena, "nat"))
+            arena.builtin(s(&arena, "Nat"))
         ),
         Ok(())
     );
@@ -310,16 +310,16 @@ fn nat_rejects_large_negative() {
             &arena,
             &[nat],
             parse("-99999", b, &arena),
-            arena.builtin(s(&arena, "nat"))
+            arena.builtin(s(&arena, "Nat"))
         )
         .is_err()
     );
 }
 
-/// ten: int where (x => x == 10)
+/// Ten: int where (x => x == 10)
 fn ten_def<'a>(arena: &TermArena<'a>) -> (&'a str, &'a Term<'a>, &'a Term<'a>) {
     (
-        "ten",
+        "Ten",
         arena.builtin(s(arena, "int")),
         bin(arena, PrimOp::Eq, arena.ref_param(), arena.lit_int(10)),
     )
@@ -334,7 +334,7 @@ fn ten_accepts_10() {
             &arena,
             &[ten],
             arena.lit_int(10),
-            arena.builtin(s(&arena, "ten"))
+            arena.builtin(s(&arena, "Ten"))
         ),
         Ok(())
     );
@@ -349,7 +349,7 @@ fn ten_rejects_9() {
             &arena,
             &[ten],
             arena.lit_int(9),
-            arena.builtin(s(&arena, "ten"))
+            arena.builtin(s(&arena, "Ten"))
         )
         .is_err()
     );
@@ -362,13 +362,13 @@ fn multiple_refinements_in_table() {
     let (_b, arena) = a();
     let nat = nat_def(&arena);
     let pos = pos_def(&arena);
-    // Both "nat" and "pos" in the table
+    // Both "Nat" and "Pos" in the table
     assert_eq!(
         check_with(
             &arena,
             &[nat, pos],
             arena.lit_int(5),
-            arena.builtin(s(&arena, "nat"))
+            arena.builtin(s(&arena, "Nat"))
         ),
         Ok(())
     );
@@ -377,7 +377,7 @@ fn multiple_refinements_in_table() {
             &arena,
             &[nat, pos],
             arena.lit_int(5),
-            arena.builtin(s(&arena, "pos"))
+            arena.builtin(s(&arena, "Pos"))
         ),
         Ok(())
     );
@@ -386,7 +386,7 @@ fn multiple_refinements_in_table() {
             &arena,
             &[nat, pos],
             arena.lit_int(0),
-            arena.builtin(s(&arena, "pos"))
+            arena.builtin(s(&arena, "Pos"))
         )
         .is_err()
     );
@@ -398,7 +398,7 @@ fn multiple_refinements_in_table() {
 fn nat_is_refinement_of_int() {
     let (_b, arena) = a();
     let nat = nat_def(&arena);
-    // Anything that satisfies nat must also be int
+    // Anything that satisfies Nat must also be int
     assert_eq!(
         check_with(
             &arena,
@@ -416,7 +416,7 @@ fn nat_is_refinement_of_int() {
 fn nonzero_rejects_zero_when_neq_used() {
     let (_b, arena) = a();
     let nonzero = (
-        "nonzero",
+        "NonZero",
         arena.builtin(s(&arena, "int")),
         bin(&arena, PrimOp::Neq, arena.ref_param(), arena.lit_int(0)),
     );
@@ -425,7 +425,7 @@ fn nonzero_rejects_zero_when_neq_used() {
             &arena,
             &[nonzero],
             arena.lit_int(0),
-            arena.builtin(s(&arena, "nonzero"))
+            arena.builtin(s(&arena, "NonZero"))
         )
         .is_err()
     );
@@ -435,7 +435,7 @@ fn nonzero_rejects_zero_when_neq_used() {
 fn nonzero_accepts_one() {
     let (_b, arena) = a();
     let nonzero = (
-        "nonzero",
+        "NonZero",
         arena.builtin(s(&arena, "int")),
         bin(&arena, PrimOp::Neq, arena.ref_param(), arena.lit_int(0)),
     );
@@ -444,7 +444,7 @@ fn nonzero_accepts_one() {
             &arena,
             &[nonzero],
             arena.lit_int(1),
-            arena.builtin(s(&arena, "nonzero"))
+            arena.builtin(s(&arena, "NonZero"))
         ),
         Ok(())
     );
@@ -456,7 +456,7 @@ fn nonzero_accepts_one() {
 fn le_refinement_accepts_equal() {
     let (_b, arena) = a();
     let le_five = (
-        "le5",
+        "Le5",
         arena.builtin(s(&arena, "int")),
         bin(&arena, PrimOp::Le, arena.ref_param(), arena.lit_int(5)),
     );
@@ -465,7 +465,7 @@ fn le_refinement_accepts_equal() {
             &arena,
             &[le_five],
             arena.lit_int(5),
-            arena.builtin(s(&arena, "le5"))
+            arena.builtin(s(&arena, "Le5"))
         ),
         Ok(())
     );
@@ -474,7 +474,7 @@ fn le_refinement_accepts_equal() {
             &arena,
             &[le_five],
             arena.lit_int(3),
-            arena.builtin(s(&arena, "le5"))
+            arena.builtin(s(&arena, "Le5"))
         ),
         Ok(())
     );
@@ -483,7 +483,7 @@ fn le_refinement_accepts_equal() {
             &arena,
             &[le_five],
             arena.lit_int(6),
-            arena.builtin(s(&arena, "le5"))
+            arena.builtin(s(&arena, "Le5"))
         )
         .is_err()
     );
@@ -495,7 +495,7 @@ fn le_refinement_accepts_equal() {
 fn lt_refinement_rejects_equal() {
     let (_b, arena) = a();
     let lt_five = (
-        "lt5",
+        "Lt5",
         arena.builtin(s(&arena, "int")),
         bin(&arena, PrimOp::Lt, arena.ref_param(), arena.lit_int(5)),
     );
@@ -504,7 +504,7 @@ fn lt_refinement_rejects_equal() {
             &arena,
             &[lt_five],
             arena.lit_int(4),
-            arena.builtin(s(&arena, "lt5"))
+            arena.builtin(s(&arena, "Lt5"))
         ),
         Ok(())
     );
@@ -513,7 +513,7 @@ fn lt_refinement_rejects_equal() {
             &arena,
             &[lt_five],
             arena.lit_int(5),
-            arena.builtin(s(&arena, "lt5"))
+            arena.builtin(s(&arena, "Lt5"))
         )
         .is_err()
     );

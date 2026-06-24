@@ -1,5 +1,5 @@
-def nat := int where (x => x >= 0)
-def x : nat := 10
+def Nat := int where (x => x >= 0)
+def x : Nat := 10
 #check x : int
 def sdiv (a : int) (b : int where (x => x /= 0)) := a / b
 def fib (n : int) : int := if n < 2 then n else fib (n-1) + fib (n-2)
@@ -10,7 +10,7 @@ def fib (n : int) : int := if n < 2 then n else fib (n-1) + fib (n-2)
 -- Proof block (Lean 4-style `by` syntax with newlines):
 -- For refinement types, `by` proves the predicate:
 #check 5 by
-  exact true : nat
+  exact true : Nat
 
 -- Multi-tactic proof (intro + exact, constructs identity function):
 #check 0 by
@@ -29,7 +29,7 @@ def fib (n : int) : int := if n < 2 then n else fib (n-1) + fib (n-2)
   exact 0) 5
 
 -- Basic theorem: a value satisfies a type
-theorem zero_is_nat : nat := 0 by
+theorem zero_is_nat : Nat := 0 by
   exact true
 
 -- Theorem with function type (legacy \ syntax)
@@ -39,7 +39,7 @@ theorem identity : int -> int := \x. x
 theorem add_one : int -> int := fun x => x + 1
 
 -- Theorem referencing a previously defined theorem
-#check zero_is_nat : nat
+#check zero_is_nat : Nat
 
 -- Theorem can be used as a value
 #check identity 5 : int

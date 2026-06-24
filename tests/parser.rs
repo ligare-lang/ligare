@@ -273,10 +273,10 @@ fn refine_in_def_annotation() {
 #[test]
 fn def_refinement() {
     let (b, arena) = a();
-    let result = parse_def_top("def nat := int where (x => x >= 0)", b, &arena);
+    let result = parse_def_top("def Nat := int where (x => x >= 0)", b, &arena);
     assert!(result.is_ok());
     let (name, params, m_ret, body) = result.unwrap();
-    assert_eq!(name, "nat");
+    assert_eq!(name, "Nat");
     let refine_term = arena.refine(
         s(&arena, "x"),
         arena.builtin(s(&arena, "int")),

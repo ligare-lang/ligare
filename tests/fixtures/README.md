@@ -19,7 +19,7 @@ Nested types:
 - Union inside struct field (Config)
 - Mixed construction and `#show`
 
-## nat.lig
+## color.lig
 Non-recursive union demo (full pipeline: parse → check → C codegen):
 - Enum-style union (Color)
 - Pattern matching function (`to_int`)
