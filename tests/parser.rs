@@ -3,7 +3,7 @@ mod common;
 use bumpalo::Bump;
 use common::{bin, leak_bump, parse, s};
 use ligare::core::pool::TermArena;
-use ligare::core::syntax::{PrimOp, Tactic, Term};
+use ligare::core::syntax::{DoStmt, PrimOp, Tactic, Term};
 use ligare::front::parser::{TopLevel, parse_def_top, parse_expr_top, parse_program};
 
 fn a() -> (&'static Bump, TermArena<'static>) {
@@ -74,6 +74,21 @@ fn let_expression() {
         *parse("let x := 5 in x", b, &arena),
         *arena.let_(s(&arena, "x"), arena.lit_int(5), arena.var(0), None)
     );
+}
+
+#[test]
+fn do_block_parses_statements() {
+    let (b, arena) = a();
+    let term = parse_expr_top("do { x <- read; let y : int := x + 1; y }", b, &arena).unwrap();
+    match term {
+        Term::Do(stmts) => {
+            assert_eq!(stmts.len(), 3);
+            assert!(matches!(stmts[0], DoStmt::Bind(name, _) if name == "x"));
+            assert!(matches!(stmts[1], DoStmt::Let(name, _, Some(_)) if name == "y"));
+            assert!(matches!(stmts[2], DoStmt::Expr(_)));
+        }
+        other => panic!("expected do block, got {other:?}"),
+    }
 }
 
 #[test]

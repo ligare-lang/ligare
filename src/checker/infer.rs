@@ -217,7 +217,14 @@ impl<'bump> TypeChecker<'bump> {
             .ok_or_else(|| diag!("unbound term index {}", i))?;
         let expected_val = self.evaluator.whnf(expected)?;
         let constraint_val = self.evaluator.whnf(constraint)?;
-        if expected_val == constraint_val || self.is_refinement_of(expected_val, constraint_val) {
+        if expected_val == constraint_val
+            || self.is_refinement_of(expected_val, constraint_val)
+            || Self::effect_inner(expected_val).is_some_and(|inner| {
+                inner == constraint_val
+                    || self.is_refinement_of(inner, constraint_val)
+                    || self.named_constraint_equiv(inner, constraint_val)
+            })
+        {
             Ok(())
         } else {
             Err(diag!(
@@ -308,8 +315,21 @@ impl<'bump> TypeChecker<'bump> {
         constraint: &'bump Term<'bump>,
     ) -> Result<(), Diagnostic> {
         let binding_constraint = if let Some(c) = mconstr {
-            self.check(ctx, val, c)?;
-            c
+            if Self::is_effect_data_marker(c) {
+                let inferred = self.infer_binding_constraint(ctx, val)?;
+                let effect_constraint = self.evaluator.whnf(inferred)?;
+                if Self::effect_inner(effect_constraint).is_none() {
+                    return Err(diag!(
+                        "`<-` right-hand side must have an effect constraint, got {}",
+                        PrettyPrinter::pretty(effect_constraint)
+                    ));
+                }
+                self.check(ctx, val, effect_constraint)?;
+                effect_constraint
+            } else {
+                self.check(ctx, val, c)?;
+                c
+            }
         } else {
             let inferred = self.infer_binding_constraint(ctx, val)?;
             self.check(ctx, val, inferred)?;
@@ -792,7 +812,7 @@ impl<'bump> TypeChecker<'bump> {
             || Self::pi_equiv(a_val, c_val)
             || self.is_refinement_of(c_val, a_val)
             || Self::is_data_like(c_val)
-            || Self::io_inner(c_val).is_some_and(|inner| {
+            || Self::effect_inner(c_val).is_some_and(|inner| {
                 a_val == inner
                     || Self::pi_equiv(a_val, inner)
                     || self.is_refinement_of(inner, a_val)
@@ -835,14 +855,20 @@ impl<'bump> TypeChecker<'bump> {
         }
     }
 
-    fn io_inner(t: &'bump Term<'bump>) -> Option<&'bump Term<'bump>> {
+    fn effect_inner(t: &'bump Term<'bump>) -> Option<&'bump Term<'bump>> {
+        match t {
+            Term::App(_, inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    fn is_effect_data_marker(t: &'bump Term<'bump>) -> bool {
         if let Term::App(head, inner) = t
             && matches!(head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_IO)
         {
-            Some(inner)
-        } else {
-            None
+            return Self::is_data_like(inner);
         }
+        false
     }
 
     /// Check if two Pi constraints are equivalent ignoring parameter names.

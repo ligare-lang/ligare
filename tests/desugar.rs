@@ -1,8 +1,10 @@
 mod common;
 
 use common::{bin, leak_bump, s};
+use ligare::core::debruijn::Desugarer;
 use ligare::core::pool::TermArena;
 use ligare::core::syntax::PrimOp;
+use ligare::front::parser::parse_expr_top;
 
 fn a() -> (&'static bumpalo::Bump, TermArena<'static>) {
     let b = leak_bump();
@@ -110,4 +112,43 @@ fn func_no_constraint() {
         ),
     );
     assert!(!term.is_constant());
+}
+
+#[test]
+fn do_block_desugars_to_manual_let_chain() {
+    let (b, arena) = a();
+    let raw = parse_expr_top(
+        "do { x <- read_int; let y := x + 1; write_int y; Unit }",
+        b,
+        &arena,
+    )
+    .unwrap();
+    let io_unit = arena.app(
+        arena.builtin(s(&arena, "IO")),
+        arena.builtin(s(&arena, "Unit")),
+    );
+    let desugared = Desugarer::new(&arena)
+        .try_desugar_with_names_and_effect(raw, &[], io_unit)
+        .unwrap();
+    let io_data = arena.app(
+        arena.builtin(s(&arena, "IO")),
+        arena.builtin(s(&arena, "data")),
+    );
+    let expected = arena.let_(
+        s(&arena, "x"),
+        arena.global(s(&arena, "read_int")),
+        arena.let_(
+            s(&arena, "y"),
+            bin(&arena, PrimOp::Add, arena.var(0), arena.lit_int(1)),
+            arena.let_(
+                s(&arena, "_"),
+                arena.app(arena.global(s(&arena, "write_int")), arena.var(0)),
+                arena.builtin(s(&arena, "Unit")),
+                Some(io_data),
+            ),
+            None,
+        ),
+        Some(io_data),
+    );
+    assert_eq!(*desugared, *expected);
 }

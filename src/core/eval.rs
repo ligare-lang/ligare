@@ -93,6 +93,7 @@ impl<'bump> Evaluator<'bump> {
             | Term::Global(_) => Ok(t),
             Term::Named(_) => Err("Named identifier reached eval before desugaring".into()),
             Term::NamedLam(_, _) => Err("NamedLam reached eval before desugaring".into()),
+            Term::Do(_) => Err("Do block reached eval before desugaring".into()),
             Term::UnionDef(..) => Ok(t),
             Term::StructDef(..) => Ok(t),
             Term::StructCons(name, field_values) => {

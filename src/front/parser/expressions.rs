@@ -5,7 +5,7 @@ use crate::config::{
     AND_ELIM_LEFT, AND_INTRO, BUILTIN_AND, BUILTIN_DATA, BUILTIN_IMPLIES, BUILTIN_NOT, BUILTIN_OR,
     BUILTIN_PROOF, BUILTIN_PROP, BUILTIN_THEOREM,
 };
-use crate::core::syntax::{Name, PrimOp, Term};
+use crate::core::syntax::{DoStmt, Name, PrimOp, Term};
 use crate::front::lexer::Token;
 
 const PREC_COMPARISON: u8 = 2;
@@ -32,6 +32,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             Some(Token::KwIf) => self.parse_if_expr(),
             Some(Token::KwMatch) => self.parse_match_expr(),
             Some(Token::KwLet) => self.parse_let_expr(),
+            Some(Token::KwDo) => self.parse_do_expr(),
             Some(Token::KwFunc) => self.parse_func_expr(),
             Some(Token::LParen) => {
                 let saved = self.pos;
@@ -164,6 +165,79 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         Ok(self.arena.let_(name, val, body, m_constraint))
     }
 
+    fn parse_do_expr(&mut self) -> Result<&'bump Term<'bump>, ParseError> {
+        self.expect(&Token::KwDo)?;
+        self.expect(&Token::LBrace)?;
+        let mut stmts = Vec::new();
+        while self.peek_token() == Some(Token::Semi) || self.peek_token() == Some(Token::Newline) {
+            self.advance();
+        }
+        while self.peek_token() != Some(Token::RBrace) {
+            if self.is_at_end() {
+                return Err(ParseError {
+                    message: "unterminated do block".into(),
+                    span: self.current_span(),
+                });
+            }
+            let stmt = if self.peek_token() == Some(Token::KwLet) {
+                self.parse_do_let_stmt()?
+            } else if self.peek_is_bind_stmt() {
+                self.parse_do_bind_stmt()?
+            } else {
+                DoStmt::Expr(self.parse_expr_until(|tokens, i| {
+                    matches!(tokens[i].0, Token::Semi | Token::RBrace)
+                })?)
+            };
+            stmts.push(stmt);
+            if self.try_expect(&Token::Semi) {
+                while self.peek_token() == Some(Token::Semi)
+                    || self.peek_token() == Some(Token::Newline)
+                {
+                    self.advance();
+                }
+            } else if self.peek_token() != Some(Token::RBrace) {
+                return Err(ParseError {
+                    message: "expected `;` or `}` in do block".into(),
+                    span: self.current_span(),
+                });
+            }
+        }
+        self.expect(&Token::RBrace)?;
+        if stmts.is_empty() {
+            return Err(ParseError {
+                message: "do block must have at least one statement".into(),
+                span: self.current_span(),
+            });
+        }
+        Ok(self.arena.do_(self.arena.alloc_slice(&stmts)))
+    }
+
+    fn parse_do_let_stmt(&mut self) -> Result<DoStmt<'bump>, ParseError> {
+        self.expect(&Token::KwLet)?;
+        let name = self.parse_ident()?;
+        let m_constraint = self.parse_constraint_annotation();
+        self.expect(&Token::ColonEq)?;
+        let val =
+            self.parse_expr_until(|tokens, i| matches!(tokens[i].0, Token::Semi | Token::RBrace))?;
+        Ok(DoStmt::Let(name, val, m_constraint))
+    }
+
+    fn parse_do_bind_stmt(&mut self) -> Result<DoStmt<'bump>, ParseError> {
+        let name = self.parse_ident()?;
+        self.expect(&Token::LeftArrow)?;
+        let rhs =
+            self.parse_expr_until(|tokens, i| matches!(tokens[i].0, Token::Semi | Token::RBrace))?;
+        Ok(DoStmt::Bind(name, rhs))
+    }
+
+    fn peek_is_bind_stmt(&self) -> bool {
+        matches!(self.peek(), Some((Token::Ident(_), _)))
+            && self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|(t, _)| *t == Token::LeftArrow)
+    }
+
     fn parse_let_destruct(
         &mut self,
         struct_name: Name<'bump>,
@@ -246,6 +320,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 | Token::LParen
                 | Token::Minus
                 | Token::KwAuto
+                | Token::KwDo
                 | Token::AndIntro
                 | Token::AndElimLeft
                 | Token::And
@@ -498,6 +573,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             Some(Token::Ident(_)) => self.parse_var(),
             Some(Token::Backslash) | Some(Token::Lambda) => self.parse_lam(),
             Some(Token::KwFun) => self.parse_fun_lam(),
+            Some(Token::KwDo) => self.parse_do_expr(),
             Some(Token::Minus) => {
                 self.advance();
                 let t = self.parse_atom()?;

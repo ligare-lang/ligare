@@ -45,7 +45,7 @@ pub enum TopLevel<'bump> {
 }
 
 pub(super) const KEYWORDS: &[&str] = &[
-    "let", "in", "if", "then", "else", "true", "false", "by", "fun", "func", "where", "def",
+    "let", "in", "if", "then", "else", "true", "false", "by", "fun", "func", "where", "def", "do",
     "auto", "theorem", "pub", "use", "as",
 ];
 

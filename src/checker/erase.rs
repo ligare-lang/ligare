@@ -75,6 +75,9 @@ impl<'bump> Eraser<'bump> {
             Term::NamedLam(_, _) => {
                 panic!("NamedLam reached erasure before desugaring")
             }
+            Term::Do(_) => {
+                panic!("Do block reached erasure before desugaring")
+            }
             Term::UnionDef(..) => self.unit(),
             Term::StructDef(..) => self.unit(),
             Term::StructCons(name, field_values) => {

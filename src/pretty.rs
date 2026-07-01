@@ -109,6 +109,22 @@ impl PrettyPrinter {
                     .collect();
                 format!("match {} with\n  {}", Self::pretty(scrut), bs.join("\n  "))
             }
+            Term::Do(stmts) => {
+                let ss: Vec<String> = stmts
+                    .iter()
+                    .map(|stmt| match stmt {
+                        crate::core::syntax::DoStmt::Bind(n, rhs) => {
+                            format!("{} <- {}", n, Self::pretty(rhs))
+                        }
+                        crate::core::syntax::DoStmt::Let(n, rhs, mc) => {
+                            let c = mc.map_or(String::new(), |c| format!(" : {}", Self::pretty(c)));
+                            format!("let {}{} := {}", n, c, Self::pretty(rhs))
+                        }
+                        crate::core::syntax::DoStmt::Expr(expr) => Self::pretty(expr),
+                    })
+                    .collect();
+                format!("do {{ {} }}", ss.join("; "))
+            }
             Term::StructDef(name, fields) => {
                 let fs: Vec<String> = fields
                     .iter()

@@ -49,7 +49,11 @@ fn assert_module_error(root: &Path, needle: &str) {
 #[test]
 fn single_level_import_codegen_uses_prefixed_c_name() {
     let root = temp_project();
-    write(&root, "nat.lig", "pub def add (a : int) (b : int) : int := a + b\n");
+    write(
+        &root,
+        "nat.lig",
+        "pub def add (a : int) (b : int) : int := a + b\n",
+    );
     write(
         &root,
         "main.lig",
@@ -90,16 +94,28 @@ fn nested_batch_import_and_alias() {
 fn private_access_is_rejected() {
     let root = temp_project();
     write(&root, "data/nat.lig", "def hidden : int := 1\n");
-    write(&root, "main.lig", "use data::nat::hidden\npub def main : IO Unit := hidden\n");
+    write(
+        &root,
+        "main.lig",
+        "use data::nat::hidden\npub def main : IO Unit := hidden\n",
+    );
     assert_module_error(&root, "private or unknown symbol");
 }
 
 #[test]
 fn re_export_allows_import_from_facade() {
     let root = temp_project();
-    write(&root, "data/nat.lig", "pub def add (a : int) (b : int) : int := a + b\n");
+    write(
+        &root,
+        "data/nat.lig",
+        "pub def add (a : int) (b : int) : int := a + b\n",
+    );
     write(&root, "prelude.lig", "pub use data::nat::add\n");
-    write(&root, "main.lig", "use prelude::add\npub def main : IO Unit := let _ := add 1 2 in Unit\n");
+    write(
+        &root,
+        "main.lig",
+        "use prelude::add\npub def main : IO Unit := let _ := add 1 2 in Unit\n",
+    );
     collect(&root).unwrap();
 }
 
@@ -115,7 +131,11 @@ fn cycle_dependency_reports_error() {
 #[test]
 fn missing_module_reports_error() {
     let root = temp_project();
-    write(&root, "main.lig", "use nope::x\npub def main : IO Unit := x\n");
+    write(
+        &root,
+        "main.lig",
+        "use nope::x\npub def main : IO Unit := x\n",
+    );
     assert_module_error(&root, "module not found");
 }
 

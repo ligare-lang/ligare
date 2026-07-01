@@ -29,6 +29,8 @@ pub enum Token {
     KwFun,
     #[token("func")]
     KwFunc,
+    #[token("do")]
+    KwDo,
     #[token("where")]
     KwWhere,
     #[token("def")]
@@ -87,6 +89,8 @@ pub enum Token {
     ThinArrow,
     #[token("<=")]
     Le,
+    #[token("<-")]
+    LeftArrow,
     #[token(">=")]
     Ge,
     #[token("/=")]

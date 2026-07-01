@@ -3,8 +3,8 @@
 //! Resolution logic lives in `resolve.rs`; this module holds the `Compiler`
 //! struct and its lifecycle methods.
 
-mod pipeline;
 mod modules;
+mod pipeline;
 mod resolve;
 
 use std::collections::HashMap;
@@ -209,15 +209,22 @@ impl<'bump> Compiler<'bump> {
         if matches!(body, Term::UnionDef(..) | Term::StructDef(..)) {
             return self.checker.desugar_with_names_context(body, &names);
         }
-        let func_body = params.iter().rfold(
-            self.checker.desugar_with_names_context(body, &names)?,
-            |b, &(_pn, _)| self.arena.lam(b),
-        );
         let default = self.arena.builtin(self.arena.alloc_str(BUILTIN_DATA));
         let ret = m_ret
             .map(|t| self.checker.desugar_with_names_context(t, &names))
             .transpose()?
             .unwrap_or(default);
+        let raw_body = if Self::contains_do(body) {
+            let resolver = |name: &str| self.checker.lookup_variant(name);
+            crate::core::debruijn::Desugarer::new(self.arena)
+                .try_desugar_with_names_variant_resolver_and_effect(body, &names, &resolver, ret)
+                .map_err(Diagnostic::new)?
+        } else {
+            self.checker.desugar_with_names_context(body, &names)?
+        };
+        let func_body = params
+            .iter()
+            .rfold(raw_body, |b, &(_pn, _)| self.arena.lam(b));
         let func_constraint =
             params
                 .iter()
@@ -481,6 +488,65 @@ impl<'bump> Compiler<'bump> {
             Term::Refine(_, parent, predicate) => Some((*parent, *predicate)),
             Term::Annot(inner, _) => Self::refinement_parts(inner),
             _ => None,
+        }
+    }
+
+    fn contains_do(term: &Term<'_>) -> bool {
+        match term {
+            Term::Do(_) => true,
+            Term::App(f, a) => Self::contains_do(f) || Self::contains_do(a),
+            Term::NamedLam(_, body) | Term::Lam(body) => Self::contains_do(body),
+            Term::Pi(_, a, b) => Self::contains_do(a) || Self::contains_do(b),
+            Term::Let(_, val, body, mc) => {
+                Self::contains_do(val)
+                    || Self::contains_do(body)
+                    || mc.is_some_and(Self::contains_do)
+            }
+            Term::IfThenElse(c, t, f) => {
+                Self::contains_do(c) || Self::contains_do(t) || Self::contains_do(f)
+            }
+            Term::Refine(_, parent, pred) => Self::contains_do(parent) || Self::contains_do(pred),
+            Term::Annot(inner, constraint) => {
+                Self::contains_do(inner) || Self::contains_do(constraint)
+            }
+            Term::ByProof(inner, tactics) => {
+                inner.is_some_and(Self::contains_do)
+                    || tactics.iter().any(|t| match t {
+                        crate::core::syntax::Tactic::Exact(t)
+                        | crate::core::syntax::Tactic::Apply(t)
+                        | crate::core::syntax::Tactic::Have(_, t) => Self::contains_do(t),
+                        crate::core::syntax::Tactic::Intro(_) => false,
+                    })
+            }
+            Term::UnionDef(_, variants) => variants.iter().any(|(_, fields)| {
+                fields
+                    .iter()
+                    .any(|(_, constraint)| Self::contains_do(constraint))
+            }),
+            Term::Variant(_, _, payloads) | Term::StructCons(_, payloads) => {
+                payloads.iter().any(|t| Self::contains_do(t))
+            }
+            Term::Match(scrut, branches) => {
+                Self::contains_do(scrut)
+                    || branches.iter().any(|(_, binds, body)| {
+                        Self::contains_do(body)
+                            || binds
+                                .iter()
+                                .any(|(_, constraint)| Self::contains_do(constraint))
+                    })
+            }
+            Term::NamedMatch(scrut, branches) => {
+                Self::contains_do(scrut)
+                    || branches.iter().any(|(_, binds, body)| {
+                        Self::contains_do(body)
+                            || binds
+                                .iter()
+                                .any(|(_, constraint)| Self::contains_do(constraint))
+                    })
+            }
+            Term::StructDef(_, fields) => fields.iter().any(|(_, c)| Self::contains_do(c)),
+            Term::StructProj(subject, _) => Self::contains_do(subject),
+            _ => false,
         }
     }
 }

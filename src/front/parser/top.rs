@@ -187,11 +187,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         Ok(self.arena.alloc_slice(&imports))
     }
 
-    fn with_visibility(
-        &self,
-        top: TopLevel<'bump>,
-        visibility: Visibility,
-    ) -> TopLevel<'bump> {
+    fn with_visibility(&self, top: TopLevel<'bump>, visibility: Visibility) -> TopLevel<'bump> {
         match visibility {
             Visibility::Private => top,
             Visibility::Public => TopLevel::TLPublic(self.bump_alloc_top(top)),

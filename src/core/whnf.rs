@@ -79,6 +79,7 @@ impl<'bump> WhnfEvaluator<'bump> {
             | Term::RefParam => Ok(t),
             Term::Named(_) => Err("Named identifier reached WHNF before desugaring".into()),
             Term::NamedLam(_, _) => Err("NamedLam reached WHNF before desugaring".into()),
+            Term::Do(_) => Err("Do block reached WHNF before desugaring".into()),
             Term::UnionDef(..) => Ok(t),
             Term::StructDef(..) => Ok(t),
             Term::StructCons(name, field_values) => {

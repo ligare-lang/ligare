@@ -3,6 +3,7 @@ mod common;
 use common::{bin, leak_bump, parse, parse_constraint, s};
 use ligare::checker::check;
 use ligare::checker::context::{add_refine, empty_ctx, empty_table};
+use ligare::compiler::Compiler;
 use ligare::core::pool::TermArena;
 use ligare::core::syntax::{PrimOp, Tactic, Term};
 
@@ -57,12 +58,14 @@ fn unit_value_checks_as_unit() {
 #[test]
 fn int_does_not_check_as_unit() {
     let (b, arena) = a();
-    assert!(check_empty(
-        &arena,
-        parse("0", b, &arena),
-        parse_constraint("Unit", b, &arena)
-    )
-    .is_err());
+    assert!(
+        check_empty(
+            &arena,
+            parse("0", b, &arena),
+            parse_constraint("Unit", b, &arena)
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -76,12 +79,59 @@ fn io_unit_requires_unit_body() {
         ),
         Ok(())
     );
-    assert!(check_empty(
-        &arena,
-        parse("0", b, &arena),
-        parse_constraint("IO Unit", b, &arena)
-    )
-    .is_err());
+    assert!(
+        check_empty(
+            &arena,
+            parse("0", b, &arena),
+            parse_constraint("IO Unit", b, &arena)
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn do_block_checks_in_effect_function() {
+    let (b, arena) = a();
+    let mut compiler = Compiler::new(b, &arena);
+    assert_eq!(
+        compiler.process_file_str(
+            "def read_int : IO int := 1\n\
+             def write_int (x : int) : IO Unit := Unit\n\
+             def main : IO Unit := do { x <- read_int; let y := x + 1; write_int y; Unit }\n"
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn do_block_is_rejected_in_pure_function() {
+    let (b, arena) = a();
+    let mut compiler = Compiler::new(b, &arena);
+    let err = compiler
+        .process_file_str(
+            "def read_int : IO int := 1\n\
+             def bad : int := do { x <- read_int; x }\n",
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("do") && err.contains("effect constraint"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn do_bind_rhs_must_have_effect_constraint() {
+    let (b, arena) = a();
+    let mut compiler = Compiler::new(b, &arena);
+    let err = compiler
+        .process_file_str("def bad : IO Unit := do { x <- 1; Unit }\n")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("<-") && err.contains("effect constraint"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]

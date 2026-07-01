@@ -256,6 +256,9 @@ impl<'bump> TypeChecker<'bump> {
             Term::Match(scrutinee, branches) => {
                 self.check_match(ctx, scrutinee, branches, constraint)
             }
+            Term::Do(_) => Err(Diagnostic::new(
+                "`do` block can only appear in a function returning an effect constraint",
+            )),
             Term::StructCons(sname, field_values) => {
                 self.check_struct_cons(ctx, sname, field_values, constraint)
             }

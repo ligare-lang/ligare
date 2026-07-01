@@ -2,7 +2,9 @@ use bumpalo::Bump;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crate::core::syntax::{MatchBranch, Name, NamedMatchBranch, PrimOp, Tactic, Term, Universe};
+use crate::core::syntax::{
+    DoStmt, MatchBranch, Name, NamedMatchBranch, PrimOp, Tactic, Term, Universe,
+};
 
 /// A bumpalo-backed string interner.
 ///
@@ -186,6 +188,19 @@ impl<'bump> TermArena<'bump> {
                     })
                     .collect();
                 self.named_match(s, self.alloc_slice(&mapped))
+            }
+            Term::Do(stmts) => {
+                let mapped: Vec<_> = stmts
+                    .iter()
+                    .map(|stmt| match stmt {
+                        DoStmt::Bind(n, rhs) => DoStmt::Bind(n, self.map_mut(rhs, f)),
+                        DoStmt::Let(n, rhs, mc) => {
+                            DoStmt::Let(n, self.map_mut(rhs, f), mc.map(|c| self.map_mut(c, f)))
+                        }
+                        DoStmt::Expr(expr) => DoStmt::Expr(self.map_mut(expr, f)),
+                    })
+                    .collect();
+                self.do_(self.alloc_slice(&mapped))
             }
             Term::StructDef(name, fields) => {
                 let mf: Vec<_> = fields
@@ -376,6 +391,10 @@ impl<'bump> TermArena<'bump> {
         branches: &'bump [NamedMatchBranch<'bump>],
     ) -> &'bump Term<'bump> {
         self.alloc(Term::NamedMatch(scrutinee, branches))
+    }
+
+    pub fn do_(&self, stmts: &'bump [DoStmt<'bump>]) -> &'bump Term<'bump> {
+        self.alloc(Term::Do(stmts))
     }
 
     pub fn struct_def(

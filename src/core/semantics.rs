@@ -66,7 +66,7 @@ impl<'a> SemanticQueries<'a> {
             Term::Match(_, branches) => branches
                 .first()
                 .and_then(|(_, _, body)| self.universe(ctx, body)),
-            Term::Named(_) | Term::NamedLam(..) | Term::NamedMatch(..) => {
+            Term::Named(_) | Term::NamedLam(..) | Term::NamedMatch(..) | Term::Do(_) => {
                 panic!("parser-level term reached semantic query before desugaring")
             }
         }
@@ -113,7 +113,7 @@ impl<'a> SemanticQueries<'a> {
             Term::Annot(inner, _) | Term::ByProof(Some(inner), _) => self.erase_policy(inner),
             Term::App(f, _) => self.data_policy(f),
             Term::Builtin(_) | Term::Global(_) => self.data_policy(term),
-            Term::Named(_) | Term::NamedLam(..) | Term::NamedMatch(..) => {
+            Term::Named(_) | Term::NamedLam(..) | Term::NamedMatch(..) | Term::Do(_) => {
                 panic!("parser-level term reached erase-policy query before desugaring")
             }
             Term::ByProof(None, _)

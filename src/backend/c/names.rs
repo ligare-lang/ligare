@@ -69,11 +69,7 @@ impl NameResolver {
                 out.push('_');
             }
         }
-        if out
-            .as_bytes()
-            .first()
-            .is_some_and(|b| b.is_ascii_digit())
-        {
+        if out.as_bytes().first().is_some_and(|b| b.is_ascii_digit()) {
             out.insert(0, '_');
         }
         if C_KEYWORDS.contains(&out.as_str()) {
@@ -239,7 +235,7 @@ impl NameResolver {
                     self.collect_names_in_term(body, def_names, called);
                 }
             }
-            Term::Named(_) | Term::NamedLam(..) | Term::NamedMatch(..) => {
+            Term::Named(_) | Term::NamedLam(..) | Term::NamedMatch(..) | Term::Do(_) => {
                 panic!("parser-level term reached C name collection before desugaring")
             }
             Term::StructCons(_, field_values) => {

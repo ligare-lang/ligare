@@ -19,6 +19,13 @@ pub type NamedMatchBranch<'bump> = (
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoStmt<'bump> {
+    Bind(Name<'bump>, &'bump Term<'bump>),
+    Let(Name<'bump>, &'bump Term<'bump>, Option<&'bump Term<'bump>>),
+    Expr(&'bump Term<'bump>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Universe {
     UData,
     UProp,
@@ -153,6 +160,8 @@ pub enum Term<'bump> {
     Match(&'bump Term<'bump>, &'bump [MatchBranch<'bump>]),
     /// Parser-level pattern match before constructor names are resolved.
     NamedMatch(&'bump Term<'bump>, &'bump [NamedMatchBranch<'bump>]),
+    /// Parser-level sequential effect block. Desugared to `Let` before checking/codegen.
+    Do(&'bump [DoStmt<'bump>]),
     /// Struct type definition (in `prop`): (name, [(field_name, constraint)])
     StructDef(Name<'bump>, &'bump [(Name<'bump>, &'bump Term<'bump>)]),
     /// Struct value construction (in `data`): (struct_name, field_values in order)
