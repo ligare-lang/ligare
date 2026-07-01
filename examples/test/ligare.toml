@@ -1,0 +1,7 @@
+[package]
+name = "test"
+
+[dependencies]
+std = { path = "../../libs/std", version = "local" }
+
+[exports]

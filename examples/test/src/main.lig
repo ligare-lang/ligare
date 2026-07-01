@@ -1,4 +1,4 @@
-use libs::std::lib::put_str
+use std::io::put_str
 
 pub def main : IO Unit := do
     let _ = put_str "hello world"

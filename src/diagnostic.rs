@@ -1,4 +1,4 @@
-use annotate_snippets::{Level, Renderer, Snippet};
+use annotate_snippets::{AnnotationKind, Level, Renderer, Snippet};
 
 /// A source span: byte offset range in the source text.
 pub type Span = std::ops::Range<usize>;
@@ -62,12 +62,12 @@ impl Diagnostic {
         let start = span.start.min(source.len());
         let end = span.end.min(source.len()).max(start);
         let origin = self.file.as_deref().unwrap_or("<source>");
-        let message = Level::Error.title(&self.message).snippet(
+        let report = &[Level::ERROR.primary_title(&self.message).element(
             Snippet::source(source)
-                .origin(origin)
-                .annotation(Level::Error.span(start..end)),
-        );
-        Some(Renderer::plain().render(message).to_string())
+                .path(origin)
+                .annotation(AnnotationKind::Primary.span(start..end)),
+        )];
+        Some(Renderer::plain().render(report).to_string())
     }
 }
 

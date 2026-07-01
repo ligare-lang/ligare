@@ -5,4 +5,5 @@ pub mod config;
 pub mod core;
 pub mod diagnostic;
 pub mod front;
+pub mod package;
 pub mod pretty;

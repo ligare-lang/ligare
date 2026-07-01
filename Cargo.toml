@@ -7,6 +7,7 @@ edition = "2024"
 logos = "0.15"
 clap = { version = "4", features = ["derive"] }
 bumpalo = "3"
-annotate-snippets = "0.11"
+annotate-snippets = "0.12"
+toml = "1.1.2"
 
 [dev-dependencies]

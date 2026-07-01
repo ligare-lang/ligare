@@ -7,15 +7,34 @@ use crate::front::parser::{TopLevel, UseTree, Visibility, parse_program};
 
 use super::{Compiler, read_source_file};
 
+#[derive(Clone, Debug, Default)]
+pub struct PackageModuleGraph {
+    pub root_deps: HashSet<String>,
+    pub packages: HashMap<String, PackageModuleInfo>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PackageModuleInfo {
+    pub root: PathBuf,
+    pub deps: HashSet<String>,
+    pub public_modules: HashSet<Vec<String>>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct ModuleId(Vec<String>);
+struct ModuleId {
+    package: Option<String>,
+    path: Vec<String>,
+}
 
 impl ModuleId {
     fn root() -> Self {
-        Self(Vec::new())
+        Self {
+            package: None,
+            path: Vec::new(),
+        }
     }
 
-    fn from_path(root: &Path, file: &Path) -> Result<Self, Diagnostic> {
+    fn from_path(package: Option<String>, root: &Path, file: &Path) -> Result<Self, Diagnostic> {
         let rel = file.strip_prefix(root).map_err(|_| {
             Diagnostic::new(format!(
                 "module file `{}` is not under module root `{}`",
@@ -23,38 +42,95 @@ impl ModuleId {
                 root.display()
             ))
         })?;
-        let mut parts = rel
+        let mut path = rel
             .with_extension("")
             .components()
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        if parts == ["main"] {
-            parts.clear();
+        if path == ["main"] {
+            path.clear();
         }
-        Ok(Self(parts))
+        Ok(Self { package, path })
+    }
+
+    fn package(package: &str, path: Vec<String>) -> Self {
+        Self {
+            package: Some(package.to_string()),
+            path,
+        }
     }
 
     fn join_symbol(&self, name: &str) -> String {
-        if self.0.is_empty() {
+        let mut parts = Vec::new();
+        if let Some(package) = &self.package {
+            parts.push(package.clone());
+        }
+        parts.extend(self.path.clone());
+        if parts.is_empty() {
             name.to_string()
         } else {
-            format!("{}::{name}", self.0.join("::"))
+            format!("{}::{name}", parts.join("::"))
         }
     }
 
-    fn from_import_path(path: &[Name<'_>]) -> Self {
-        Self(
-            path[..path.len().saturating_sub(1)]
+    fn local_import_path(&self, path: &[Name<'_>]) -> Self {
+        Self {
+            package: self.package.clone(),
+            path: path[..path.len().saturating_sub(1)]
                 .iter()
                 .map(|p| (*p).to_string())
                 .collect(),
-        )
+        }
     }
 
-    fn symbol_from_import_path(path: &[Name<'_>]) -> Option<String> {
+    fn symbol_from_import_path(
+        &self,
+        path: &[Name<'_>],
+        graph: &PackageModuleGraph,
+    ) -> Option<String> {
         let item = path.last()?;
-        let module = Self::from_import_path(path);
+        let module = self.resolve_import_module(path, graph).ok()?;
         Some(module.join_symbol(item))
+    }
+
+    fn resolve_import_module(
+        &self,
+        path: &[Name<'_>],
+        graph: &PackageModuleGraph,
+    ) -> Result<Self, Diagnostic> {
+        if path.len() < 2 {
+            return Err(Diagnostic::new("use path must include a module and symbol"));
+        }
+        let first = path[0].to_string();
+        let accessible = match &self.package {
+            None => graph.root_deps.contains(&first),
+            Some(package) => graph
+                .packages
+                .get(package)
+                .is_some_and(|info| info.deps.contains(&first)),
+        };
+        if accessible {
+            if path.len() < 3 {
+                return Err(Diagnostic::new(
+                    "package use path must be `package::module::symbol`",
+                ));
+            }
+            let module_path = path[1..path.len() - 1]
+                .iter()
+                .map(|p| (*p).to_string())
+                .collect::<Vec<_>>();
+            let info = graph.packages.get(&first).ok_or_else(|| {
+                Diagnostic::new(format!("package dependency `{first}` was not resolved"))
+            })?;
+            if !info.public_modules.contains(&module_path) {
+                return Err(Diagnostic::new(format!(
+                    "module `{}` is not exported by package `{first}`",
+                    module_path.join("::")
+                )));
+            }
+            return Ok(Self::package(&first, module_path));
+        }
+        Ok(self.local_import_path(path))
     }
 }
 
@@ -137,24 +213,87 @@ impl<'bump> Compiler<'bump> {
         self.validate_module_main()
     }
 
+    pub fn process_project_entry(
+        &mut self,
+        root: &Path,
+        entry: &Path,
+        graph: PackageModuleGraph,
+    ) -> Result<(), Diagnostic> {
+        let env = self.load_project_module_graph(root, entry, graph)?;
+        for id in env.order {
+            let tops = env.rewritten.get(&id).cloned().unwrap_or_default();
+            for top in tops {
+                self.process_top_level(top)?;
+            }
+        }
+        self.validate_module_main()
+    }
+
+    pub fn collect_project_entry(
+        &mut self,
+        root: &Path,
+        entry: &Path,
+        graph: PackageModuleGraph,
+    ) -> Result<(), Diagnostic> {
+        self.quiet = true;
+        let env = self.load_project_module_graph(root, entry, graph)?;
+        for id in env.order {
+            let content = env.rewritten.get(&id).cloned().unwrap_or_default();
+            for top in &content {
+                self.process_top_level(top.clone())?;
+            }
+            let codegen = self.collect_codegen_state(&content)?;
+            let monomorphized = self.monomorphize_for_codegen(content, codegen)?;
+            let eraser =
+                crate::checker::erase::Eraser::new(self.arena, self.checker.builtins.clone());
+            let erased = self.erase_and_collect_tops(monomorphized.tops, &eraser)?;
+            self.raw_defs.extend(monomorphized.codegen.raw_defs);
+            self.fun_sigs.extend(monomorphized.codegen.fun_sigs);
+            self.union_types.extend(monomorphized.codegen.union_types);
+            self.struct_types.extend(monomorphized.codegen.struct_types);
+            self.tops.extend(erased.tops);
+        }
+        self.validate_module_main()
+    }
+
     fn load_module_graph(&self, entry: &str) -> Result<ModuleEnv<'bump>, Diagnostic> {
         let entry_path = PathBuf::from(entry);
         let root = entry_path
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
+        self.load_project_module_graph(&root, &entry_path, PackageModuleGraph::default())
+    }
+
+    fn load_project_module_graph(
+        &self,
+        root: &Path,
+        entry_path: &Path,
+        graph: PackageModuleGraph,
+    ) -> Result<ModuleEnv<'bump>, Diagnostic> {
+        let module_root = entry_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| root.to_path_buf());
         let mut parsed = HashMap::new();
-        self.load_module_as(&root, entry_path, ModuleId::root(), &mut parsed)?;
+        self.load_module_as(
+            &module_root,
+            entry_path.to_path_buf(),
+            ModuleId::root(),
+            &graph,
+            &mut parsed,
+        )?;
         let entry_id = ModuleId::root();
         let root_module = parsed
             .get(&entry_id)
             .ok_or_else(|| Diagnostic::new("entry module was not loaded"))?;
         if entry_id == ModuleId::root() && !has_public_main(&root_module.tops) {
-            return Err(Diagnostic::new(
-                "entry module `main.lig` must define `pub main : IO Unit`",
-            ));
+            return Err(Diagnostic::new(format!(
+                "entry module `{}` must define `pub main : IO Unit`",
+                entry_path.display()
+            )));
         }
-        let exports = self.collect_exports(&parsed)?;
+        let exports = self.collect_exports(&parsed, &graph)?;
         let mut env = ModuleEnv {
             exports,
             rewritten: HashMap::new(),
@@ -164,7 +303,8 @@ impl<'bump> Compiler<'bump> {
         let mut done = HashSet::new();
         self.visit_module(
             &entry_id,
-            &root,
+            &module_root,
+            &graph,
             &parsed,
             &mut env,
             &mut visiting,
@@ -177,10 +317,11 @@ impl<'bump> Compiler<'bump> {
         &self,
         root: &Path,
         file: PathBuf,
+        graph: &PackageModuleGraph,
         parsed: &mut HashMap<ModuleId, ParsedModule<'bump>>,
     ) -> Result<ModuleId, Diagnostic> {
-        let id = ModuleId::from_path(root, &file)?;
-        self.load_module_as(root, file, id, parsed)
+        let id = ModuleId::from_path(None, root, &file)?;
+        self.load_module_as(root, file, id, graph, parsed)
     }
 
     fn load_module_as(
@@ -188,6 +329,7 @@ impl<'bump> Compiler<'bump> {
         root: &Path,
         file: PathBuf,
         id: ModuleId,
+        graph: &PackageModuleGraph,
         parsed: &mut HashMap<ModuleId, ParsedModule<'bump>>,
     ) -> Result<ModuleId, Diagnostic> {
         if parsed.contains_key(&id) {
@@ -205,16 +347,20 @@ impl<'bump> Compiler<'bump> {
                 tops: tops.clone(),
             },
         );
-        for module in import_deps(&tops)? {
-            let dep_file = module_path(root, &module);
+        for module in import_deps(&id, &tops, graph)? {
+            let (dep_root, dep_file) = module_file(root, &module, graph)?;
             if !dep_file.exists() {
                 return Err(Diagnostic::new(format!(
                     "module not found: {} at {}",
-                    module.0.join("::"),
+                    display_module(&module),
                     dep_file.display()
                 )));
             }
-            self.load_module(root, dep_file, parsed)?;
+            if module.package.is_some() {
+                self.load_module_as(&dep_root, dep_file, module, graph, parsed)?;
+            } else {
+                self.load_module(&dep_root, dep_file, graph, parsed)?;
+            }
         }
         Ok(id)
     }
@@ -222,6 +368,7 @@ impl<'bump> Compiler<'bump> {
     fn collect_exports(
         &self,
         parsed: &HashMap<ModuleId, ParsedModule<'bump>>,
+        graph: &PackageModuleGraph,
     ) -> Result<HashMap<ModuleId, HashMap<String, String>>, Diagnostic> {
         let mut direct = HashMap::new();
         for (id, module) in parsed {
@@ -239,12 +386,13 @@ impl<'bump> Compiler<'bump> {
                     }
                     for tree in import.trees {
                         let requested =
-                            ModuleId::symbol_from_import_path(tree.path).ok_or_else(|| {
-                                Diagnostic::new("pub use path must include a module and symbol")
-                            })?;
-                        let dep = ModuleId::from_import_path(tree.path);
+                            id.symbol_from_import_path(tree.path, graph)
+                                .ok_or_else(|| {
+                                    Diagnostic::new("pub use path must include a module and symbol")
+                                })?;
+                        let dep = id.resolve_import_module(tree.path, graph)?;
                         let dep_exports = exports.get(&dep).ok_or_else(|| {
-                            Diagnostic::new(format!("module not found: {}", dep.0.join("::")))
+                            Diagnostic::new(format!("module not found: {}", display_module(&dep)))
                         })?;
                         let Some(target) = dep_exports.get(&requested) else {
                             return Err(Diagnostic::new(format!(
@@ -271,6 +419,7 @@ impl<'bump> Compiler<'bump> {
         &self,
         id: &ModuleId,
         root: &Path,
+        graph: &PackageModuleGraph,
         parsed: &HashMap<ModuleId, ParsedModule<'bump>>,
         env: &mut ModuleEnv<'bump>,
         visiting: &mut Vec<ModuleId>,
@@ -294,8 +443,8 @@ impl<'bump> Compiler<'bump> {
         let module = parsed
             .get(id)
             .ok_or_else(|| Diagnostic::new(format!("module not found: {}", display_module(id))))?;
-        for dep in import_deps(&module.tops)? {
-            let dep_file = module_path(root, &dep);
+        for dep in import_deps(id, &module.tops, graph)? {
+            let (_dep_root, dep_file) = module_file(root, &dep, graph)?;
             if !parsed.contains_key(&dep) || !dep_file.exists() {
                 return Err(Diagnostic::new(format!(
                     "module not found: {} at {}",
@@ -303,10 +452,10 @@ impl<'bump> Compiler<'bump> {
                     dep_file.display()
                 )));
             }
-            self.visit_module(&dep, root, parsed, env, visiting, done)?;
+            self.visit_module(&dep, root, graph, parsed, env, visiting, done)?;
         }
         visiting.pop();
-        let rewritten = self.rewrite_module(module, &env.exports)?;
+        let rewritten = self.rewrite_module(module, &env.exports, graph)?;
         env.rewritten.insert(id.clone(), rewritten);
         env.order.push(id.clone());
         done.insert(id.clone());
@@ -317,13 +466,16 @@ impl<'bump> Compiler<'bump> {
         &self,
         module: &ParsedModule<'bump>,
         exports: &HashMap<ModuleId, HashMap<String, String>>,
+        graph: &PackageModuleGraph,
     ) -> Result<Vec<TopLevel<'bump>>, Diagnostic> {
         let mut imports = HashMap::new();
         for import in module_imports(&module.tops) {
             for tree in import.trees {
-                let full = ModuleId::symbol_from_import_path(tree.path)
+                let full = module
+                    .id
+                    .symbol_from_import_path(tree.path, graph)
                     .ok_or_else(|| Diagnostic::new("use path must include a module and symbol"))?;
-                let dep = ModuleId::from_import_path(tree.path);
+                let dep = module.id.resolve_import_module(tree.path, graph)?;
                 let dep_exports = exports.get(&dep).ok_or_else(|| {
                     Diagnostic::new(format!("module not found: {}", display_module(&dep)))
                 })?;
@@ -669,7 +821,11 @@ fn module_imports<'a, 'bump>(tops: &'a [TopLevel<'bump>]) -> Vec<ImportItem<'a, 
         .collect()
 }
 
-fn import_deps<'bump>(tops: &[TopLevel<'bump>]) -> Result<Vec<ModuleId>, Diagnostic> {
+fn import_deps<'bump>(
+    current: &ModuleId,
+    tops: &[TopLevel<'bump>],
+    graph: &PackageModuleGraph,
+) -> Result<Vec<ModuleId>, Diagnostic> {
     let mut deps = Vec::new();
     let mut seen = HashSet::new();
     for import in module_imports(tops) {
@@ -677,7 +833,7 @@ fn import_deps<'bump>(tops: &[TopLevel<'bump>]) -> Result<Vec<ModuleId>, Diagnos
             if tree.path.len() < 2 {
                 return Err(Diagnostic::new("use path must include a module and symbol"));
             }
-            let dep = ModuleId::from_import_path(tree.path);
+            let dep = current.resolve_import_module(tree.path, graph)?;
             if seen.insert(dep.clone()) {
                 deps.push(dep);
             }
@@ -725,9 +881,29 @@ fn unwrap_public<'a, 'bump>(top: &'a TopLevel<'bump>) -> (&'a TopLevel<'bump>, b
     }
 }
 
+fn module_file(
+    root: &Path,
+    module: &ModuleId,
+    graph: &PackageModuleGraph,
+) -> Result<(PathBuf, PathBuf), Diagnostic> {
+    let module_root = if let Some(package) = &module.package {
+        graph
+            .packages
+            .get(package)
+            .map(|info| info.root.clone())
+            .ok_or_else(|| {
+                Diagnostic::new(format!("package dependency `{package}` was not resolved"))
+            })?
+    } else {
+        root.to_path_buf()
+    };
+    let path = module_path(&module_root, module);
+    Ok((module_root, path))
+}
+
 fn module_path(root: &Path, module: &ModuleId) -> PathBuf {
     let mut path = root.to_path_buf();
-    for part in &module.0 {
+    for part in &module.path {
         path.push(part);
     }
     path.set_extension("lig");
@@ -735,9 +911,14 @@ fn module_path(root: &Path, module: &ModuleId) -> PathBuf {
 }
 
 fn display_module(module: &ModuleId) -> String {
-    if module.0.is_empty() {
-        "main".into()
+    let path = if module.path.is_empty() {
+        "main".to_string()
     } else {
-        module.0.join("::")
+        module.path.join("::")
+    };
+    if let Some(package) = &module.package {
+        format!("{package}::{path}")
+    } else {
+        path
     }
 }
