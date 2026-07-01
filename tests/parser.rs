@@ -244,6 +244,29 @@ fn unbound_name_becomes_builtin() {
 }
 
 #[test]
+fn parse_use_batch_alias_and_pub() {
+    let (b, arena) = a();
+    let tops = parse_program(
+        "pub use data::nat::{add as plus, one}, prelude::id\n",
+        b,
+        &arena,
+    )
+    .unwrap();
+    match &tops[0] {
+        TopLevel::TLUse(imports, ligare::front::parser::Visibility::Public, _) => {
+            assert_eq!(imports.len(), 3);
+            assert_eq!(imports[0].path, ["data", "nat", "add"]);
+            assert_eq!(imports[0].alias, Some("plus"));
+            assert_eq!(imports[1].path, ["data", "nat", "one"]);
+            assert_eq!(imports[1].alias, None);
+            assert_eq!(imports[2].path, ["prelude", "id"]);
+            assert_eq!(imports[2].alias, None);
+        }
+        other => panic!("unexpected top-level: {other:?}"),
+    }
+}
+
+#[test]
 fn refine_expression() {
     let (b, arena) = a();
     assert_eq!(

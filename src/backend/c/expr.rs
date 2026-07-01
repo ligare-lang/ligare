@@ -10,6 +10,7 @@ use crate::backend::c::names::NameResolver;
 use crate::backend::c::types::{StructInfo, UnionInfo};
 use crate::backend::c::value::{CCode, CExpr, CValue, MatchBind, MatchCase, MatchPlan};
 use crate::backend::ir::{CType, FunSig};
+use crate::config::BUILTIN_UNIT;
 use crate::core::syntax::{MatchBranch, PrimOp, Term};
 use crate::diagnostic::Diagnostic;
 use std::cell::Cell;
@@ -36,6 +37,7 @@ fn c_string_literal(value: &str) -> String {
 
 #[derive(Clone, Debug)]
 struct CallParts {
+    raw_function: Option<String>,
     function: CCode,
     args: Vec<CCode>,
 }
@@ -147,6 +149,9 @@ impl<'a> ExpressionEmitter<'a> {
             Term::Annot(inner, _) => self.emit_expr(inner, ctx, union_map, struct_map),
 
             Term::Builtin(name) | Term::Global(name) => {
+                if *name == BUILTIN_UNIT {
+                    return Ok(CValue::code("0", CType::Int64));
+                }
                 let ty = self
                     .fun_sigs
                     .iter()
@@ -477,7 +482,7 @@ impl<'a> ExpressionEmitter<'a> {
         let param_count = self
             .fun_sigs
             .iter()
-            .find(|(n, _)| *n == call.function.as_str())
+            .find(|(n, _)| Some(*n) == call.raw_function.as_deref())
             .map(|(_, sig)| sig.param_types.len())
             .ok_or_else(|| {
                 Diagnostic::new(format!(
@@ -493,7 +498,7 @@ impl<'a> ExpressionEmitter<'a> {
         let ret_ty = self
             .fun_sigs
             .iter()
-            .find(|(n, _)| *n == call.function.as_str())
+            .find(|(n, _)| Some(*n) == call.raw_function.as_deref())
             .map(|(_, sig)| sig.ret_type.clone())
             .ok_or_else(|| {
                 Diagnostic::new(format!(
@@ -527,8 +532,13 @@ impl<'a> ExpressionEmitter<'a> {
                 Ok(call)
             }
             _ => {
+                let raw_function = match term {
+                    Term::Builtin(name) | Term::Global(name) => Some((*name).to_string()),
+                    _ => None,
+                };
                 let value = self.emit_expr(term, ctx, union_map, struct_map)?;
                 Ok(CallParts {
+                    raw_function,
                     function: self.value_code(value, union_map)?,
                     args: Vec::new(),
                 })

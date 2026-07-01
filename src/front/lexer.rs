@@ -45,6 +45,12 @@ pub enum Token {
     KwHave,
     #[token("theorem")]
     KwTheorem,
+    #[token("pub")]
+    KwPub,
+    #[token("use")]
+    KwUse,
+    #[token("as")]
+    KwAs,
 
     // Union / Struct keywords
     #[token("struct")]
@@ -73,6 +79,8 @@ pub enum Token {
     // Symbols
     #[token(":=")]
     ColonEq,
+    #[token("::")]
+    PathSep,
     #[token("=>")]
     FatArrow,
     #[token("->")]

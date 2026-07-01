@@ -5,7 +5,7 @@ use crate::checker::builtin::LogicKind;
 use crate::checker::context::{
     Context, add_refine, add_theorem, expand_constraint, extend_ctx, extend_ctx_term, lookup_refine,
 };
-use crate::config::{BUILTIN_BOOL, BUILTIN_DATA};
+use crate::config::{BUILTIN_BOOL, BUILTIN_DATA, BUILTIN_IO};
 use crate::core::syntax::{MatchBranch, Name, PrimOp, Term, Universe};
 use crate::diagnostic::Diagnostic;
 use crate::pretty::PrettyPrinter;
@@ -484,7 +484,13 @@ impl<'bump> TypeChecker<'bump> {
                     Err(diag!("unbound constraint param at index {}", *j))
                 }
             }
-            Term::App(app_and, a) => self.try_check_logical_op(ctx, term, app_and, a, norm),
+            Term::App(head, a) => {
+                if matches!(head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_IO) {
+                    self.check(ctx, term, a)
+                } else {
+                    self.try_check_logical_op(ctx, term, head, a, norm)
+                }
+            }
             // When a generic union/struct application is resolved via the env,
             // the constraint normalizes to the raw UnionDef/StructDef term.
             Term::UnionDef(uname, _) => self.check_union_constraint(term, uname),
@@ -786,6 +792,12 @@ impl<'bump> TypeChecker<'bump> {
             || Self::pi_equiv(a_val, c_val)
             || self.is_refinement_of(c_val, a_val)
             || Self::is_data_like(c_val)
+            || Self::io_inner(c_val).is_some_and(|inner| {
+                a_val == inner
+                    || Self::pi_equiv(a_val, inner)
+                    || self.is_refinement_of(inner, a_val)
+                    || self.named_constraint_equiv(a_val, inner)
+            })
             || self.named_constraint_equiv(a_val, c_val);
         if ok {
             Ok(())
@@ -820,6 +832,16 @@ impl<'bump> TypeChecker<'bump> {
         match (extract(a), extract(b)) {
             (Some(n1), Some(n2)) => n1 == n2,
             _ => false,
+        }
+    }
+
+    fn io_inner(t: &'bump Term<'bump>) -> Option<&'bump Term<'bump>> {
+        if let Term::App(head, inner) = t
+            && matches!(head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_IO)
+        {
+            Some(inner)
+        } else {
+            None
         }
     }
 

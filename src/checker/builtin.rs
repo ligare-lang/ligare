@@ -7,8 +7,9 @@
 use std::collections::HashMap;
 
 use crate::config::{
-    BUILTIN_AND, BUILTIN_BOOL, BUILTIN_DATA, BUILTIN_IMPLIES, BUILTIN_INT, BUILTIN_NOT, BUILTIN_OR,
-    BUILTIN_PROOF, BUILTIN_PROP, BUILTIN_STR, BUILTIN_THEOREM,
+    BUILTIN_AND, BUILTIN_BOOL, BUILTIN_DATA, BUILTIN_IMPLIES, BUILTIN_INT, BUILTIN_IO,
+    BUILTIN_NOT, BUILTIN_OR, BUILTIN_PROOF, BUILTIN_PROP, BUILTIN_STR, BUILTIN_THEOREM,
+    BUILTIN_UNIT,
 };
 use crate::core::syntax::{Term, Universe};
 use crate::diagnostic::Diagnostic;
@@ -62,6 +63,16 @@ fn check_str(t: &Term<'_>) -> Result<(), Diagnostic> {
     }
 }
 
+fn check_unit(t: &Term<'_>) -> Result<(), Diagnostic> {
+    match t {
+        Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_UNIT => Ok(()),
+        _ => Err(Diagnostic::new(format!(
+            "expected Unit, got {}",
+            PrettyPrinter::pretty(t)
+        ))),
+    }
+}
+
 fn check_any(_t: &Term<'_>) -> Result<(), Diagnostic> {
     Ok(())
 }
@@ -91,6 +102,8 @@ impl BuiltinRegistry {
                 (BUILTIN_INT, entry(Universe::UProp, check_int, None)),
                 (BUILTIN_BOOL, entry(Universe::UProp, check_bool, None)),
                 (BUILTIN_STR, entry(Universe::UProp, check_str, None)),
+                (BUILTIN_IO, entry(Universe::UProp, check_any, None)),
+                (BUILTIN_UNIT, entry(Universe::UProp, check_unit, None)),
                 (BUILTIN_DATA, entry(Universe::UProp, check_any, None)),
                 (BUILTIN_PROP, entry(Universe::UProp, check_any, None)),
                 (BUILTIN_THEOREM, entry(Universe::UTheorem, check_any, None)),

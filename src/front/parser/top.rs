@@ -1,4 +1,4 @@
-use super::{ParseError, ParsedDef, Parser, TopLevel};
+use super::{ParseError, ParsedDef, Parser, TopLevel, UseTree, Visibility};
 use crate::core::syntax::Term;
 use crate::front::lexer::Token;
 
@@ -32,6 +32,18 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         }
         let start_span = self.current_span();
 
+        let visibility = if self.peek_token() == Some(Token::KwPub) {
+            self.advance();
+            Visibility::Public
+        } else {
+            Visibility::Private
+        };
+
+        if self.peek_token() == Some(Token::KwUse) {
+            let uses = self.parse_use_trees()?;
+            return Ok(TopLevel::TLUse(uses, visibility, start_span));
+        }
+
         if self.peek_token() == Some(Token::KwTheorem) {
             self.advance();
             let name = self.parse_ident()?;
@@ -42,12 +54,21 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             };
             self.expect(&Token::ColonEq)?;
             let body = self.parse_expr()?;
-            return Ok(TopLevel::TLTheorem(name, prop, body, start_span));
+            let top = TopLevel::TLTheorem(name, prop, body, start_span);
+            return Ok(self.with_visibility(top, visibility));
         }
 
         if self.peek_token() == Some(Token::KwDef) {
             let (name, params, m_ret, body) = self.parse_def()?;
-            return Ok(TopLevel::TLDef(name, params, m_ret, body, start_span));
+            let top = TopLevel::TLDef(name, params, m_ret, body, start_span);
+            return Ok(self.with_visibility(top, visibility));
+        }
+
+        if matches!(visibility, Visibility::Public) {
+            return Err(ParseError {
+                message: "`pub` may only prefix `def`, `theorem`, or `use`".into(),
+                span: start_span,
+            });
         }
 
         if self.peek_token() == Some(Token::HashCheck) {
@@ -90,7 +111,12 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 Token::RParen => parens = parens.saturating_sub(1),
                 Token::LBrace => braces += 1,
                 Token::RBrace => braces = braces.saturating_sub(1),
-                Token::KwDef | Token::HashCheck | Token::HashShow | Token::KwTheorem
+                Token::KwDef
+                | Token::HashCheck
+                | Token::HashShow
+                | Token::KwTheorem
+                | Token::KwPub
+                | Token::KwUse
                     if parens == 0 && braces == 0 =>
                 {
                     break;
@@ -101,5 +127,78 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             i += 1;
         }
         last
+    }
+
+    fn parse_use_trees(&mut self) -> Result<&'bump [UseTree<'bump>], ParseError> {
+        self.expect(&Token::KwUse)?;
+        let mut imports = Vec::new();
+        loop {
+            let mut path = Vec::new();
+            path.push(self.parse_ident()?);
+            loop {
+                if !self.try_expect(&Token::PathSep) {
+                    break;
+                }
+                if self.peek_token() == Some(Token::LBrace) {
+                    self.advance();
+                    let prefix = path.clone();
+                    loop {
+                        let leaf = self.parse_ident()?;
+                        let mut full = prefix.clone();
+                        full.push(leaf);
+                        let alias = if self.try_expect(&Token::KwAs) {
+                            Some(self.parse_ident()?)
+                        } else {
+                            None
+                        };
+                        imports.push(UseTree {
+                            path: self.arena.alloc_slice(&full),
+                            alias,
+                        });
+                        if !self.try_expect(&Token::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&Token::RBrace)?;
+                    path.clear();
+                    break;
+                }
+                path.push(self.parse_ident()?);
+            }
+            if path.is_empty() {
+                if !self.try_expect(&Token::Comma) {
+                    break;
+                }
+                continue;
+            }
+            let alias = if self.try_expect(&Token::KwAs) {
+                Some(self.parse_ident()?)
+            } else {
+                None
+            };
+            imports.push(UseTree {
+                path: self.arena.alloc_slice(&path),
+                alias,
+            });
+            if !self.try_expect(&Token::Comma) {
+                break;
+            }
+        }
+        Ok(self.arena.alloc_slice(&imports))
+    }
+
+    fn with_visibility(
+        &self,
+        top: TopLevel<'bump>,
+        visibility: Visibility,
+    ) -> TopLevel<'bump> {
+        match visibility {
+            Visibility::Private => top,
+            Visibility::Public => TopLevel::TLPublic(self.bump_alloc_top(top)),
+        }
+    }
+
+    fn bump_alloc_top(&self, top: TopLevel<'bump>) -> &'bump TopLevel<'bump> {
+        self.arena.bump().alloc(top)
     }
 }

@@ -4,6 +4,7 @@
 //! struct and its lifecycle methods.
 
 mod pipeline;
+mod modules;
 mod resolve;
 
 use std::collections::HashMap;
@@ -88,6 +89,9 @@ impl<'bump> Compiler<'bump> {
 
     /// Process a source file: parse it and handle each top-level item.
     pub fn process_file(&mut self, file: &str) -> Result<(), Diagnostic> {
+        if modules::is_module_entry(file) {
+            return self.process_module_entry(file);
+        }
         let content = read_source_file(file)?;
         self.process_str(&content, file)
     }
@@ -242,6 +246,10 @@ impl<'bump> Compiler<'bump> {
             TopLevel::TLTheorem(name, prop, body, span) => {
                 self.process_theorem(name, prop, body, span)?;
             }
+            TopLevel::TLPublic(inner) => {
+                self.process_top_level((*inner).clone())?;
+            }
+            TopLevel::TLUse(..) => {}
             TopLevel::TLShow(term, span) => {
                 self.process_eval_like(term, span, "show")?;
             }

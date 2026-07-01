@@ -29,13 +29,25 @@
 
 Program     ::= { TopLevel }
 
+Entry       ::= "main.lig" must contain "pub" "def" "main" ":" "IO" "Unit" ":=" Expr
+
 TopLevel    ::= Def
+              | Use
               | Check
               | Show
               | Expr
 
-Def         ::= "def" Ident Params [ ":" Expr ] ":=" Expr
-              | "def" Ident                   ":=" Expr
+Def         ::= [ "pub" ] "def" Ident Params [ ":" Expr ] ":=" Expr
+              | [ "pub" ] "def" Ident                   ":=" Expr
+
+Use         ::= [ "pub" ] "use" UseItem { "," UseItem }
+
+UseItem     ::= Path [ "as" Ident ]
+              | Path "::" "{" UseLeaf { "," UseLeaf } "}"
+
+UseLeaf     ::= Ident [ "as" Ident ]
+
+Path        ::= Ident "::" Ident { "::" Ident }
 
 Check       ::= "#check" Expr [ ":" Expr ]
 

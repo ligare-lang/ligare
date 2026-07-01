@@ -34,13 +34,16 @@ pub(crate) struct MonomorphizedProgram<'bump> {
     pub(crate) codegen: CodegenState<'bump>,
 }
 
-struct ErasedProgram<'bump> {
-    tops: Vec<TopLevel<'bump>>,
+pub(crate) struct ErasedProgram<'bump> {
+    pub(crate) tops: Vec<TopLevel<'bump>>,
 }
 
 impl<'bump> Compiler<'bump> {
     /// Process a source file, collect top-level items, and check constraints.
     pub fn collect_file(&mut self, file: &str) -> Result<(), Diagnostic> {
+        if super::modules::is_module_entry(file) {
+            return self.collect_module_entry(file);
+        }
         self.quiet = true;
         let content = read_source_file(file)?;
         self.collect_str(&content, file)
@@ -81,7 +84,7 @@ impl<'bump> Compiler<'bump> {
     }
 
     /// Collect the codegen-facing inputs from the original un-erased tops.
-    fn collect_codegen_state(
+    pub(crate) fn collect_codegen_state(
         &self,
         tops: &[TopLevel<'bump>],
     ) -> Result<CodegenState<'bump>, Diagnostic> {
@@ -141,7 +144,7 @@ impl<'bump> Compiler<'bump> {
 
     /// Erase, resolve, and filter top-level definitions. Skips union/struct
     /// typedefs (including generic ones) and drops zero-param type aliases after erasure.
-    fn erase_and_collect_tops(
+    pub(crate) fn erase_and_collect_tops(
         &self,
         tops: Vec<TopLevel<'bump>>,
         eraser: &Eraser<'bump>,
@@ -179,6 +182,7 @@ impl<'bump> Compiler<'bump> {
                     let erased = eraser.erase(resolved_body);
                     Ok(Some(TopLevel::TLDef(name, &[], None, erased, span)))
                 }
+                TopLevel::TLUse(..) | TopLevel::TLPublic(_) => Ok(None),
                 TopLevel::TLCheck(_, _, _) => Ok(None),
             })
             .collect::<Result<Vec<_>, Diagnostic>>()?

@@ -7,6 +7,7 @@
 use std::collections::HashSet;
 
 use crate::checker::builtin::BuiltinRegistry;
+use crate::config::{BUILTIN_IO, BUILTIN_UNIT};
 use crate::core::semantics::SemanticQueries;
 use crate::core::syntax::Term;
 use crate::diagnostic::Diagnostic;
@@ -179,7 +180,9 @@ pub fn constraint_to_ctype(
     struct_names: &HashSet<String>,
 ) -> Result<CType, Diagnostic> {
     match t {
-        Term::Builtin(name) if *name == "int" || *name == "bool" => Ok(CType::Int64),
+        Term::Builtin(name) if *name == "int" || *name == "bool" || *name == BUILTIN_UNIT => {
+            Ok(CType::Int64)
+        }
         Term::Builtin(name) if *name == "str" => Ok(CType::Str),
         Term::Builtin(name) | Term::Global(name) if struct_names.contains(&name.to_string()) => {
             Ok(CType::Struct(name.to_string()))
@@ -195,6 +198,11 @@ pub fn constraint_to_ctype(
         // Handle monomorphized generic type applications like
         // `Option int` → Union("Option__int") when that instance exists.
         Term::App(head, _) => {
+            if let Term::Builtin(name) | Term::Global(name) = *head
+                && *name == BUILTIN_IO
+            {
+                return Ok(CType::Int64);
+            }
             if let Some(name) = type_app_name(t) {
                 if union_names.contains(&name) {
                     return Ok(CType::Union(name));

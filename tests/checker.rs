@@ -42,6 +42,49 @@ fn bool_literal() {
 }
 
 #[test]
+fn unit_value_checks_as_unit() {
+    let (b, arena) = a();
+    assert_eq!(
+        check_empty(
+            &arena,
+            parse("Unit", b, &arena),
+            parse_constraint("Unit", b, &arena)
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn int_does_not_check_as_unit() {
+    let (b, arena) = a();
+    assert!(check_empty(
+        &arena,
+        parse("0", b, &arena),
+        parse_constraint("Unit", b, &arena)
+    )
+    .is_err());
+}
+
+#[test]
+fn io_unit_requires_unit_body() {
+    let (b, arena) = a();
+    assert_eq!(
+        check_empty(
+            &arena,
+            parse("Unit", b, &arena),
+            parse_constraint("IO Unit", b, &arena)
+        ),
+        Ok(())
+    );
+    assert!(check_empty(
+        &arena,
+        parse("0", b, &arena),
+        parse_constraint("IO Unit", b, &arena)
+    )
+    .is_err());
+}
+
+#[test]
 fn int_fails_for_bool() {
     let (_b, arena) = a();
     assert!(check_empty(&arena, &Term::LitInt(5), arena.builtin(s(&arena, "bool"))).is_err());

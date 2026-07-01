@@ -14,6 +14,18 @@ mod tests;
 
 pub use api::{parse_def_top, parse_expr_top, parse_program};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UseTree<'bump> {
+    pub path: &'bump [Name<'bump>],
+    pub alias: Option<Name<'bump>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Visibility {
+    Private,
+    Public,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TopLevel<'bump> {
     /// name, params, ret-annotation, desugared-body (Annot(Lam(...), Pi(...))), span
@@ -25,6 +37,8 @@ pub enum TopLevel<'bump> {
         Span,
     ),
     TLTheorem(Name<'bump>, &'bump Term<'bump>, &'bump Term<'bump>, Span),
+    TLUse(&'bump [UseTree<'bump>], Visibility, Span),
+    TLPublic(&'bump TopLevel<'bump>),
     TLCheck(&'bump Term<'bump>, &'bump Term<'bump>, Span),
     TLShow(&'bump Term<'bump>, Span),
     TLExpr(&'bump Term<'bump>, Span),
@@ -32,12 +46,13 @@ pub enum TopLevel<'bump> {
 
 pub(super) const KEYWORDS: &[&str] = &[
     "let", "in", "if", "then", "else", "true", "false", "by", "fun", "func", "where", "def",
-    "auto", "theorem",
+    "auto", "theorem", "pub", "use", "as",
 ];
 
 /// Names that represent language builtins (not user-defined).
 pub(super) const BUILTIN_NAMES: &[&str] = &[
-    "int", "bool", "str", "data", "prop", "theorem", "proof", "and", "or", "not", "implies",
+    "int", "bool", "str", "IO", "Unit", "data", "prop", "theorem", "proof", "and", "or", "not",
+    "implies",
 ];
 
 pub(super) type SpannedToken = (Token, std::ops::Range<usize>);

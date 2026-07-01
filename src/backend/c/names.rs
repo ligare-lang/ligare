@@ -60,10 +60,26 @@ impl NameResolver {
 
     /// Escape a name if it conflicts with a C keyword.
     pub fn escape(&self, name: &str) -> String {
-        if C_KEYWORDS.contains(&name) {
-            format!("_{name}")
+        let collapsed = name.replace("::", "_");
+        let mut out = String::with_capacity(collapsed.len());
+        for ch in collapsed.chars() {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                out.push(ch);
+            } else {
+                out.push('_');
+            }
+        }
+        if out
+            .as_bytes()
+            .first()
+            .is_some_and(|b| b.is_ascii_digit())
+        {
+            out.insert(0, '_');
+        }
+        if C_KEYWORDS.contains(&out.as_str()) {
+            format!("_{out}")
         } else {
-            name.to_string()
+            out
         }
     }
 
