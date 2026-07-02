@@ -19,6 +19,12 @@ type VariantInfo<'bump> = (
 );
 use crate::core::whnf::WhnfEvaluator;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckMode {
+    Full,
+    Fast,
+}
+
 /// Constraint checker — bundles arena, constraint table, and checking logic.
 ///
 /// Maintains a constraint table that is mutated when refinement definitions
@@ -37,6 +43,7 @@ pub struct TypeChecker<'bump> {
     pub(crate) extern_table: Vec<(Name<'bump>, &'bump Term<'bump>)>,
     /// Whether the current check is inside an explicit unsafe expression.
     pub(crate) unsafe_depth: usize,
+    mode: CheckMode,
 }
 
 impl<'bump> TypeChecker<'bump> {
@@ -50,6 +57,7 @@ impl<'bump> TypeChecker<'bump> {
             struct_table: Vec::new(),
             extern_table: Vec::new(),
             unsafe_depth: 0,
+            mode: CheckMode::Full,
         }
     }
 
@@ -59,6 +67,14 @@ impl<'bump> TypeChecker<'bump> {
 
     pub fn builtins(&self) -> &BuiltinRegistry {
         &self.builtins
+    }
+
+    pub fn set_mode(&mut self, mode: CheckMode) {
+        self.mode = mode;
+    }
+
+    pub fn mode(&self) -> CheckMode {
+        self.mode
     }
 
     /// Add a refinement definition to the persistent constraint table.
@@ -219,6 +235,9 @@ impl<'bump> TypeChecker<'bump> {
                 self.check(ctx, t, constraint)
             }
             Term::ByProof(t_opt, tactics) => {
+                if self.mode == CheckMode::Fast {
+                    return self.check_by_proof_fast(ctx, *t_opt, constraint);
+                }
                 let c_nf = self.evaluator.whnf(constraint)?;
                 // Expand Builtin constraints (like `Nat`) that are
                 // actually refinement constraints in the table.
@@ -367,6 +386,7 @@ impl<'bump> TypeChecker<'bump> {
             struct_table: Vec::new(),
             extern_table: Vec::new(),
             unsafe_depth: 0,
+            mode: CheckMode::Full,
         }
     }
 
@@ -380,6 +400,28 @@ impl<'bump> TypeChecker<'bump> {
             struct_table: self.struct_table.clone(),
             extern_table: self.extern_table.clone(),
             unsafe_depth: self.unsafe_depth,
+            mode: self.mode,
+        }
+    }
+
+    fn check_by_proof_fast(
+        &self,
+        ctx: &Context<'bump>,
+        subject: Option<&'bump Term<'bump>>,
+        constraint: &'bump Term<'bump>,
+    ) -> Result<(), Diagnostic> {
+        let Some(subject) = subject else {
+            return Ok(());
+        };
+        let constraint_nf = self.evaluator.whnf(constraint)?;
+        let expanded = match constraint_nf {
+            Term::Builtin(name) | Term::Global(name) => lookup_refine(name, &self.table)
+                .map(|(parent, predicate)| self.arena.refine(name, parent, predicate)),
+            _ => None,
+        };
+        match expanded.unwrap_or(constraint_nf) {
+            Term::Refine(_, parent, _) => self.check(ctx, subject, parent),
+            _ => self.check(ctx, subject, constraint),
         }
     }
 }
@@ -401,6 +443,7 @@ pub fn check<'bump>(
         struct_table: Vec::new(),
         extern_table: Vec::new(),
         unsafe_depth: 0,
+        mode: CheckMode::Full,
     };
     checker.check(ctx, term, constraint)
 }

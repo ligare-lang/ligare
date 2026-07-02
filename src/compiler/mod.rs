@@ -13,8 +13,8 @@ use std::fs;
 use bumpalo::Bump;
 
 use crate::backend::ir::FunSig;
-use crate::checker::TypeChecker;
 use crate::checker::context::empty_ctx;
+use crate::checker::{CheckMode, TypeChecker};
 use crate::config::BUILTIN_DATA;
 use crate::core::eval::Evaluator;
 use crate::core::pool::TermArena;
@@ -99,6 +99,63 @@ impl<'bump> Compiler<'bump> {
     /// Process source code from a string (for testing).
     pub fn process_file_str(&mut self, source: &str) -> Result<(), Diagnostic> {
         self.process_str(source, "<str>")
+    }
+
+    /// Check recovered top-level items and collect every diagnostic that can be
+    /// produced without aborting the whole file. This is intended for editor
+    /// integrations that already parsed with a recovery parser.
+    pub fn check_top_levels_for_diagnostics(
+        &mut self,
+        tops: impl IntoIterator<Item = TopLevel<'bump>>,
+        file: &str,
+        source: &str,
+        mode: CheckMode,
+    ) -> Vec<Diagnostic> {
+        let previous_quiet = self.quiet;
+        self.quiet = true;
+        let previous_mode = self.checker.mode();
+        self.checker.set_mode(mode);
+        let mut diagnostics = Vec::new();
+
+        for top in tops {
+            if let Err(diagnostic) = self.process_top_level(top) {
+                diagnostics.push(diagnostic.with_source_if_missing(file, source));
+            }
+        }
+
+        self.checker.set_mode(previous_mode);
+        self.quiet = previous_quiet;
+        diagnostics
+    }
+
+    /// Check recovered top-level items while reporting diagnostics only for
+    /// selected indices. This lets editor integrations replay unchanged
+    /// context to rebuild the compiler environment without invalidating every
+    /// cached item diagnostic.
+    pub fn check_top_levels_incremental_for_diagnostics(
+        &mut self,
+        tops: impl IntoIterator<Item = (usize, TopLevel<'bump>, bool)>,
+        file: &str,
+        source: &str,
+        mode: CheckMode,
+    ) -> Vec<(usize, Diagnostic)> {
+        let previous_quiet = self.quiet;
+        self.quiet = true;
+        let previous_mode = self.checker.mode();
+        self.checker.set_mode(mode);
+        let mut diagnostics = Vec::new();
+
+        for (idx, top, report) in tops {
+            if let Err(diagnostic) = self.process_top_level(top)
+                && report
+            {
+                diagnostics.push((idx, diagnostic.with_source_if_missing(file, source)));
+            }
+        }
+
+        self.checker.set_mode(previous_mode);
+        self.quiet = previous_quiet;
+        diagnostics
     }
 
     fn process_str(&mut self, content: &str, file: &str) -> Result<(), Diagnostic> {

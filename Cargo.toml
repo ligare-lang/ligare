@@ -3,6 +3,9 @@ name = "ligare"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = [".", "crates/ligls"]
+
 [dependencies]
 logos = "0.15"
 clap = { version = "4", features = ["derive"] }

@@ -1,0 +1,12 @@
+[package]
+name = "ligls"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bumpalo = "3"
+chumsky = "0.9.3"
+ligare = { path = "../.." }
+logos = "0.15"
+tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
+tower-lsp = "0.20"
