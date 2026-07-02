@@ -109,7 +109,7 @@ impl<'bump> Compiler<'bump> {
                     .collect::<Vec<_>>();
                 self.arena.by_proof(inner, self.arena.alloc_slice(&tactics))
             }
-            Term::UnionDef(name, variants) => {
+            Term::EnumDef(name, variants) => {
                 let variants = variants
                     .iter()
                     .map(|(variant_name, fields)| {
@@ -130,8 +130,7 @@ impl<'bump> Compiler<'bump> {
                         (*variant_name, self.arena.alloc_slice(&fields))
                     })
                     .collect::<Vec<_>>();
-                self.arena
-                    .union_def(name, self.arena.alloc_slice(&variants))
+                self.arena.enum_def(name, self.arena.alloc_slice(&variants))
             }
             Term::Variant(name, idx, payloads) => {
                 let payloads = payloads

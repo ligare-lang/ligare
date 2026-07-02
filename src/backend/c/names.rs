@@ -244,7 +244,11 @@ impl NameResolver {
                     self.collect_names_in_term(body, def_names, called);
                 }
             }
-            Term::Named(_) | Term::NamedLam(..) | Term::NamedMatch(..) | Term::Do(_) => {
+            Term::Named(_)
+            | Term::NamedLam(..)
+            | Term::NamedMatch(..)
+            | Term::Do(_)
+            | Term::MethodCall(..) => {
                 panic!("parser-level term reached C name collection before desugaring")
             }
             Term::Unsafe(inner) | Term::Pure(inner) => {
@@ -293,7 +297,7 @@ impl NameResolver {
             | Term::Universe(_)
             | Term::AutoProof
             | Term::RefParam
-            | Term::UnionDef(..)
+            | Term::EnumDef(..)
             | Term::StructDef(..) => {}
         }
     }

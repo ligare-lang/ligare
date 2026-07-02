@@ -14,7 +14,7 @@ struct ParsedProgram<'bump> {
 pub(crate) struct CodegenState<'bump> {
     pub(crate) raw_defs: Vec<TopLevel<'bump>>,
     pub(crate) fun_sigs: Vec<(&'bump str, crate::backend::ir::FunSig)>,
-    pub(crate) union_types: Vec<(&'bump str, &'bump Term<'bump>)>,
+    pub(crate) enum_types: Vec<(&'bump str, &'bump Term<'bump>)>,
     pub(crate) struct_types: Vec<(&'bump str, &'bump Term<'bump>)>,
 }
 
@@ -23,7 +23,7 @@ impl<'bump> CodegenState<'bump> {
         Self {
             raw_defs: Vec::new(),
             fun_sigs: Vec::new(),
-            union_types: Vec::new(),
+            enum_types: Vec::new(),
             struct_types: Vec::new(),
         }
     }
@@ -93,10 +93,10 @@ impl<'bump> Compiler<'bump> {
             if let TopLevel::TLDef(name, params, _m_ret, body, _) = top {
                 let name = self.codegen_attribute_target_name(name);
                 let names: Vec<_> = params.iter().rev().map(|(pn, _)| *pn).collect();
-                if matches!(body, Term::UnionDef(..)) {
+                if matches!(body, Term::EnumDef(..)) {
                     let body = self.checker.desugar_with_names_context(body, &names)?;
                     let body = self.normalize_codegen_type_def(body);
-                    state.union_types.push((name, body));
+                    state.enum_types.push((name, body));
                 } else if matches!(body, Term::StructDef(..)) {
                     let body = self.checker.desugar_with_names_context(body, &names)?;
                     let body = self.normalize_codegen_type_def(body);
@@ -136,7 +136,7 @@ impl<'bump> Compiler<'bump> {
                 continue;
             }
             if let TopLevel::TLDef(name, params, m_ret, body_term, span) = top {
-                if matches!(body_term, Term::UnionDef(..) | Term::StructDef(..)) {
+                if matches!(body_term, Term::EnumDef(..) | Term::StructDef(..)) {
                     continue;
                 }
                 let actual_name = self.codegen_attribute_target_name(name);
@@ -173,7 +173,7 @@ impl<'bump> Compiler<'bump> {
         Ok(state)
     }
 
-    /// Erase, resolve, and filter top-level definitions. Skips union/struct
+    /// Erase, resolve, and filter top-level definitions. Skips enum/struct
     /// typedefs (including generic ones) and drops zero-param type aliases after erasure.
     pub(crate) fn erase_and_collect_tops(
         &self,
@@ -187,7 +187,7 @@ impl<'bump> Compiler<'bump> {
                     _name,
                     _params,
                     _m_ret,
-                    Term::UnionDef(..) | Term::StructDef(..),
+                    Term::EnumDef(..) | Term::StructDef(..),
                     _,
                 ) => Ok(None),
                 TopLevel::TLDef(name, params, m_ret, body_term, span) => {
@@ -229,7 +229,10 @@ impl<'bump> Compiler<'bump> {
                 }
                 TopLevel::TLExternDef(..) => Ok(None),
                 TopLevel::TLInstance(..) => Ok(None),
-                TopLevel::TLUse(..) | TopLevel::TLMod(..) | TopLevel::TLPublic(_) => Ok(None),
+                TopLevel::TLUse(..)
+                | TopLevel::TLMod(..)
+                | TopLevel::TLNamespace(..)
+                | TopLevel::TLPublic(_) => Ok(None),
                 TopLevel::TLCheck(_, _, _) => Ok(None),
             })
             .collect::<Result<Vec<_>, Diagnostic>>()?
@@ -240,7 +243,7 @@ impl<'bump> Compiler<'bump> {
                     top,
                     TopLevel::TLDef(_, params, _, body, _)
                         if params.is_empty()
-                            && matches!(body, Term::Builtin(_) | Term::Global(_) | Term::UnionDef(..) | Term::StructDef(..))
+                            && matches!(body, Term::Builtin(_) | Term::Global(_) | Term::EnumDef(..) | Term::StructDef(..))
                 )
             })
             .collect();
@@ -249,7 +252,7 @@ impl<'bump> Compiler<'bump> {
 
     fn normalize_codegen_type_def(&self, term: &'bump Term<'bump>) -> &'bump Term<'bump> {
         match term {
-            Term::UnionDef(name, variants) => {
+            Term::EnumDef(name, variants) => {
                 let variants = variants
                     .iter()
                     .map(|(variant_name, fields)| {
@@ -262,8 +265,7 @@ impl<'bump> Compiler<'bump> {
                         (*variant_name, self.arena.alloc_slice(&fields))
                     })
                     .collect::<Vec<_>>();
-                self.arena
-                    .union_def(name, self.arena.alloc_slice(&variants))
+                self.arena.enum_def(name, self.arena.alloc_slice(&variants))
             }
             Term::StructDef(name, fields) => {
                 let fields = fields
@@ -321,7 +323,7 @@ impl<'bump> Compiler<'bump> {
     fn apply_codegen_state(&mut self, state: CodegenState<'bump>) {
         self.raw_defs = state.raw_defs;
         self.fun_sigs = state.fun_sigs;
-        self.union_types = state.union_types;
+        self.enum_types = state.enum_types;
         self.struct_types = state.struct_types;
     }
 }

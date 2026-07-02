@@ -61,14 +61,16 @@ pub enum Token {
     KwUse,
     #[token("mod")]
     KwMod,
+    #[token("namespace")]
+    KwNamespace,
     #[token("as")]
     KwAs,
 
-    // Union / Struct keywords
+    // Enum / Struct keywords
     #[token("struct")]
     KwStruct,
-    #[token("union")]
-    KwUnion,
+    #[token("enum")]
+    KwEnum,
     #[token("match")]
     KwMatch,
     #[token("with")]

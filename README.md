@@ -242,43 +242,43 @@ typedef struct Point {
 } Point;
 ```
 
-## 10. Union Types
+## 10. Enum Types
 
-A union definition is a **constraint** — it lives in the `prop` universe and is erased after type checking.  Union *values* (variant instances) live in `data` and are retained at runtime.
+An enum definition is a **constraint** — it lives in the `prop` universe and is erased after type checking.  Enum *values* (variant instances) live in `data` and are retained at runtime.
 
-A union has named variants, each with optional payload fields.  It is the **sum type** (∨) of Ligare: exactly one variant holds at a time.
+An enum has named variants, each with optional payload fields.  It is the **sum type** (∨) of Ligare: exactly one variant holds at a time.
 
 ### 10.1 Definition
 
-Unions use the `union` keyword, symmetric with `struct`.  Each variant is introduced by `|`:
+Enums use the `enum` keyword, symmetric with `struct`.  Each variant is introduced by `|`:
 
 ```ligare
 -- Simple enumeration (no payload)
-def Color : prop := union
+def Color : prop := enum
   | Red
   | Green
   | Blue
 
--- Polymorphic union with payload
-def Option (A : prop) : prop := union
+-- Polymorphic enum with payload
+def Option (A : prop) : prop := enum
   | None
   | Some of (val : A)
 
--- Recursive union — essential for compiler ASTs
-def Expr : prop := union
+-- Recursive enum — essential for compiler ASTs
+def Expr : prop := enum
   | Lit  of (n : int)
   | Add  of (l : Expr) (r : Expr)
   | If   of (c : Expr) (t : Expr) (e : Expr)
 
 -- Multi-field payload with named parameters
-def Result (T : prop) (E : prop) : prop := union
+def Result (T : prop) (E : prop) : prop := enum
   | Ok  of (value : T)
   | Err of (error : E)
 ```
 
 ### 10.2 Construction
 
-Variant names are constructor functions.  They are automatically generated from the union definition:
+Variant names are constructor functions.  They are automatically generated from the enum definition:
 
 ```ligare
 def c  : Color       := Red
@@ -293,7 +293,7 @@ For no-payload variants like `None`, the type parameter cannot be inferred from 
 Variants with refinement-constrained payloads require proof obligations at construction time:
 
 ```ligare
-def PosOption : prop := union
+def PosOption : prop := enum
   | Nothing
   | Just of (val : int where (x => x > 0))
 
@@ -303,7 +303,7 @@ def k : PosOption := Just (-3)    -- compile error: -3 > 0 is false
 
 ### 10.3 Pattern Matching (Elimination)
 
-Union values are eliminated via `match` expressions.  Each branch covers one variant and binds its payload:
+Enum values are eliminated via `match` expressions.  Each branch covers one variant and binds its payload:
 
 ```ligare
 def unwrap_or (opt : Option int) (default : int) : int :=
@@ -336,7 +336,7 @@ def safe_div (opt : PosOption) (x : int) : int :=
     div x val
 ```
 
-**Exhaustiveness checking** — the compiler verifies that every variant of the union is covered.  Missing a variant is a compile-time error.
+**Exhaustiveness checking** — the compiler verifies that every variant of the enum is covered.  Missing a variant is a compile-time error.
 
 Nested matches are naturally supported:
 
@@ -350,9 +350,9 @@ def eval (e : Expr) : int :=
 
 ### 10.4 Erasure and Compilation
 
-Union **definitions** are `prop` — erased at compile time.  Union **values** and `match` expressions are `data` — retained at runtime.
+Enum **definitions** are `prop` — erased at compile time.  Enum **values** and `match` expressions are `data` — retained at runtime.
 
-The C backend compiles unions to tagged union structs and `match` to `switch` statements, achieving zero-overhead representation:
+The C backend compiles enums to tagged union structs and `match` to `switch` statements, achieving zero-overhead representation:
 
 ```c
 // Option_int (A = int)
@@ -370,9 +370,9 @@ case 1: { int64_t val = opt.data.Some.val; return val + 1; }
 }
 ```
 
-### 10.5 Structs vs. Unions — Duality
+### 10.5 Structs vs. Enums — Duality
 
-| | Struct (product) | Union (sum) |
+| | Struct (product) | Enum (sum) |
 |---|---|---|
 | Logical dual | `∧` (all hold) | `∨` (one holds) |
 | Construction | Provide all fields | Choose one variant |
@@ -440,7 +440,7 @@ Ligare uses the single core concept of **"terms constrained by terms"** to unify
 - The type system (constraints as terms in `prop`)
 - Propositions and proofs
 - Design by contract (refinement types)
-- Product types (structs) and sum types (unions) — both as constraints in `prop`
+- Product types (structs) and sum types (enums) — both as constraints in `prop`
 - Compile-time metaprogramming *(planned)*
 
 It pursues **the extreme of static safety with zero runtime burden**, while maintaining a minimal set of concepts.  

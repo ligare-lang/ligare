@@ -93,10 +93,10 @@ fn parse_generic_with_prop_param() {
 }
 
 #[test]
-fn parse_generic_union_definition() {
+fn parse_generic_enum_definition() {
     let (b, arena) = a();
     let result = parse_def_top(
-        "def Option (A : prop) : prop := union\n  | None\n  | Some of (val : A)\n",
+        "def Option (A : prop) : prop := enum\n  | None\n  | Some of (val : A)\n",
         b,
         &arena,
     );
@@ -105,8 +105,8 @@ fn parse_generic_union_definition() {
     assert_eq!(name, s(&arena, "Option"));
     assert_eq!(params.len(), 1);
     assert_eq!(params[0].0, s(&arena, "A"));
-    // Body should be UnionDef
-    assert!(matches!(body, Term::UnionDef(..)));
+    // Body should be EnumDef
+    assert!(matches!(body, Term::EnumDef(..)));
 }
 
 #[test]

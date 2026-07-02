@@ -283,8 +283,18 @@ impl<'a, 'bump> Parser<'a, 'bump> {
     fn parse_do_let_stmt(&mut self) -> Result<DoStmt<'bump>, ParseError> {
         self.expect(&Token::KwLet)?;
         let name = self.parse_ident()?;
-        let m_constraint = self.parse_constraint_annotation();
-        self.expect(&Token::ColonEq)?;
+        let m_constraint = self.parse_constraint_until(|tokens, i| {
+            matches!(
+                tokens[i].0,
+                Token::KwBy | Token::ColonEq | Token::Eq | Token::Semi | Token::RBrace
+            )
+        });
+        if !(self.try_expect(&Token::ColonEq) || self.try_expect(&Token::Eq)) {
+            return Err(ParseError {
+                message: "expected `:=` or `=` in do let statement".into(),
+                span: self.current_span(),
+            });
+        }
         let val =
             self.parse_expr_until(|tokens, i| matches!(tokens[i].0, Token::Semi | Token::RBrace))?;
         Ok(DoStmt::Let(name, val, m_constraint))
@@ -596,6 +606,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 | Token::KwPub
                 | Token::KwUse
                 | Token::KwMod
+                | Token::KwNamespace
                 | Token::HashGlobalAllocator
                 | Token::HashCheck
                 | Token::HashEval
@@ -648,17 +659,17 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 } else {
                     false
                 }
-            } else if self.peek_token() == Some(Token::Dot)
-                && matches!(t, Term::Builtin(_) | Term::Named(_))
-            {
+            } else if self.peek_token() == Some(Token::Dot) {
                 self.advance();
                 let field = self.parse_ident()?;
-                let base_name = match t {
-                    Term::Builtin(n) | Term::Named(n) => n,
-                    _ => unreachable!(),
-                };
-                let dotted = self.pool.intern(&format!("{}.{}", base_name, field));
-                t = self.arena.named(dotted);
+                if let Term::Builtin(base_name) | Term::Named(base_name) = t
+                    && Self::is_namespace_like_prefix(base_name)
+                {
+                    let dotted = self.pool.intern(&format!("{}.{}", base_name, field));
+                    t = self.arena.named(dotted);
+                } else {
+                    t = self.arena.method_call(t, field);
+                }
                 true
             } else {
                 false
@@ -668,6 +679,15 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             }
         }
         Ok(t)
+    }
+
+    fn is_namespace_like_prefix(name: &str) -> bool {
+        name.contains("::")
+            || name.contains('.')
+            || name
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_uppercase())
     }
 
     fn parse_expr_bp(&mut self, min_prec: u8) -> Result<&'bump Term<'bump>, ParseError> {
@@ -822,7 +842,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
     }
 
     fn parse_var(&mut self) -> Result<&'bump Term<'bump>, ParseError> {
-        let name = self.parse_decl_ident()?;
+        let name = self.parse_path_ident()?;
         if KEYWORDS.contains(&name)
             && !matches!(
                 name,
@@ -838,6 +858,18 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         } else {
             Ok(self.arena.named(name))
         }
+    }
+
+    fn parse_path_ident(&mut self) -> Result<Name<'bump>, ParseError> {
+        let first = self.parse_decl_ident()?;
+        let mut parts = vec![first];
+        while self.try_expect(&Token::PathSep) {
+            parts.push(self.parse_ident()?);
+        }
+        if parts.len() == 1 {
+            return Ok(first);
+        }
+        Ok(self.pool.intern(&parts.join("::")))
     }
 
     pub(super) fn parse_ident(&mut self) -> Result<Name<'bump>, ParseError> {

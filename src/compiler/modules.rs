@@ -84,7 +84,20 @@ impl ModuleId {
         }
     }
 
-    fn local_import_path(&self, path: &[Name<'_>]) -> Self {
+    fn local_symbol_name(&self, symbol: &str) -> String {
+        let mut parts = Vec::new();
+        if let Some(package) = &self.package {
+            parts.push(package.clone());
+        }
+        parts.extend(self.path.clone());
+        if parts.is_empty() {
+            return symbol.to_string();
+        }
+        let prefix = format!("{}::", parts.join("::"));
+        symbol.strip_prefix(&prefix).unwrap_or(symbol).to_string()
+    }
+
+    fn local_import_path_parts(&self, path: &[&str]) -> Self {
         Self {
             package: self.package.clone(),
             path: path[..path.len().saturating_sub(1)]
@@ -99,14 +112,107 @@ impl ModuleId {
         path: &[Name<'_>],
         graph: &PackageModuleGraph,
     ) -> Option<String> {
+        let parts = path.iter().map(|p| *p).collect::<Vec<_>>();
+        self.symbol_from_import_path_parts(&parts, graph)
+    }
+
+    fn symbol_from_import_path_parts(
+        &self,
+        path: &[&str],
+        graph: &PackageModuleGraph,
+    ) -> Option<String> {
         let item = path.last()?;
-        let module = self.resolve_import_module(path, graph).ok()?;
+        let module = self.resolve_import_module_parts(path, graph).ok()?;
         Some(module.join_symbol(item))
+    }
+
+    fn import_symbol_or_namespace_symbol(
+        &self,
+        path: &[Name<'_>],
+        graph: &PackageModuleGraph,
+    ) -> Result<(Self, String), Diagnostic> {
+        let parts = path.iter().map(|p| *p).collect::<Vec<_>>();
+        if parts.len() >= 3 && is_namespace_segment(parts[parts.len() - 2]) {
+            let dep = self.resolve_namespace_module_parts(&parts, 2, graph)?;
+            let logical = format!("{}::{}", parts[parts.len() - 2], parts[parts.len() - 1]);
+            return Ok((dep.clone(), dep.join_symbol(&logical)));
+        }
+        let dep = self.resolve_import_module(path, graph)?;
+        let full = self
+            .symbol_from_import_path(path, graph)
+            .ok_or_else(|| Diagnostic::new("use path must include a module and symbol"))?;
+        Ok((dep, full))
+    }
+
+    fn namespace_import_prefix(
+        &self,
+        path: &[Name<'_>],
+        graph: &PackageModuleGraph,
+    ) -> Result<(Self, String), Diagnostic> {
+        if path.len() < 2 {
+            return Err(Diagnostic::new(
+                "namespace wildcard use path must include a module and namespace",
+            ));
+        }
+        let parts = path.iter().map(|p| *p).collect::<Vec<_>>();
+        let dep = self.resolve_namespace_module_parts(&parts, 1, graph)?;
+        let namespace = parts
+            .last()
+            .ok_or_else(|| Diagnostic::new("namespace use path cannot be empty"))?;
+        Ok((dep.clone(), dep.join_symbol(namespace)))
+    }
+
+    fn try_namespace_import(
+        &self,
+        path: &[Name<'_>],
+        graph: &PackageModuleGraph,
+    ) -> Result<Option<(Self, String, String)>, Diagnostic> {
+        if path.len() < 2 {
+            return Ok(None);
+        }
+        let parts = path.iter().map(|p| *p).collect::<Vec<_>>();
+        let Some(namespace) = parts.last() else {
+            return Ok(None);
+        };
+        if !is_namespace_segment(namespace) {
+            return Ok(None);
+        }
+        let dep = self.resolve_namespace_module_parts(&parts, 1, graph)?;
+        Ok(Some((
+            dep.clone(),
+            dep.join_symbol(namespace),
+            namespace.to_string(),
+        )))
+    }
+
+    fn resolve_namespace_module_parts(
+        &self,
+        path: &[&str],
+        namespace_suffix_len: usize,
+        graph: &PackageModuleGraph,
+    ) -> Result<Self, Diagnostic> {
+        if path.len() <= namespace_suffix_len {
+            return Err(Diagnostic::new("namespace use path must include a module"));
+        }
+        let module_parts = &path[..path.len() - namespace_suffix_len];
+        let symbol = "__namespace__";
+        let mut synthetic = module_parts.to_vec();
+        synthetic.push(symbol);
+        self.resolve_import_module_parts(&synthetic, graph)
     }
 
     fn resolve_import_module(
         &self,
         path: &[Name<'_>],
+        graph: &PackageModuleGraph,
+    ) -> Result<Self, Diagnostic> {
+        let parts = path.iter().map(|p| *p).collect::<Vec<_>>();
+        self.resolve_import_module_parts(&parts, graph)
+    }
+
+    fn resolve_import_module_parts(
+        &self,
+        path: &[&str],
         graph: &PackageModuleGraph,
     ) -> Result<Self, Diagnostic> {
         if path.len() < 2 {
@@ -153,7 +259,7 @@ impl ModuleId {
                 .collect::<Vec<_>>();
             return Ok(Self::package(STANDARD_LIBRARY_PACKAGE, module_path));
         }
-        Ok(self.local_import_path(path))
+        Ok(self.local_import_path_parts(path))
     }
 }
 
@@ -220,6 +326,9 @@ pub(crate) fn source_uses_modules(source: &str) -> bool {
             || line.starts_with("pub use ")
             || line.starts_with("mod ")
             || line.starts_with("pub mod ")
+            || line.starts_with("namespace ")
+            || line.starts_with("pub namespace ")
+            || line.contains("::")
     })
 }
 
@@ -250,7 +359,7 @@ impl<'bump> Compiler<'bump> {
             let erased = self.erase_and_collect_tops(monomorphized.tops, &eraser)?;
             self.raw_defs.extend(monomorphized.codegen.raw_defs);
             self.fun_sigs.extend(monomorphized.codegen.fun_sigs);
-            self.union_types.extend(monomorphized.codegen.union_types);
+            self.enum_types.extend(monomorphized.codegen.enum_types);
             self.struct_types.extend(monomorphized.codegen.struct_types);
             self.tops.extend(erased.tops);
         }
@@ -293,7 +402,7 @@ impl<'bump> Compiler<'bump> {
             let erased = self.erase_and_collect_tops(monomorphized.tops, &eraser)?;
             self.raw_defs.extend(monomorphized.codegen.raw_defs);
             self.fun_sigs.extend(monomorphized.codegen.fun_sigs);
-            self.union_types.extend(monomorphized.codegen.union_types);
+            self.enum_types.extend(monomorphized.codegen.enum_types);
             self.struct_types.extend(monomorphized.codegen.struct_types);
             self.tops.extend(erased.tops);
         }
@@ -320,7 +429,7 @@ impl<'bump> Compiler<'bump> {
             let erased = self.erase_and_collect_tops(monomorphized.tops, &eraser)?;
             self.raw_defs.extend(monomorphized.codegen.raw_defs);
             self.fun_sigs.extend(monomorphized.codegen.fun_sigs);
-            self.union_types.extend(monomorphized.codegen.union_types);
+            self.enum_types.extend(monomorphized.codegen.enum_types);
             self.struct_types.extend(monomorphized.codegen.struct_types);
             self.tops.extend(erased.tops);
         }
@@ -414,6 +523,9 @@ impl<'bump> Compiler<'bump> {
         for module in import_deps(&id, &tops, graph)? {
             self.ensure_declared_module_loaded(root, &module, graph, parsed)?;
         }
+        for module in qualified_term_deps(&id, &tops, graph)? {
+            self.ensure_declared_module_loaded(root, &module, graph, parsed)?;
+        }
         Ok(id)
     }
 
@@ -472,6 +584,7 @@ impl<'bump> Compiler<'bump> {
     ) -> Result<HashMap<ModuleId, HashMap<String, String>>, Diagnostic> {
         let mut direct = HashMap::new();
         for (id, module) in parsed {
+            validate_namespace_conflicts(&module.tops)?;
             direct.insert(id.clone(), declared_symbols(&module.tops, id, true));
         }
         let mut exports = direct.clone();
@@ -546,6 +659,7 @@ impl<'bump> Compiler<'bump> {
         for dep in declared_module_deps(id, &module.tops)
             .into_iter()
             .chain(import_deps(id, &module.tops, graph)?)
+            .chain(qualified_term_deps(id, &module.tops, graph)?)
         {
             let (_dep_root, dep_file) = module_file(root, &dep, graph)?;
             if !parsed.contains_key(&dep) || !dep_file.exists() {
@@ -574,11 +688,48 @@ impl<'bump> Compiler<'bump> {
         let mut imports = HashMap::new();
         for import in module_imports(&module.tops) {
             for tree in import.trees {
-                let full = module
+                if tree.wildcard {
+                    let (dep, prefix) = module.id.namespace_import_prefix(tree.path, graph)?;
+                    let dep_exports = exports.get(&dep).ok_or_else(|| {
+                        Diagnostic::new(format!("module not found: {}", display_module(&dep)))
+                    })?;
+                    let prefix_with_sep = format!("{prefix}::");
+                    for (exported, target) in dep_exports {
+                        let Some(local) = exported.strip_prefix(&prefix_with_sep) else {
+                            continue;
+                        };
+                        if local.contains("::") {
+                            continue;
+                        }
+                        insert_import(&mut imports, local.to_string(), target.clone())?;
+                    }
+                    continue;
+                }
+                if let Some((dep, prefix, local_ns)) =
+                    module.id.try_namespace_import(tree.path, graph)?
+                {
+                    let dep_exports = exports.get(&dep).ok_or_else(|| {
+                        Diagnostic::new(format!("module not found: {}", display_module(&dep)))
+                    })?;
+                    let prefix_with_sep = format!("{prefix}::");
+                    for (exported, target) in dep_exports {
+                        let Some(local) = exported.strip_prefix(&prefix_with_sep) else {
+                            continue;
+                        };
+                        if local.contains("::") {
+                            continue;
+                        }
+                        insert_import(
+                            &mut imports,
+                            format!("{local_ns}::{local}"),
+                            target.clone(),
+                        )?;
+                    }
+                    continue;
+                }
+                let (dep, full) = module
                     .id
-                    .symbol_from_import_path(tree.path, graph)
-                    .ok_or_else(|| Diagnostic::new("use path must include a module and symbol"))?;
-                let dep = module.id.resolve_import_module(tree.path, graph)?;
+                    .import_symbol_or_namespace_symbol(tree.path, graph)?;
                 let dep_exports = exports.get(&dep).ok_or_else(|| {
                     Diagnostic::new(format!("module not found: {}", display_module(&dep)))
                 })?;
@@ -591,13 +742,19 @@ impl<'bump> Compiler<'bump> {
                     .alias
                     .map(|a| a.to_string())
                     .unwrap_or_else(|| tree.path.last().unwrap().to_string());
-                imports.insert(local, target.clone());
+                insert_import(&mut imports, local, target.clone())?;
             }
         }
+        imports.extend(qualified_term_names(
+            &module.id,
+            &module.tops,
+            graph,
+            exports,
+        )?);
         let own_names = declared_symbols(&module.tops, &module.id, false)
             .into_iter()
             .map(|(symbol, target)| {
-                let local = symbol.rsplit("::").next().unwrap_or(&symbol).to_string();
+                let local = module.id.local_symbol_name(&symbol);
                 (local, target)
             })
             .collect::<HashMap<_, _>>();
@@ -711,9 +868,100 @@ impl<'bump> Compiler<'bump> {
                     ));
                 }
                 TopLevel::TLUse(..) | TopLevel::TLMod(..) | TopLevel::TLPublic(_) => {}
+                TopLevel::TLNamespace(name, items, span) => {
+                    self.rewrite_namespace_items(
+                        &module.id,
+                        name,
+                        items,
+                        span.clone(),
+                        &imports,
+                        &own_names,
+                        &mut out,
+                    )?;
+                }
             }
         }
         Ok(out)
+    }
+
+    fn rewrite_namespace_items(
+        &self,
+        module_id: &ModuleId,
+        namespace: Name<'bump>,
+        items: &'bump [TopLevel<'bump>],
+        _span: std::ops::Range<usize>,
+        imports: &HashMap<String, String>,
+        own_names: &HashMap<String, String>,
+        out: &mut Vec<TopLevel<'bump>>,
+    ) -> Result<(), Diagnostic> {
+        for item in items {
+            let (item, _) = unwrap_public(item);
+            match item {
+                TopLevel::TLDef(name, params, ret, body, span) => {
+                    let logical = format!("{namespace}::{name}");
+                    let qname = self.arena.alloc_str(&module_id.join_symbol(&logical));
+                    let mut scope = RewriteScope::default();
+                    for (pn, _) in params.iter().rev() {
+                        scope.push(pn);
+                    }
+                    let params = self.rewrite_module_params(
+                        params,
+                        imports,
+                        own_names,
+                        &mut RewriteScope::default(),
+                    );
+                    let ret =
+                        ret.map(|t| self.rewrite_module_term(t, imports, own_names, &mut scope));
+                    let body = self.rewrite_module_term(body, imports, own_names, &mut scope);
+                    out.push(TopLevel::TLDef(qname, params, ret, body, span.clone()));
+                }
+                TopLevel::TLExternDef(name, params, ret, span) => {
+                    let logical = format!("{namespace}::{name}");
+                    let qname = self.arena.alloc_str(&module_id.join_symbol(&logical));
+                    let mut scope = RewriteScope::default();
+                    for (pn, _) in params.iter().rev() {
+                        scope.push(pn);
+                    }
+                    let params = self.rewrite_module_params(
+                        params,
+                        imports,
+                        own_names,
+                        &mut RewriteScope::default(),
+                    );
+                    let ret = self.rewrite_module_term(ret, imports, own_names, &mut scope);
+                    out.push(TopLevel::TLExternDef(qname, params, ret, span.clone()));
+                }
+                TopLevel::TLTheorem(name, prop, body, span) => {
+                    let logical = format!("{namespace}::{name}");
+                    let qname = self.arena.alloc_str(&module_id.join_symbol(&logical));
+                    out.push(TopLevel::TLTheorem(
+                        qname,
+                        self.rewrite_module_term(
+                            prop,
+                            imports,
+                            own_names,
+                            &mut RewriteScope::default(),
+                        ),
+                        self.rewrite_module_term(
+                            body,
+                            imports,
+                            own_names,
+                            &mut RewriteScope::default(),
+                        ),
+                        span.clone(),
+                    ));
+                }
+                TopLevel::TLUse(..)
+                | TopLevel::TLMod(..)
+                | TopLevel::TLInstance(..)
+                | TopLevel::TLCheck(..)
+                | TopLevel::TLEval(..)
+                | TopLevel::TLExpr(..)
+                | TopLevel::TLNamespace(..)
+                | TopLevel::TLPublic(_) => {}
+            }
+        }
+        Ok(())
     }
 
     fn rewrite_module_params(
@@ -818,7 +1066,7 @@ impl<'bump> Compiler<'bump> {
                     .collect::<Vec<_>>();
                 self.arena.by_proof(inner, self.arena.alloc_slice(&tactics))
             }
-            Term::UnionDef(name, variants) => {
+            Term::EnumDef(name, variants) => {
                 let qname = self.qualify_type_name(name, own_names);
                 let variants = variants
                     .iter()
@@ -837,7 +1085,7 @@ impl<'bump> Compiler<'bump> {
                     })
                     .collect::<Vec<_>>();
                 self.arena
-                    .union_def(qname, self.arena.alloc_slice(&variants))
+                    .enum_def(qname, self.arena.alloc_slice(&variants))
             }
             Term::StructDef(name, fields) => {
                 let qname = self.qualify_type_name(name, own_names);
@@ -909,6 +1157,14 @@ impl<'bump> Compiler<'bump> {
             Term::Pure(inner) => self
                 .arena
                 .pure(self.rewrite_module_term(inner, imports, own_names, scope)),
+            Term::StructProj(subject, idx) => self.arena.struct_proj(
+                self.rewrite_module_term(subject, imports, own_names, scope),
+                *idx,
+            ),
+            Term::MethodCall(receiver, method) => self.arena.method_call(
+                self.rewrite_module_term(receiver, imports, own_names, scope),
+                method,
+            ),
             _ => term,
         }
     }
@@ -949,6 +1205,22 @@ fn module_imports<'a, 'bump>(tops: &'a [TopLevel<'bump>]) -> Vec<ImportItem<'a, 
         .collect()
 }
 
+fn insert_import(
+    imports: &mut HashMap<String, String>,
+    local: String,
+    target: String,
+) -> Result<(), Diagnostic> {
+    if let Some(existing) = imports.get(&local)
+        && existing != &target
+    {
+        return Err(Diagnostic::new(format!(
+            "duplicate import `{local}` from `{existing}` and `{target}`"
+        )));
+    }
+    imports.insert(local, target);
+    Ok(())
+}
+
 fn import_deps<'bump>(
     current: &ModuleId,
     tops: &[TopLevel<'bump>],
@@ -961,13 +1233,278 @@ fn import_deps<'bump>(
             if tree.path.len() < 2 {
                 return Err(Diagnostic::new("use path must include a module and symbol"));
             }
-            let dep = current.resolve_import_module(tree.path, graph)?;
+            let dep = if tree.wildcard {
+                current.namespace_import_prefix(tree.path, graph)?.0
+            } else if tree.path.len() >= 3 && is_namespace_segment(tree.path[tree.path.len() - 2]) {
+                let parts = tree.path.iter().map(|p| *p).collect::<Vec<_>>();
+                current.resolve_namespace_module_parts(&parts, 2, graph)?
+            } else if tree.path.len() >= 2 && is_namespace_segment(tree.path[tree.path.len() - 1]) {
+                let parts = tree.path.iter().map(|p| *p).collect::<Vec<_>>();
+                current.resolve_namespace_module_parts(&parts, 1, graph)?
+            } else {
+                current.resolve_import_module(tree.path, graph)?
+            };
             if seen.insert(dep.clone()) {
                 deps.push(dep);
             }
         }
     }
     Ok(deps)
+}
+
+fn qualified_term_deps<'bump>(
+    current: &ModuleId,
+    tops: &[TopLevel<'bump>],
+    graph: &PackageModuleGraph,
+) -> Result<Vec<ModuleId>, Diagnostic> {
+    let mut deps = Vec::new();
+    let mut seen = HashSet::new();
+    let namespace_aliases = namespace_aliases_in_uses(tops);
+    for name in qualified_names_in_tops(tops) {
+        let Some(parts) = qualified_symbol_parts(&name) else {
+            continue;
+        };
+        if namespace_aliases.contains(parts[0]) {
+            continue;
+        }
+        let dep = current.resolve_import_module_parts(&parts, graph)?;
+        if seen.insert(dep.clone()) {
+            deps.push(dep);
+        }
+    }
+    Ok(deps)
+}
+
+fn qualified_term_names<'bump>(
+    current: &ModuleId,
+    tops: &[TopLevel<'bump>],
+    graph: &PackageModuleGraph,
+    exports: &HashMap<ModuleId, HashMap<String, String>>,
+) -> Result<HashMap<String, String>, Diagnostic> {
+    let mut resolved = HashMap::new();
+    let namespace_aliases = namespace_aliases_in_uses(tops);
+    for name in qualified_names_in_tops(tops) {
+        let Some(parts) = qualified_symbol_parts(&name) else {
+            continue;
+        };
+        if namespace_aliases.contains(parts[0]) {
+            continue;
+        }
+        let requested = current
+            .symbol_from_import_path_parts(&parts, graph)
+            .ok_or_else(|| Diagnostic::new("qualified path must include a module and symbol"))?;
+        let dep = current.resolve_import_module_parts(&parts, graph)?;
+        let dep_exports = exports.get(&dep).ok_or_else(|| {
+            Diagnostic::new(format!("module not found: {}", display_module(&dep)))
+        })?;
+        let Some(target) = dep_exports.get(&requested) else {
+            return Err(Diagnostic::new(format!(
+                "cannot reference private or unknown symbol `{requested}`"
+            )));
+        };
+        resolved.insert(name, target.clone());
+    }
+    Ok(resolved)
+}
+
+fn namespace_aliases_in_uses<'bump>(tops: &[TopLevel<'bump>]) -> HashSet<String> {
+    let mut aliases = HashSet::new();
+    for import in module_imports(tops) {
+        for tree in import.trees {
+            if !tree.wildcard
+                && tree.path.len() >= 2
+                && is_namespace_segment(tree.path[tree.path.len() - 1])
+            {
+                aliases.insert(
+                    tree.alias
+                        .map(|alias| alias.to_string())
+                        .unwrap_or_else(|| tree.path[tree.path.len() - 1].to_string()),
+                );
+            }
+        }
+    }
+    aliases
+}
+
+fn qualified_symbol_parts(name: &str) -> Option<Vec<&str>> {
+    if !name.contains("::") {
+        return None;
+    }
+    let parts = name.split("::").collect::<Vec<_>>();
+    if parts.len() < 2 || parts.iter().any(|part| part.is_empty()) {
+        None
+    } else {
+        Some(parts)
+    }
+}
+
+fn is_namespace_segment(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_uppercase())
+}
+
+fn qualified_names_in_tops<'bump>(tops: &[TopLevel<'bump>]) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for top in tops {
+        collect_qualified_names_from_top(top, &mut names);
+    }
+    names
+}
+
+fn collect_qualified_names_from_top<'bump>(top: &TopLevel<'bump>, names: &mut HashSet<String>) {
+    let (top, _) = unwrap_public(top);
+    match top {
+        TopLevel::TLDef(_, params, ret, body, _) => {
+            collect_qualified_names_from_params(params, names);
+            if let Some(ret) = ret {
+                collect_qualified_names_from_term(ret, names);
+            }
+            collect_qualified_names_from_term(body, names);
+        }
+        TopLevel::TLExternDef(_, params, ret, _) => {
+            collect_qualified_names_from_params(params, names);
+            collect_qualified_names_from_term(ret, names);
+        }
+        TopLevel::TLInstance(_, constraint, value, _) => {
+            collect_qualified_names_from_term(constraint, names);
+            collect_qualified_names_from_term(value, names);
+        }
+        TopLevel::TLTheorem(_, prop, body, _) | TopLevel::TLCheck(prop, body, _) => {
+            collect_qualified_names_from_term(prop, names);
+            collect_qualified_names_from_term(body, names);
+        }
+        TopLevel::TLEval(term, _) | TopLevel::TLExpr(term, _) => {
+            collect_qualified_names_from_term(term, names);
+        }
+        TopLevel::TLUse(..) | TopLevel::TLMod(..) | TopLevel::TLPublic(_) => {}
+        TopLevel::TLNamespace(_, items, _) => {
+            for item in *items {
+                collect_qualified_names_from_top(item, names);
+            }
+        }
+    }
+}
+
+fn collect_qualified_names_from_params<'bump>(
+    params: &[(Name<'bump>, Option<&'bump Term<'bump>>)],
+    names: &mut HashSet<String>,
+) {
+    for (_, constraint) in params {
+        if let Some(constraint) = constraint {
+            collect_qualified_names_from_term(constraint, names);
+        }
+    }
+}
+
+fn collect_qualified_names_from_term<'bump>(term: &'bump Term<'bump>, names: &mut HashSet<String>) {
+    match term {
+        Term::Named(name) | Term::Global(name) => {
+            if qualified_symbol_parts(name).is_some() {
+                names.insert((*name).to_string());
+            }
+        }
+        Term::App(f, a) => {
+            collect_qualified_names_from_term(f, names);
+            collect_qualified_names_from_term(a, names);
+        }
+        Term::Implicit(inner)
+        | Term::Lam(inner)
+        | Term::NamedLam(_, inner)
+        | Term::Unsafe(inner)
+        | Term::Pure(inner)
+        | Term::StructProj(inner, _)
+        | Term::MethodCall(inner, _) => collect_qualified_names_from_term(inner, names),
+        Term::Pi(_, a, b) | Term::Refine(_, a, b) | Term::Annot(a, b) => {
+            collect_qualified_names_from_term(a, names);
+            collect_qualified_names_from_term(b, names);
+        }
+        Term::Let(_, val, body, constraint) => {
+            collect_qualified_names_from_term(val, names);
+            collect_qualified_names_from_term(body, names);
+            if let Some(constraint) = constraint {
+                collect_qualified_names_from_term(constraint, names);
+            }
+        }
+        Term::IfThenElse(c, t, f) => {
+            collect_qualified_names_from_term(c, names);
+            collect_qualified_names_from_term(t, names);
+            collect_qualified_names_from_term(f, names);
+        }
+        Term::ByProof(inner, tactics) => {
+            if let Some(inner) = inner {
+                collect_qualified_names_from_term(inner, names);
+            }
+            for tactic in tactics.iter() {
+                match *tactic {
+                    Tactic::Exact(term) | Tactic::Apply(term) | Tactic::Have(_, term) => {
+                        collect_qualified_names_from_term(term, names);
+                    }
+                    Tactic::Intro(_) => {}
+                }
+            }
+        }
+        Term::EnumDef(_, variants) => {
+            for (_, fields) in variants.iter() {
+                for (_, constraint) in fields.iter() {
+                    collect_qualified_names_from_term(constraint, names);
+                }
+            }
+        }
+        Term::Variant(_, _, values) | Term::StructCons(_, values) => {
+            for value in values.iter() {
+                collect_qualified_names_from_term(value, names);
+            }
+        }
+        Term::Match(scrut, branches) => {
+            collect_qualified_names_from_term(scrut, names);
+            for (_, binds, body) in branches.iter() {
+                for (_, constraint) in binds.iter() {
+                    collect_qualified_names_from_term(constraint, names);
+                }
+                collect_qualified_names_from_term(body, names);
+            }
+        }
+        Term::NamedMatch(scrut, branches) => {
+            collect_qualified_names_from_term(scrut, names);
+            for (_, binds, body) in branches.iter() {
+                for (_, constraint) in binds.iter() {
+                    collect_qualified_names_from_term(constraint, names);
+                }
+                collect_qualified_names_from_term(body, names);
+            }
+        }
+        Term::Do(stmts) => {
+            for stmt in stmts.iter() {
+                match *stmt {
+                    crate::core::syntax::DoStmt::Bind(_, rhs)
+                    | crate::core::syntax::DoStmt::Expr(rhs) => {
+                        collect_qualified_names_from_term(rhs, names);
+                    }
+                    crate::core::syntax::DoStmt::Let(_, rhs, constraint) => {
+                        collect_qualified_names_from_term(rhs, names);
+                        if let Some(constraint) = constraint {
+                            collect_qualified_names_from_term(constraint, names);
+                        }
+                    }
+                }
+            }
+        }
+        Term::StructDef(_, fields) => {
+            for (_, constraint) in fields.iter() {
+                collect_qualified_names_from_term(constraint, names);
+            }
+        }
+        Term::Var(_)
+        | Term::LitInt(_)
+        | Term::LitBool(_)
+        | Term::LitStr(_)
+        | Term::PrimOp(_)
+        | Term::Universe(_)
+        | Term::Builtin(_)
+        | Term::AutoProof
+        | Term::RefParam => {}
+    }
 }
 
 fn declared_module_deps<'bump>(current: &ModuleId, tops: &[TopLevel<'bump>]) -> Vec<ModuleId> {
@@ -1061,24 +1598,84 @@ fn declared_symbols<'bump>(
     module: &ModuleId,
     public_only: bool,
 ) -> HashMap<String, String> {
-    tops.iter()
-        .filter_map(|top| {
-            let (top, public) = unwrap_public(top);
-            if public_only && !public {
-                return None;
+    let mut out = HashMap::new();
+    collect_declared_symbols(tops, module, public_only, None, &mut out);
+    out
+}
+
+fn validate_namespace_conflicts<'bump>(tops: &[TopLevel<'bump>]) -> Result<(), Diagnostic> {
+    let mut seen: HashMap<(String, String, usize), std::ops::Range<usize>> = HashMap::new();
+    for top in tops {
+        let (top, _) = unwrap_public(top);
+        let TopLevel::TLNamespace(namespace, items, _) = top else {
+            continue;
+        };
+        for item in *items {
+            let (item, public) = unwrap_public(item);
+            if !public {
+                continue;
             }
-            match top {
-                TopLevel::TLDef(name, ..) | TopLevel::TLTheorem(name, ..) => {
-                    let symbol = module.join_symbol(name);
-                    Some((symbol.clone(), symbol))
+            if let TopLevel::TLDef(name, params, _, _, span)
+            | TopLevel::TLExternDef(name, params, _, span) = item
+            {
+                let key = (namespace.to_string(), name.to_string(), params.len());
+                if let Some(first) = seen.get(&key) {
+                    return Err(Diagnostic::with_span(
+                        format!(
+                            "namespace `{}` has conflicting function `{}` with {} parameter(s); first declaration at {}..{}",
+                            namespace,
+                            name,
+                            params.len(),
+                            first.start,
+                            first.end
+                        ),
+                        span.clone(),
+                    ));
                 }
-                TopLevel::TLExternDef(name, ..) => {
-                    Some((module.join_symbol(name), name.to_string()))
-                }
-                _ => None,
+                seen.insert(key, span.clone());
             }
-        })
-        .collect()
+        }
+    }
+    Ok(())
+}
+
+fn collect_declared_symbols<'bump>(
+    tops: &[TopLevel<'bump>],
+    module: &ModuleId,
+    public_only: bool,
+    namespace: Option<&str>,
+    out: &mut HashMap<String, String>,
+) {
+    for top in tops {
+        let (top, public) = unwrap_public(top);
+        if public_only && !public {
+            if !matches!(top, TopLevel::TLNamespace(..)) {
+                continue;
+            }
+        }
+        match top {
+            TopLevel::TLDef(name, ..) | TopLevel::TLTheorem(name, ..) => {
+                let logical = namespace
+                    .map(|ns| format!("{ns}::{name}"))
+                    .unwrap_or_else(|| name.to_string());
+                let symbol = module.join_symbol(&logical);
+                out.insert(symbol.clone(), symbol);
+            }
+            TopLevel::TLExternDef(name, ..) => {
+                let logical = namespace
+                    .map(|ns| format!("{ns}::{name}"))
+                    .unwrap_or_else(|| name.to_string());
+                let target = namespace
+                    .map(|_| module.join_symbol(&logical))
+                    .unwrap_or_else(|| name.to_string());
+                out.insert(module.join_symbol(&logical), target);
+            }
+            TopLevel::TLNamespace(name, items, _) => {
+                collect_declared_symbols(items, module, public_only, Some(name), out);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn has_public_main<'bump>(tops: &[TopLevel<'bump>]) -> bool {

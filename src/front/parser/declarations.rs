@@ -37,6 +37,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                         | Token::KwPub
                         | Token::KwUse
                         | Token::KwMod
+                        | Token::KwNamespace
                 )
             })
             .ok_or_else(|| ParseError {
@@ -88,8 +89,8 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         let params = self.parse_many_curried_params();
         let m_ret = self.parse_constraint_until(|tokens, i| matches!(tokens[i].0, Token::ColonEq));
         self.expect(&Token::ColonEq)?;
-        let body_expr = if self.peek_token() == Some(Token::KwUnion) {
-            self.parse_union_body(name)?
+        let body_expr = if self.peek_token() == Some(Token::KwEnum) {
+            self.parse_enum_body(name)?
         } else if self.peek_token() == Some(Token::KwStruct) {
             self.parse_struct_body(name)?
         } else {
@@ -162,8 +163,8 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         self.try_parse(Token::KwBy, |s| s.parse_tactics())
     }
 
-    fn parse_union_body(&mut self, name: Name<'bump>) -> Result<&'bump Term<'bump>, ParseError> {
-        self.expect(&Token::KwUnion)?;
+    fn parse_enum_body(&mut self, name: Name<'bump>) -> Result<&'bump Term<'bump>, ParseError> {
+        self.expect(&Token::KwEnum)?;
         let mut variants: Vec<(Name<'bump>, Vec<(Name<'bump>, &'bump Term<'bump>)>)> = Vec::new();
         loop {
             if !self.try_expect(&Token::Bar) {
@@ -193,7 +194,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         }
         if variants.is_empty() {
             return Err(ParseError {
-                message: "union must have at least one variant".into(),
+                message: "enum must have at least one variant".into(),
                 span: self.current_span(),
             });
         }
@@ -203,7 +204,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             .collect();
         Ok(self
             .arena
-            .union_def(name, self.arena.alloc_slice(&variants_slice)))
+            .enum_def(name, self.arena.alloc_slice(&variants_slice)))
     }
 
     fn parse_struct_body(&mut self, name: Name<'bump>) -> Result<&'bump Term<'bump>, ParseError> {

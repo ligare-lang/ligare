@@ -250,35 +250,35 @@ typedef struct Point {
 
 ### 10.1 定义
 
-和类型使用与 `struct` 对称的 `union` 关键字。每个变体以 `|` 引入：
+和类型使用与 `struct` 对称的 `enum` 关键字。每个变体以 `|` 引入：
 
 ```ligare
 -- 简单枚举（无 payload）
-def Color : prop := union
+def Color : prop := enum
   | Red
   | Green
   | Blue
 
 -- 带 payload 的多态和类型
-def Option (A : prop) : prop := union
+def Option (A : prop) : prop := enum
   | None
   | Some of (val : A)
 
 -- 递归和类型 —— 编译器 AST 的核心
-def Expr : prop := union
+def Expr : prop := enum
   | Lit  of (n : int)
   | Add  of (l : Expr) (r : Expr)
   | If   of (c : Expr) (t : Expr) (e : Expr)
 
 -- 多字段带名 payload
-def Result (T : prop) (E : prop) : prop := union
+def Result (T : prop) (E : prop) : prop := enum
   | Ok  of (value : T)
   | Err of (error : E)
 ```
 
 ### 10.2 构造
 
-变体名即为构造器函数，由 union 定义自动生成：
+变体名即为构造器函数，由 enum 定义自动生成：
 
 ```ligare
 def c  : Color       := Red
@@ -293,7 +293,7 @@ def ok : Result int str := Ok 42
 带精化约束的 payload 在构造时需要证明义务：
 
 ```ligare
-def PosOption : prop := union
+def PosOption : prop := enum
   | Nothing
   | Just of (val : int where (x => x > 0))
 
@@ -335,7 +335,7 @@ def safe_div (opt : PosOption) (x : int) : int :=
     div x val
 ```
 
-**穷尽性检查** —— 编译器验证 match 覆盖了 union 的所有变体。漏掉变体是编译期错误。
+**穷尽性检查** —— 编译器验证 match 覆盖了 enum 的所有变体。漏掉变体是编译期错误。
 
 嵌套 match 自然支持：
 
@@ -351,7 +351,7 @@ def eval (e : Expr) : int :=
 
 和类型**定义**属于 `prop` —— 编译期擦除。和类型**值**和 `match` 表达式属于 `data` —— 运行时保留。
 
-C 后端将和类型编译为 tagged union 结构体，`match` 编译为 `switch` 语句，实现零开销表示：
+C 后端将 enum 定义编译为 tagged union 结构体，`match` 编译为 `switch` 语句，实现零开销表示：
 
 ```c
 // Option_int（A = int）
@@ -439,7 +439,7 @@ Ligare 用 **"项约束项"** 这一个核心概念，统一了：
 - 类型系统（约束是 `prop` 中的项）
 - 命题与证明
 - 契约式设计（精化类型）
-- 积类型（struct）与和类型（union）—— 两者皆作为 `prop` 中的约束
+- 积类型（struct）与和类型（enum）—— 两者皆作为 `prop` 中的约束
 - 编译期元编程 *(计划中)*
 
 它追求**静态安全的极致与运行时的零负担**，同时保持概念的极小集合。  

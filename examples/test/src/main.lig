@@ -1,6 +1,9 @@
 use std::io::put_str
+use std::mem::list::List
 
 pub def main : IO () := do
-    let _ = put_str "hello world"
+    let _ = std::io::put_str "hello world"
+    let list = Nil
+    let list_ = list.append 1
     ()
 

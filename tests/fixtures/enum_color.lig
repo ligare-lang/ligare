@@ -1,5 +1,5 @@
--- Comprehensive union / match test for C codegen
-def Color : prop := union
+-- Comprehensive enum / match test for C codegen
+def Color : prop := enum
   | Red
   | Green
   | Blue

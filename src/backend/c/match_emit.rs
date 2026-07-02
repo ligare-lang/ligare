@@ -4,13 +4,14 @@
 //! with proper bind declarations.
 
 use crate::backend::c::names::NameResolver;
-use crate::backend::c::types::UnionInfo;
+use crate::backend::c::types::EnumInfo;
 use crate::backend::c::value::{MatchBind, MatchPlan};
+use crate::backend::ir::CType;
 use std::collections::HashMap;
 
 /// Emits match expressions as C `switch` blocks.
 ///
-/// References the union map (via `&HashMap`) for field-name resolution
+/// References the enum map (via `&HashMap`) for field-name resolution
 /// when emitting bind declarations.
 pub struct MatchEmitter {
     names: NameResolver,
@@ -25,12 +26,12 @@ impl MatchEmitter {
     }
 
     /// Emit a match as a standard C switch block (not GCC expression).
-    /// Uses `union_map` to emit declarations for bound variables.
+    /// Uses `enum_map` to emit declarations for bound variables.
     pub fn emit(
         &self,
         plan: &MatchPlan,
         counter: u32,
-        union_map: &HashMap<String, UnionInfo>,
+        enum_map: &HashMap<String, EnumInfo>,
     ) -> String {
         let scrut_ty = plan.scrut_type.c_name();
         let ret_name = plan.ret_type.c_name();
@@ -45,7 +46,7 @@ impl MatchEmitter {
         out.push_str(&format!("    switch ({s_var}.tag) {{\n"));
         for case in &plan.cases {
             let bind_decls =
-                self.build_bind_decls(&scrut_ty, case.variant_idx, &s_var, &case.binds, union_map);
+                self.build_bind_decls(&scrut_ty, case.variant_idx, &s_var, &case.binds, enum_map);
             out.push_str(&format!(
                 "    case {}: {{ {bind_decls}{r_var} = {}; }} break;\n",
                 case.variant_idx,
@@ -65,27 +66,27 @@ impl MatchEmitter {
         &self,
         plan: &MatchPlan,
         counter: u32,
-        union_map: &HashMap<String, UnionInfo>,
+        enum_map: &HashMap<String, EnumInfo>,
     ) -> String {
-        let block = self.emit(plan, counter, union_map);
+        let block = self.emit(plan, counter, enum_map);
         let r_var = self.names.result_temp(counter);
         format!("({{\n{block}    {r_var};\n}})")
     }
 
     /// Build bind declarations for a match case, looking up field names
-    /// from the union info. Skips wildcard binds (named "_" or empty).
+    /// from the enum info. Skips wildcard binds (named "_" or empty).
     fn build_bind_decls(
         &self,
         scrut_ty: &str,
         case_idx: usize,
         s_var: &str,
         binds: &[MatchBind],
-        union_map: &HashMap<String, UnionInfo>,
+        enum_map: &HashMap<String, EnumInfo>,
     ) -> String {
         if binds.is_empty() {
             return String::new();
         }
-        if let Some(info) = union_map.get(scrut_ty)
+        if let Some(info) = enum_map.get(scrut_ty)
             && let Some(vi) = info.variants.get(case_idx)
         {
             return binds
@@ -98,12 +99,14 @@ impl MatchEmitter {
                         .get(j)
                         .map(|(fnm, _)| fnm.as_str())
                         .unwrap_or(bind.name.as_str());
-                    format!(
-                        "{} {} = {s_var}.data.{}.{field_name}; ",
-                        bind.ctype.c_name(),
-                        bind.name,
-                        vi.name
-                    )
+                    let access = format!("{s_var}.data.{}.{field_name}", vi.name);
+                    let value = match vi.fields.get(j).map(|(_, cty)| cty) {
+                        Some(CType::Ptr(inner)) if inner.as_ref() == &bind.ctype => {
+                            format!("*({access})")
+                        }
+                        _ => access,
+                    };
+                    format!("{} {} = {value}; ", bind.ctype.c_name(), bind.name,)
                 })
                 .collect::<Vec<_>>()
                 .join("");

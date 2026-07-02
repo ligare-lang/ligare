@@ -1,10 +1,10 @@
--- Union type tests
-def Color : prop := union
+-- Enum type tests
+def Color : prop := enum
   | Red
   | Green
   | Blue
 
-def Option : prop := union
+def Option : prop := enum
   | None
   | Some of (val : int)
 

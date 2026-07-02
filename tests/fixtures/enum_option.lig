@@ -1,5 +1,5 @@
 -- Option type with match bindings for C codegen
-def Option : prop := union
+def Option : prop := enum
   | None
   | Some of (val : int)
 

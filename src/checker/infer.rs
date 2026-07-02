@@ -59,10 +59,10 @@ impl<'bump> TypeChecker<'bump> {
                     ));
                 }
                 let field_constraint = field_specs[0].1;
-                // If the field constraint is a generic parameter of the union,
+                // If the field constraint is a generic parameter of the enum,
                 // skip the field check — the overall constraint check below
-                // will verify the variant belongs to the right union.
-                if !self.is_union_generic_param(uname, field_constraint) {
+                // will verify the variant belongs to the right enum.
+                if !self.is_enum_generic_param(uname, field_constraint) {
                     self.check(ctx, a, field_constraint)?;
                 }
                 let variant_term = self.arena.variant(uname, idx, self.arena.alloc_slice(&[a]));
@@ -295,6 +295,7 @@ impl<'bump> TypeChecker<'bump> {
         let constraint_val = self.evaluator.whnf(Self::implicit_inner(constraint))?;
         if expected_val == constraint_val
             || self.is_refinement_of(expected_val, constraint_val)
+            || self.named_constraint_equiv(expected_val, constraint_val)
             || Self::effect_inner(expected_val).is_some_and(|inner| {
                 inner == constraint_val
                     || self.is_refinement_of(inner, constraint_val)
@@ -327,7 +328,7 @@ impl<'bump> TypeChecker<'bump> {
         self.check(&ctx_f, fbranch, constraint)
     }
 
-    /// Check a match expression: use the scrutinee union constraint, then check each branch.
+    /// Check a match expression: use the scrutinee enum constraint, then check each branch.
     pub(crate) fn check_match(
         &self,
         ctx: &Context<'bump>,
@@ -358,7 +359,7 @@ impl<'bump> TypeChecker<'bump> {
         scrutinee: &'bump Term<'bump>,
     ) -> Result<Option<VariantPayloadConstraints<'bump>>, Diagnostic> {
         let scrutinee = self.desugar_with_context(scrutinee)?;
-        let union_name = match self.evaluator.whnf(scrutinee)? {
+        let enum_name = match self.evaluator.whnf(scrutinee)? {
             Term::Variant(name, _, _) => Some(name),
             Term::Var(i) => match ctx
                 .lookup(*i)
@@ -370,11 +371,11 @@ impl<'bump> TypeChecker<'bump> {
             },
             _ => None,
         };
-        let Some(name) = union_name else {
+        let Some(name) = enum_name else {
             return Ok(None);
         };
-        Ok(self.lookup_union(name).and_then(|(udef, _)| match udef {
-            Term::UnionDef(_, variants) => {
+        Ok(self.lookup_enum(name).and_then(|(udef, _)| match udef {
+            Term::EnumDef(_, variants) => {
                 let fields: Vec<_> = variants.iter().map(|(_, f)| *f).collect();
                 Some(self.arena.alloc_slice(&fields))
             }
@@ -441,6 +442,9 @@ impl<'bump> TypeChecker<'bump> {
             Term::StructProj(subject, idx) => {
                 self.infer_struct_projection_constraint(ctx, subject, *idx)
             }
+            Term::MethodCall(..) => Err(diag!(
+                "method call reached constraint inference before resolution"
+            )),
             Term::App(f, a) => {
                 if let Some(target) = self.ptr_cast_target(f)? {
                     self.infer_ptr_cast_constraint(ctx, target, a)
@@ -651,7 +655,7 @@ impl<'bump> TypeChecker<'bump> {
         let norm = self.evaluator.whnf(constraint)?;
         match norm {
             Term::Builtin(name) | Term::Global(name) => {
-                // Check if term is a Variant — verify union name matches constraint
+                // Check if term is a Variant — verify enum name matches constraint
                 if let Term::Variant(uname, _, _) = term
                     && uname == name
                 {
@@ -663,8 +667,8 @@ impl<'bump> TypeChecker<'bump> {
                 } else if let Some((parent, pred)) = lookup_refine(name, &self.table) {
                     self.check(ctx, term, parent)?;
                     self.prove_auto(ctx, term, pred)
-                } else if self.lookup_union(name).is_some() {
-                    self.check_union_constraint(term, name)
+                } else if self.lookup_enum(name).is_some() {
+                    self.check_enum_constraint(term, name)
                 } else if self.lookup_struct(name).is_some() {
                     self.check_struct_constraint(term, name)
                 } else {
@@ -691,13 +695,17 @@ impl<'bump> TypeChecker<'bump> {
                 {
                     let inferred = self.infer_binding_constraint(ctx, term)?;
                     self.check_domain_match(inferred, norm)
+                } else if let Term::EnumDef(uname, _) = self.evaluator.whnf(head)? {
+                    self.check_enum_constraint(term, uname)
+                } else if let Term::StructDef(sname, _) = self.evaluator.whnf(head)? {
+                    self.check_struct_constraint(term, sname)
                 } else {
                     self.try_check_logical_op(ctx, term, head, a, norm)
                 }
             }
-            // When a generic union/struct application is resolved via the env,
-            // the constraint normalizes to the raw UnionDef/StructDef term.
-            Term::UnionDef(uname, _) => self.check_union_constraint(term, uname),
+            // When a generic enum/struct application is resolved via the env,
+            // the constraint normalizes to the raw EnumDef/StructDef term.
+            Term::EnumDef(uname, _) => self.check_enum_constraint(term, uname),
             Term::StructDef(sname, _) => self.check_struct_constraint(term, sname),
             _ => {
                 if let Some(result) = self.try_bool_constraint(term, norm) {
@@ -718,7 +726,7 @@ impl<'bump> TypeChecker<'bump> {
         }
     }
 
-    fn check_union_constraint(
+    fn check_enum_constraint(
         &self,
         term: &'bump Term<'bump>,
         expected: &str,
@@ -779,7 +787,7 @@ impl<'bump> TypeChecker<'bump> {
             if self.builtins.logic_kind(name) == Some(LogicKind::Vacuous) {
                 return Ok(());
             }
-            // Check if this is a union/struct constraint application like `Option int`
+            // Check if this is an enum/struct constraint application like `Option int`
             if let Some(result) = self.try_check_named_constraint_app(ctx, term, name, norm) {
                 return result;
             }
@@ -802,7 +810,7 @@ impl<'bump> TypeChecker<'bump> {
                 .or_else(|_| self.check(ctx, term, b)),
             Some(LogicKind::Vacuous) => Ok(()),
             None => {
-                // Check if this is a multi-arg union/struct constraint application
+                // Check if this is a multi-arg enum/struct constraint application
                 if let Some(result) = self.try_check_named_constraint_app(ctx, term, name, norm) {
                     return result;
                 }
@@ -812,7 +820,7 @@ impl<'bump> TypeChecker<'bump> {
     }
 
     /// Check a term against a named constraint application like `Option int` or `Pair int bool`.
-    /// Returns `Some(result)` if `name` is a union or struct, `None` otherwise.
+    /// Returns `Some(result)` if `name` is an enum or struct, `None` otherwise.
     fn try_check_named_constraint_app(
         &self,
         _ctx: &Context<'bump>,
@@ -820,8 +828,8 @@ impl<'bump> TypeChecker<'bump> {
         name: &str,
         _norm: &'bump Term<'bump>,
     ) -> Option<Result<(), Diagnostic>> {
-        if self.lookup_union(name).is_some() {
-            Some(self.check_union_constraint(term, name))
+        if self.lookup_enum(name).is_some() {
+            Some(self.check_enum_constraint(term, name))
         } else if self.lookup_struct(name).is_some() {
             Some(self.check_struct_constraint(term, name))
         } else {
@@ -829,9 +837,9 @@ impl<'bump> TypeChecker<'bump> {
         }
     }
 
-    /// Returns true if a field constraint is a generic parameter of the given union.
-    fn is_union_generic_param(&self, union_name: &str, constraint: &Term<'bump>) -> bool {
-        if let Some((_, type_params)) = self.lookup_union(union_name) {
+    /// Returns true if a field constraint is a generic parameter of the given enum.
+    fn is_enum_generic_param(&self, enum_name: &str, constraint: &Term<'bump>) -> bool {
+        if let Some((_, type_params)) = self.lookup_enum(enum_name) {
             match constraint {
                 Term::Var(i) => return *i < type_params.len(),
                 Term::Builtin(name) | Term::Global(name) => {
@@ -1027,16 +1035,18 @@ impl<'bump> TypeChecker<'bump> {
             || self.named_app_equiv(a_val, b_val)
     }
 
-    /// Check if two terms represent the same union/struct constraint application,
-    /// even if one side is a resolved `UnionDef`/`StructDef` and the other is
+    /// Check if two terms represent the same enum/struct constraint application,
+    /// even if one side is a resolved `EnumDef`/`StructDef` and the other is
     /// an unresolved `App(Builtin(name), …)`.
     fn named_constraint_equiv(&self, a: &'bump Term<'bump>, b: &'bump Term<'bump>) -> bool {
         let extract = |t: &'bump Term<'bump>| -> Option<&str> {
             match t {
-                Term::UnionDef(name, _) | Term::StructDef(name, _) => Some(name),
+                Term::EnumDef(name, _) | Term::StructDef(name, _) => Some(name),
                 Term::App(head, _) => {
-                    if let Term::Builtin(n) | Term::Global(n) = *head
-                        && (self.lookup_union(n).is_some() || self.lookup_struct(n).is_some())
+                    if let Term::EnumDef(n, _) | Term::StructDef(n, _) = *head {
+                        Some(n)
+                    } else if let Term::Builtin(n) | Term::Global(n) = *head
+                        && (self.lookup_enum(n).is_some() || self.lookup_struct(n).is_some())
                     {
                         Some(n)
                     } else {
@@ -1196,7 +1206,7 @@ impl<'bump> TypeChecker<'bump> {
         self.check_by_constraint(ctx, self.arena.struct_cons(sname, field_values), constraint)
     }
 
-    /// Check a union variant construction against a constraint.
+    /// Check an enum variant construction against a constraint.
     pub(crate) fn check_variant(
         &self,
         ctx: &Context<'bump>,
@@ -1206,14 +1216,14 @@ impl<'bump> TypeChecker<'bump> {
         constraint: &'bump Term<'bump>,
     ) -> Result<(), Diagnostic> {
         let (udef, type_params) = self
-            .lookup_union(uname)
-            .ok_or_else(|| diag!("unknown union: {}", uname))?;
-        let Term::UnionDef(_, variants) = udef else {
-            return Err(diag!("{} is not a union", uname));
+            .lookup_enum(uname)
+            .ok_or_else(|| diag!("unknown enum: {}", uname))?;
+        let Term::EnumDef(_, variants) = udef else {
+            return Err(diag!("{} is not an enum", uname));
         };
         let (vname, fields) = variants
             .get(idx)
-            .ok_or_else(|| diag!("union {}: no variant at index {}", uname, idx))?;
+            .ok_or_else(|| diag!("enum {}: no variant at index {}", uname, idx))?;
         if payloads.len() != fields.len() {
             return Err(diag!(
                 "variant {} expects {} field(s), got {}",

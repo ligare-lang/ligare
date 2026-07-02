@@ -145,7 +145,7 @@ impl<'bump> TermArena<'bump> {
                 self.by_proof(inner_mapped, self.alloc_slice(&mapped))
             }
             Term::Refine(n, par, p) => self.refine(n, self.map_mut(par, f), self.map_mut(p, f)),
-            Term::UnionDef(name, variants) => {
+            Term::EnumDef(name, variants) => {
                 let mapped: Vec<_> = variants
                     .iter()
                     .map(|(vname, fields)| {
@@ -156,7 +156,7 @@ impl<'bump> TermArena<'bump> {
                         (*vname, self.alloc_slice(&mf))
                     })
                     .collect();
-                self.union_def(name, self.alloc_slice(&mapped))
+                self.enum_def(name, self.alloc_slice(&mapped))
             }
             Term::Variant(name, idx, payloads) => {
                 let mapped: Vec<_> = payloads.iter().map(|p| self.map_mut(p, f)).collect();
@@ -217,6 +217,9 @@ impl<'bump> TermArena<'bump> {
                 self.struct_cons(name, self.alloc_slice(&mapped))
             }
             Term::StructProj(subject, idx) => self.struct_proj(self.map_mut(subject, f), *idx),
+            Term::MethodCall(receiver, method) => {
+                self.method_call(self.map_mut(receiver, f), method)
+            }
             _ => t,
         }
     }
@@ -367,21 +370,21 @@ impl<'bump> TermArena<'bump> {
         Err("Proof block must end with `exact`".into())
     }
 
-    pub fn union_def(
+    pub fn enum_def(
         &self,
         name: Name<'bump>,
         variants: &'bump [(Name<'bump>, &'bump [(Name<'bump>, &'bump Term<'bump>)])],
     ) -> &'bump Term<'bump> {
-        self.alloc(Term::UnionDef(name, variants))
+        self.alloc(Term::EnumDef(name, variants))
     }
 
     pub fn variant(
         &self,
-        union_name: Name<'bump>,
+        enum_name: Name<'bump>,
         variant_idx: usize,
         payloads: &'bump [&'bump Term<'bump>],
     ) -> &'bump Term<'bump> {
-        self.alloc(Term::Variant(union_name, variant_idx, payloads))
+        self.alloc(Term::Variant(enum_name, variant_idx, payloads))
     }
 
     pub fn match_(
@@ -434,6 +437,14 @@ impl<'bump> TermArena<'bump> {
         field_index: usize,
     ) -> &'bump Term<'bump> {
         self.alloc(Term::StructProj(subject, field_index))
+    }
+
+    pub fn method_call(
+        &self,
+        receiver: &'bump Term<'bump>,
+        method: Name<'bump>,
+    ) -> &'bump Term<'bump> {
+        self.alloc(Term::MethodCall(receiver, method))
     }
 }
 

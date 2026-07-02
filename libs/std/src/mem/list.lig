@@ -1,0 +1,11 @@
+pub def List (T : prop) : prop := enum
+    | Nil
+    | Const of (head : T) (next : List T)
+
+namespace List {
+    pub def append {T : prop} (l : List T) (n : T) : List T := Const n l
+    pub def remove {T : prop} (l : List T) := match l with
+        | Nil => l
+        | Const _ new => new
+}
+

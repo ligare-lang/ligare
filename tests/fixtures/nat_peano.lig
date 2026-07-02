@@ -1,5 +1,5 @@
--- Peano natural numbers via union (interpreter only — C codegen for recursive types needs heap support)
-def Nat : prop := union
+-- Peano natural numbers via enum (interpreter only — C codegen for recursive types needs heap support)
+def Nat : prop := enum
   | Zero
   | Succ of (pred : Nat)
 

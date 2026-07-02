@@ -64,7 +64,7 @@ impl PrettyPrinter {
             }
             Term::AutoProof => "auto".to_string(),
             Term::RefParam => "x".to_string(),
-            Term::UnionDef(name, variants) => {
+            Term::EnumDef(name, variants) => {
                 let vs: Vec<String> = variants
                     .iter()
                     .map(|(vn, fields)| {
@@ -79,7 +79,7 @@ impl PrettyPrinter {
                         }
                     })
                     .collect();
-                format!("union {}\n  {}", name, vs.join("\n  "))
+                format!("enum {}\n  {}", name, vs.join("\n  "))
             }
             Term::Variant(name, _idx, payloads) => {
                 let ps: Vec<String> = payloads.iter().map(|p| Self::pretty(p)).collect();
@@ -141,6 +141,9 @@ impl PrettyPrinter {
             }
             Term::StructProj(subject, idx) => {
                 format!("({}._{})", Self::pretty(subject), idx)
+            }
+            Term::MethodCall(receiver, method) => {
+                format!("{}.{}", Self::pretty(receiver), method)
             }
         }
     }

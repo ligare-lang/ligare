@@ -8,7 +8,7 @@ use ligare::front::lexer::Token;
 use ligare::front::parser::{TopLevel, Visibility};
 use tower_lsp::lsp_types as lsp;
 
-use crate::completion::{TokenSpan, tokenize, top_level_ranges};
+use crate::completion::{TokenSpan, tokenize, top_level_ranges, top_start};
 use crate::text::offset_to_position;
 use crate::{Ast, parse_program_lsp};
 
@@ -62,7 +62,7 @@ pub fn semantic_tokens_legend() -> lsp::SemanticTokensLegend {
             lsp::SemanticTokenType::FUNCTION,
             lsp::SemanticTokenType::VARIABLE,
             lsp::SemanticTokenType::new("constructor"),
-            lsp::SemanticTokenType::new("constraint"),
+            lsp::SemanticTokenType::TYPE,
             lsp::SemanticTokenType::NAMESPACE,
             lsp::SemanticTokenType::KEYWORD,
             lsp::SemanticTokenType::PARAMETER,
@@ -121,6 +121,7 @@ struct SemanticModel {
 #[derive(Debug)]
 struct LocalScope {
     range: Range<usize>,
+    constraints: HashSet<String>,
     params: HashSet<String>,
     variables: HashSet<String>,
 }
@@ -135,84 +136,104 @@ impl SemanticModel {
         );
 
         for (start, end, top) in top_ranges {
-            let (is_public, top) = unwrap_public(top);
-            let modifiers = MOD_DEFINITION | u32::from(is_public) * MOD_PUBLIC;
-            let range = *start..*end;
-            let mut scope = LocalScope {
-                range: range.clone(),
-                params: HashSet::new(),
-                variables: HashSet::new(),
-            };
-
-            match top {
-                TopLevel::TLDef(name, params, ret, body, _) => {
-                    let kind = definition_kind(params, *ret, body);
-                    model.insert_named_definition(name, kind);
-                    model.mark_declaration(tokens, &range, name, kind, modifiers);
-                    model.collect_params(tokens, &range, params, &mut scope);
-                    collect_type_members(body, &mut model);
-                }
-                TopLevel::TLExternDef(name, params, _, _) => {
-                    model.functions.insert((*name).to_string());
-                    model.mark_declaration(tokens, &range, name, SemanticKind::Function, modifiers);
-                    model.collect_params(tokens, &range, params, &mut scope);
-                }
-                TopLevel::TLInstance(name, constraint, _, _) => {
-                    model.variables.insert((*name).to_string());
-                    model.mark_declaration(tokens, &range, name, SemanticKind::Variable, modifiers);
-                    collect_constraint_names(constraint, &mut model.constraints);
-                }
-                TopLevel::TLTheorem(name, _, _, _) => {
-                    model.variables.insert((*name).to_string());
-                    model.mark_declaration(tokens, &range, name, SemanticKind::Variable, modifiers);
-                }
-                TopLevel::TLUse(uses, visibility, _) => {
-                    let is_public = matches!(visibility, Visibility::Public) || is_public;
-                    let modifiers = MOD_DEFINITION | u32::from(is_public) * MOD_PUBLIC;
-                    for tree in *uses {
-                        for part in tree.path {
-                            model.namespaces.insert((*part).to_string());
-                            model.mark_declaration(
-                                tokens,
-                                &range,
-                                part,
-                                SemanticKind::Namespace,
-                                modifiers,
-                            );
-                        }
-                        if let Some(alias) = tree.alias {
-                            model.namespaces.insert(alias.to_string());
-                            model.mark_declaration(
-                                tokens,
-                                &range,
-                                alias,
-                                SemanticKind::Namespace,
-                                modifiers,
-                            );
-                        }
-                    }
-                }
-                TopLevel::TLMod(name, _) => {
-                    model.namespaces.insert((*name).to_string());
-                    model.mark_declaration(
-                        tokens,
-                        &range,
-                        name,
-                        SemanticKind::Namespace,
-                        modifiers,
-                    );
-                }
-                TopLevel::TLCheck(..) | TopLevel::TLEval(..) | TopLevel::TLExpr(..) => {}
-                TopLevel::TLPublic(_) => unreachable!(),
-            }
-
-            model.collect_lexical_bindings(tokens, &range, &mut scope);
-            if !scope.params.is_empty() || !scope.variables.is_empty() {
-                model.locals.push(scope);
-            }
+            model.collect_top(tokens, &(*start..*end), top, None);
         }
 
         model
+    }
+
+    fn collect_top(
+        &mut self,
+        tokens: &[TokenSpan],
+        range: &Range<usize>,
+        top: &TopLevel<'_>,
+        namespace: Option<&str>,
+    ) {
+        let (is_public, top) = unwrap_public(top);
+        let modifiers = MOD_DEFINITION | u32::from(is_public) * MOD_PUBLIC;
+        let mut scope = LocalScope {
+            range: range.clone(),
+            constraints: HashSet::new(),
+            params: HashSet::new(),
+            variables: HashSet::new(),
+        };
+
+        match top {
+            TopLevel::TLDef(name, params, ret, body, _) => {
+                let kind = definition_kind(params, *ret, body);
+                let qualified = qualified_name(namespace, name);
+                self.insert_named_definition(&qualified, kind);
+                self.mark_declaration(tokens, range, name, kind, modifiers);
+                self.collect_params(tokens, range, params, &mut scope);
+                collect_type_members(name, &qualified, body, self);
+            }
+            TopLevel::TLExternDef(name, params, _, _) => {
+                let qualified = qualified_name(namespace, name);
+                self.functions.insert(qualified);
+                self.mark_declaration(tokens, range, name, SemanticKind::Function, modifiers);
+                self.collect_params(tokens, range, params, &mut scope);
+            }
+            TopLevel::TLInstance(name, constraint, _, _) => {
+                let qualified = qualified_name(namespace, name);
+                self.variables.insert(qualified);
+                self.mark_declaration(tokens, range, name, SemanticKind::Variable, modifiers);
+                collect_constraint_names(constraint, &mut self.constraints);
+            }
+            TopLevel::TLTheorem(name, _, _, _) => {
+                let qualified = qualified_name(namespace, name);
+                self.variables.insert(qualified);
+                self.mark_declaration(tokens, range, name, SemanticKind::Variable, modifiers);
+            }
+            TopLevel::TLUse(uses, visibility, _) => {
+                let is_public = matches!(visibility, Visibility::Public) || is_public;
+                let modifiers = MOD_DEFINITION | u32::from(is_public) * MOD_PUBLIC;
+                for tree in *uses {
+                    for part in tree.path {
+                        self.namespaces.insert((*part).to_string());
+                        self.mark_declaration(
+                            tokens,
+                            range,
+                            part,
+                            SemanticKind::Namespace,
+                            modifiers,
+                        );
+                    }
+                    if let Some(alias) = tree.alias {
+                        self.namespaces.insert(alias.to_string());
+                        self.mark_declaration(
+                            tokens,
+                            range,
+                            alias,
+                            SemanticKind::Namespace,
+                            modifiers,
+                        );
+                    }
+                }
+            }
+            TopLevel::TLMod(name, _) => {
+                self.namespaces.insert((*name).to_string());
+                self.mark_declaration(tokens, range, name, SemanticKind::Namespace, modifiers);
+            }
+            TopLevel::TLNamespace(name, items, _) => {
+                let qualified = qualified_name(namespace, name);
+                self.namespaces.insert((*name).to_string());
+                self.namespaces.insert(qualified.clone());
+                self.mark_declaration(tokens, range, name, SemanticKind::Namespace, modifiers);
+
+                for (item_range, item) in namespace_item_ranges(items, range) {
+                    self.collect_top(tokens, &item_range, item, Some(&qualified));
+                }
+                return;
+            }
+            TopLevel::TLCheck(..) | TopLevel::TLEval(..) | TopLevel::TLExpr(..) => {}
+            TopLevel::TLPublic(_) => unreachable!(),
+        }
+
+        self.collect_lexical_bindings(tokens, range, &mut scope);
+        if !scope.constraints.is_empty() || !scope.params.is_empty() || !scope.variables.is_empty()
+        {
+            self.locals.push(scope);
+        }
     }
 
     fn insert_named_definition(&mut self, name: &str, kind: SemanticKind) {
@@ -259,8 +280,22 @@ impl SemanticModel {
         params: &[(ligare::core::syntax::Name<'_>, Option<&Term<'_>>)],
         scope: &mut LocalScope,
     ) {
-        let names: HashSet<_> = params.iter().map(|(name, _)| (*name).to_string()).collect();
-        scope.params.extend(names.iter().cloned());
+        let names: Vec<_> = params
+            .iter()
+            .map(|(name, constraint)| {
+                (
+                    (*name).to_string(),
+                    constraint.is_some_and(is_type_parameter_constraint),
+                )
+            })
+            .collect();
+        for (name, is_type_param) in &names {
+            if *is_type_param {
+                scope.constraints.insert(name.clone());
+            } else {
+                scope.params.insert(name.clone());
+            }
+        }
         for window in tokens.windows(3) {
             let [left, name, right] = window else {
                 continue;
@@ -271,9 +306,16 @@ impl SemanticModel {
             let Token::Ident(candidate) = &name.token else {
                 continue;
             };
-            if left.token == Token::LParen && names.contains(candidate) {
+            if matches!(left.token, Token::LParen | Token::LBrace)
+                && let Some((_, is_type_param)) = names.iter().find(|(name, _)| name == candidate)
+            {
+                let kind = if *is_type_param {
+                    SemanticKind::Constraint
+                } else {
+                    SemanticKind::Parameter
+                };
                 self.declarations
-                    .insert(name.span.start, (SemanticKind::Parameter, MOD_DEFINITION));
+                    .insert(name.span.start, (kind, MOD_DEFINITION));
             }
         }
     }
@@ -326,12 +368,23 @@ impl SemanticModel {
         range: &Range<usize>,
         scope: &mut LocalScope,
     ) {
-        let mut idx = bar_idx + 2;
-        while let Some(token) = tokens.get(idx) {
+        let Some(fat_arrow_idx) = tokens[bar_idx + 1..]
+            .iter()
+            .position(|token| {
+                token.span.start >= range.start
+                    && token.span.end <= range.end
+                    && matches!(token.token, Token::FatArrow | Token::Bar)
+            })
+            .map(|relative| bar_idx + 1 + relative)
+        else {
+            return;
+        };
+        if tokens[fat_arrow_idx].token != Token::FatArrow {
+            return;
+        }
+
+        for token in &tokens[bar_idx + 2..fat_arrow_idx] {
             if token.span.start < range.start || token.span.end > range.end {
-                break;
-            }
-            if token.token == Token::FatArrow {
                 break;
             }
             if let Token::Ident(name) = &token.token {
@@ -339,7 +392,6 @@ impl SemanticModel {
                 self.declarations
                     .insert(token.span.start, (SemanticKind::Variable, MOD_DEFINITION));
             }
-            idx += 1;
         }
     }
 
@@ -348,7 +400,9 @@ impl SemanticModel {
             .iter()
             .find(|scope| scope.range.start <= offset && offset <= scope.range.end)
             .and_then(|scope| {
-                if scope.params.contains(name) {
+                if scope.constraints.contains(name) {
+                    Some(SemanticKind::Constraint)
+                } else if scope.params.contains(name) {
                     Some(SemanticKind::Parameter)
                 } else if scope.variables.contains(name) {
                     Some(SemanticKind::Variable)
@@ -427,7 +481,9 @@ fn collect_raw_tokens(
             continue;
         }
 
-        let kind = if is_use_path_token(tokens, idx) {
+        let kind = if let Some(kind) = qualified_path_kind(tokens, idx, model) {
+            Some(kind)
+        } else if is_use_path_token(tokens, idx) {
             Some(SemanticKind::Namespace)
         } else if let Some(kind) = dotted_kind(tokens, idx, model) {
             Some(kind)
@@ -656,13 +712,26 @@ fn definition_kind(
     ret: Option<&Term<'_>>,
     body: &Term<'_>,
 ) -> SemanticKind {
-    if !params.is_empty() || ret.is_some_and(is_function_constraint) || is_function_value(body) {
-        return SemanticKind::Function;
-    }
     if is_constraint_definition(body) || ret.is_some_and(is_constraint_definition) {
         SemanticKind::Constraint
+    } else if !params.is_empty()
+        || ret.is_some_and(is_function_constraint)
+        || is_function_value(body)
+    {
+        SemanticKind::Function
     } else {
         SemanticKind::Variable
+    }
+}
+
+fn is_type_parameter_constraint(term: &Term<'_>) -> bool {
+    match term {
+        Term::Implicit(inner) => is_type_parameter_constraint(inner),
+        Term::Builtin(name) | Term::Named(name) | Term::Global(name) => {
+            matches!(*name, "prop" | "theorem" | "proof")
+        }
+        Term::Universe(Universe::UProp | Universe::UTheorem | Universe::UProof) => true,
+        _ => false,
     }
 }
 
@@ -699,7 +768,7 @@ fn is_constraint_definition(term: &Term<'_>) -> bool {
         Term::Annot(inner, constraint) => {
             is_constraint_definition(inner) || matches!(constraint, Term::Universe(Universe::UProp))
         }
-        Term::UnionDef(..)
+        Term::EnumDef(..)
         | Term::StructDef(..)
         | Term::Refine(..)
         | Term::Universe(Universe::UProp | Universe::UTheorem | Universe::UProof) => true,
@@ -710,23 +779,42 @@ fn is_constraint_definition(term: &Term<'_>) -> bool {
     }
 }
 
-fn collect_type_members(term: &Term<'_>, model: &mut SemanticModel) {
+fn collect_type_members(
+    _type_name: &str,
+    qualified_type_name: &str,
+    term: &Term<'_>,
+    model: &mut SemanticModel,
+) {
     let inner = match term {
         Term::Annot(inner, _) => *inner,
         other => other,
     };
+    let namespace = qualified_type_name
+        .rsplit_once("::")
+        .map(|(namespace, _)| namespace);
     match inner {
-        Term::UnionDef(_, variants) => {
+        Term::EnumDef(_, variants) => {
             for (variant, _) in *variants {
-                model.constructors.insert((*variant).to_string());
+                let name = namespace
+                    .map(|namespace| format!("{namespace}::{variant}"))
+                    .unwrap_or_else(|| (*variant).to_string());
+                model.constructors.insert(name);
             }
         }
-        Term::StructDef(name, fields) => {
-            model.constructors.insert(format!("{name}.mk"));
-            model.constructors.insert("mk".to_string());
+        Term::StructDef(_, fields) => {
+            model
+                .constructors
+                .insert(format!("{qualified_type_name}.mk"));
+            if namespace.is_none() {
+                model.constructors.insert("mk".to_string());
+            }
             for (field, _) in *fields {
-                model.functions.insert(format!("{name}.{field}"));
-                model.functions.insert((*field).to_string());
+                model
+                    .functions
+                    .insert(format!("{qualified_type_name}.{field}"));
+                if namespace.is_none() {
+                    model.functions.insert((*field).to_string());
+                }
             }
         }
         _ => {}
@@ -748,7 +836,9 @@ fn dotted_kind(tokens: &[TokenSpan], idx: usize, model: &SemanticModel) -> Optio
         let Token::Ident(parent) = &tokens[idx - 2].token else {
             return model.global_kind(name);
         };
-        let dotted = format!("{parent}.{name}");
+        let parent_path =
+            qualified_path_ending_at(tokens, idx - 2).unwrap_or_else(|| parent.clone());
+        let dotted = format!("{parent_path}.{name}");
         if model.constructors.contains(&dotted) || model.constructors.contains(name) {
             Some(SemanticKind::Constructor)
         } else if model.functions.contains(&dotted) {
@@ -759,6 +849,103 @@ fn dotted_kind(tokens: &[TokenSpan], idx: usize, model: &SemanticModel) -> Optio
     } else {
         None
     }
+}
+
+fn qualified_path_kind(
+    tokens: &[TokenSpan],
+    idx: usize,
+    model: &SemanticModel,
+) -> Option<SemanticKind> {
+    let path = qualified_path_at(tokens, idx)?;
+    if path.parts.len() <= 1 {
+        return None;
+    }
+    if path.part_index + 1 < path.parts.len() {
+        return Some(SemanticKind::Namespace);
+    }
+    let name = path.parts[path.part_index].as_str();
+    model
+        .global_kind(&path.parts.join("::"))
+        .or_else(|| model.global_kind(name))
+}
+
+struct QualifiedPath {
+    parts: Vec<String>,
+    part_index: usize,
+}
+
+fn qualified_path_at(tokens: &[TokenSpan], idx: usize) -> Option<QualifiedPath> {
+    let Token::Ident(_) = tokens.get(idx)?.token else {
+        return None;
+    };
+
+    let mut start = idx;
+    while start >= 2
+        && tokens[start - 1].token == Token::PathSep
+        && matches!(tokens[start - 2].token, Token::Ident(_))
+    {
+        start -= 2;
+    }
+
+    let mut end = idx;
+    while tokens
+        .get(end + 1)
+        .is_some_and(|token| token.token == Token::PathSep)
+        && tokens
+            .get(end + 2)
+            .is_some_and(|token| matches!(token.token, Token::Ident(_)))
+    {
+        end += 2;
+    }
+
+    let mut parts = Vec::new();
+    let mut part_index = None;
+    let mut cursor = start;
+    while cursor <= end {
+        let Token::Ident(name) = &tokens[cursor].token else {
+            return None;
+        };
+        if cursor == idx {
+            part_index = Some(parts.len());
+        }
+        parts.push(name.clone());
+        cursor += 2;
+    }
+
+    Some(QualifiedPath {
+        parts,
+        part_index: part_index?,
+    })
+}
+
+fn qualified_path_ending_at(tokens: &[TokenSpan], idx: usize) -> Option<String> {
+    let path = qualified_path_at(tokens, idx)?;
+    (path.part_index + 1 == path.parts.len() && path.parts.len() > 1).then(|| path.parts.join("::"))
+}
+
+fn qualified_name(namespace: Option<&str>, name: &str) -> String {
+    namespace
+        .map(|namespace| format!("{namespace}::{name}"))
+        .unwrap_or_else(|| name.to_string())
+}
+
+fn namespace_item_ranges<'a, 'bump>(
+    items: &'a [TopLevel<'bump>],
+    namespace_range: &Range<usize>,
+) -> Vec<(Range<usize>, &'a TopLevel<'bump>)> {
+    let mut starts: Vec<_> = items.iter().map(|item| (top_start(item), item)).collect();
+    starts.sort_by_key(|(start, _)| *start);
+    starts
+        .iter()
+        .enumerate()
+        .map(|(idx, (start, item))| {
+            let end = starts
+                .get(idx + 1)
+                .map(|(next, _)| *next)
+                .unwrap_or(namespace_range.end);
+            ((*start)..end, *item)
+        })
+        .collect()
 }
 
 fn ident_after(tokens: &[TokenSpan], idx: usize) -> Option<(String, Range<usize>)> {
@@ -828,9 +1015,10 @@ fn is_keyword(token: &Token) -> bool {
             | Token::KwPub
             | Token::KwUse
             | Token::KwMod
+            | Token::KwNamespace
             | Token::KwAs
             | Token::KwStruct
-            | Token::KwUnion
+            | Token::KwEnum
             | Token::KwMatch
             | Token::KwWith
             | Token::KwOf

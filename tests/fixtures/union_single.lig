@@ -1,5 +1,0 @@
--- just one union
-def Color : prop := union
-  | Red
-  | Green
-  | Blue

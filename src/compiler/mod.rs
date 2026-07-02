@@ -42,7 +42,7 @@ pub struct CodegenInput<'a, 'bump> {
     pub tops: &'a [TopLevel<'bump>],
     pub raw_defs: &'a [TopLevel<'bump>],
     pub fun_sigs: &'a [(&'bump str, FunSig)],
-    pub union_types: &'a [(&'bump str, &'bump Term<'bump>)],
+    pub enum_types: &'a [(&'bump str, &'bump Term<'bump>)],
     pub struct_types: &'a [(&'bump str, &'bump Term<'bump>)],
 }
 
@@ -63,8 +63,8 @@ pub struct Compiler<'bump> {
     raw_defs: Vec<TopLevel<'bump>>,
     /// Function signatures extracted before erasure (for C codegen).
     fun_sigs: Vec<(&'bump str, FunSig)>,
-    /// Union type definitions collected before erasure (for C codegen).
-    pub union_types: Vec<(&'bump str, &'bump Term<'bump>)>,
+    /// Enum type definitions collected before erasure (for C codegen).
+    pub enum_types: Vec<(&'bump str, &'bump Term<'bump>)>,
     /// Struct type definitions collected before erasure (for C codegen).
     pub struct_types: Vec<(&'bump str, &'bump Term<'bump>)>,
     /// Suppress diagnostic output (set during codegen).
@@ -81,7 +81,7 @@ impl<'bump> Compiler<'bump> {
             tops: vec![],
             raw_defs: vec![],
             fun_sigs: vec![],
-            union_types: vec![],
+            enum_types: vec![],
             struct_types: vec![],
             quiet: false,
         }
@@ -216,14 +216,14 @@ impl<'bump> Compiler<'bump> {
             tops: &self.tops,
             raw_defs: &self.raw_defs,
             fun_sigs: &self.fun_sigs,
-            union_types: &self.union_types,
+            enum_types: &self.enum_types,
             struct_types: &self.struct_types,
         }
     }
 
     // ── private helpers ──
 
-    /// Desugar a generic union/struct definition (one with type parameters)
+    /// Desugar a generic enum/struct definition (one with type parameters)
     /// into `Annot(Lam(...), Pi(...))` for env storage.
     fn desugar_top_def(
         &self,
@@ -263,9 +263,19 @@ impl<'bump> Compiler<'bump> {
         body: &'bump Term<'bump>,
     ) -> Result<&'bump Term<'bump>, Diagnostic> {
         let names: Vec<_> = params.iter().rev().map(|(pn, _)| *pn).collect();
-        if matches!(body, Term::UnionDef(..) | Term::StructDef(..)) {
+        if matches!(body, Term::EnumDef(..) | Term::StructDef(..)) {
             return self.checker.desugar_with_names_context(body, &names);
         }
+        let mut method_scope = params
+            .iter()
+            .map(
+                |(name, constraint)| crate::compiler::resolve::MethodScopeEntry {
+                    name,
+                    constraint: *constraint,
+                },
+            )
+            .collect::<Vec<_>>();
+        let body = self.rewrite_method_calls(body, &mut method_scope)?;
         let default = self.arena.builtin(self.arena.alloc_str(BUILTIN_DATA));
         let ret = m_ret
             .map(|t| self.checker.desugar_with_names_context(t, &names))
@@ -321,6 +331,11 @@ impl<'bump> Compiler<'bump> {
             }
             TopLevel::TLUse(..) => {}
             TopLevel::TLMod(..) => {}
+            TopLevel::TLNamespace(name, items, _) => {
+                for item in items {
+                    self.process_namespace_top(name, item.clone())?;
+                }
+            }
             TopLevel::TLEval(term, span) => {
                 self.process_eval_like(term, span, "eval")?;
             }
@@ -329,6 +344,33 @@ impl<'bump> Compiler<'bump> {
             }
         }
         Ok(())
+    }
+
+    fn process_namespace_top(
+        &mut self,
+        namespace: Name<'bump>,
+        top: TopLevel<'bump>,
+    ) -> Result<(), Diagnostic> {
+        let (top, _public) = match top {
+            TopLevel::TLPublic(inner) => ((*inner).clone(), true),
+            other => (other, false),
+        };
+        let qualify = |name: Name<'bump>| self.arena.alloc_str(&format!("{namespace}::{name}"));
+        match top {
+            TopLevel::TLDef(name, params, ret, body, span) => {
+                self.process_def(qualify(name), params, ret, body, span)
+            }
+            TopLevel::TLExternDef(name, params, ret, span) => {
+                self.process_extern_def(qualify(name), params, ret, span)
+            }
+            TopLevel::TLInstance(name, constraint, value, span) => {
+                self.process_instance(qualify(name), constraint, value, span)
+            }
+            TopLevel::TLTheorem(name, prop, body, span) => {
+                self.process_theorem(qualify(name), prop, body, span)
+            }
+            _ => Ok(()),
+        }
     }
 
     fn process_def(
@@ -521,9 +563,6 @@ impl<'bump> Compiler<'bump> {
         span: std::ops::Range<usize>,
         label: &str,
     ) -> Result<(), Diagnostic> {
-        if self.quiet {
-            return Ok(());
-        }
         let resolved = self.try_resolve_all(term)?;
         self.checker
             .check(
@@ -534,6 +573,9 @@ impl<'bump> Compiler<'bump> {
             .map_err(|err| {
                 Diagnostic::with_span(format!("{label} check failed: {}", err), span.clone())
             })?;
+        if self.quiet {
+            return Ok(());
+        }
         let self_name = self
             .checker
             .desugar_with_context(term)
@@ -563,13 +605,13 @@ impl<'bump> Compiler<'bump> {
         body: &'bump Term<'bump>,
     ) -> bool {
         match body {
-            Term::UnionDef(..) => {
+            Term::EnumDef(..) => {
                 if !self.quiet {
-                    println!("[union] {}", name);
+                    println!("[enum] {}", name);
                 }
                 let type_param_names: Vec<_> = params.iter().map(|(n, _)| *n).collect();
                 let type_params = self.arena.alloc_slice(&type_param_names);
-                self.checker.add_union(name, body, type_params);
+                self.checker.add_enum(name, body, type_params);
                 if !params.is_empty() {
                     let term = self.desugar_top_def(name, params, m_ret, body);
                     self.env.insert(name, term);
@@ -662,7 +704,7 @@ impl<'bump> Compiler<'bump> {
                         crate::core::syntax::Tactic::Intro(_) => false,
                     })
             }
-            Term::UnionDef(_, variants) => variants.iter().any(|(_, fields)| {
+            Term::EnumDef(_, variants) => variants.iter().any(|(_, fields)| {
                 fields
                     .iter()
                     .any(|(_, constraint)| Self::contains_do(constraint))
@@ -690,6 +732,7 @@ impl<'bump> Compiler<'bump> {
             }
             Term::StructDef(_, fields) => fields.iter().any(|(_, c)| Self::contains_do(c)),
             Term::StructProj(subject, _) => Self::contains_do(subject),
+            Term::MethodCall(subject, _) => Self::contains_do(subject),
             _ => false,
         }
     }

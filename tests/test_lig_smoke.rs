@@ -35,7 +35,7 @@ fn ffi_fixture_compiles_and_runs_with_expected_output() {
         codegen.tops,
         codegen.raw_defs,
         codegen.fun_sigs,
-        codegen.union_types,
+        codegen.enum_types,
         codegen.struct_types,
     )
     .expect("ffi fixture should emit C");
@@ -63,7 +63,7 @@ fn ffi_fixture_compiles_and_runs_with_expected_output() {
         codegen.tops,
         codegen.raw_defs,
         codegen.fun_sigs,
-        codegen.union_types,
+        codegen.enum_types,
         codegen.struct_types,
     )
     .expect("ffi fixture should emit eval C")
@@ -91,7 +91,7 @@ fn bare_top_level_expression_prints_from_generated_executable() {
         codegen.tops,
         codegen.raw_defs,
         codegen.fun_sigs,
-        codegen.union_types,
+        codegen.enum_types,
         codegen.struct_types,
     )
     .expect("bare expression should emit final C");
@@ -120,7 +120,7 @@ fn ffi_puts_main_prints_from_generated_executable() {
         codegen.tops,
         codegen.raw_defs,
         codegen.fun_sigs,
-        codegen.union_types,
+        codegen.enum_types,
         codegen.struct_types,
     )
     .expect("puts main should emit final C");

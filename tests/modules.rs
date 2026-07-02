@@ -94,7 +94,7 @@ fn single_level_import_codegen_uses_prefixed_c_name() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap();
@@ -157,7 +157,7 @@ fn non_main_file_with_import_uses_module_pipeline() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap();
@@ -243,6 +243,134 @@ fn folder_module_uses_mod_lig() {
 }
 
 #[test]
+fn qualified_module_call_without_use_resolves_public_symbol() {
+    let root = temp_project();
+    write(&root, "math.lig", "pub def one : int := 1\n");
+    write(
+        &root,
+        "main.lig",
+        "mod math\npub def main : IO () := let _ := math::one in ()\n",
+    );
+
+    let compiler = collect(&root).unwrap();
+
+    assert!(compiler.raw_defs().iter().any(|top| {
+        matches!(top, ligare::front::parser::TopLevel::TLDef(name, ..) if *name == "math::one")
+    }));
+}
+
+#[test]
+fn namespace_use_forms_resolve_public_functions() {
+    let root = temp_project();
+    write(
+        &root,
+        "math.lig",
+        r#"
+namespace Ops {
+  pub def inc (x : int) : int := x + 1
+  pub def dec (x : int) : int := x - 1
+  def hidden (x : int) : int := x
+}
+"#,
+    );
+    write(
+        &root,
+        "main.lig",
+        r#"
+mod math
+use math::Ops::inc
+use math::Ops
+use math::Ops::*
+pub def main : IO () := let _ := inc 1 in let _ := Ops::dec 3 in let _ := dec 4 in ()
+"#,
+    );
+
+    let compiler = collect(&root).unwrap();
+
+    assert!(compiler.raw_defs().iter().any(|top| {
+        matches!(top, ligare::front::parser::TopLevel::TLDef(name, ..) if *name == "math::Ops::inc")
+    }));
+}
+
+#[test]
+fn namespace_private_item_cannot_be_imported() {
+    let root = temp_project();
+    write(
+        &root,
+        "math.lig",
+        "namespace Ops { def hidden (x : int) : int := x }\n",
+    );
+    write(
+        &root,
+        "main.lig",
+        "mod math\nuse math::Ops::hidden\npub def main : IO () := hidden 1\n",
+    );
+
+    assert_module_error(&root, "private or unknown symbol");
+}
+
+#[test]
+fn namespace_conflicting_function_arity_is_rejected() {
+    let root = temp_project();
+    write(
+        &root,
+        "math.lig",
+        r#"
+namespace Ops { pub def same (x : int) : int := x }
+namespace Ops { pub def same (y : int) : int := y }
+"#,
+    );
+    write(
+        &root,
+        "main.lig",
+        "mod math\nuse math::Ops::same\npub def main : IO () := same 1\n",
+    );
+
+    assert_module_error(&root, "conflicting function `same`");
+}
+
+#[test]
+fn namespace_imports_with_same_name_merge_across_modules() {
+    let root = temp_project();
+    write(
+        &root,
+        "a.lig",
+        "namespace Ops { pub def inc (x : int) : int := x + 1 }\n",
+    );
+    write(
+        &root,
+        "b.lig",
+        "namespace Ops { pub def dec (x : int) : int := x - 1 }\n",
+    );
+    write(
+        &root,
+        "main.lig",
+        r#"
+mod a
+mod b
+use a::Ops
+use b::Ops
+pub def main : IO () := let _ := Ops::inc 1 in let _ := Ops::dec 2 in ()
+"#,
+    );
+
+    collect(&root).unwrap();
+}
+
+#[test]
+fn qualified_module_call_without_use_rejects_private_symbol() {
+    let root = temp_project();
+    write(&root, "math.lig", "def hidden : int := 1\n");
+    write(
+        &root,
+        "main.lig",
+        "mod math\npub def main : IO () := let _ := math::hidden in ()\n",
+    );
+
+    assert_module_error(&root, "private or unknown symbol");
+}
+
+#[test]
 fn imported_module_must_be_declared_by_parent() {
     let root = temp_project();
     write(&root, "math.lig", "pub def one : int := 1\n");
@@ -273,6 +401,37 @@ fn std_import_uses_ligare_std_path() {
 
     assert!(compiler.raw_defs().iter().any(|top| {
         matches!(top, ligare::front::parser::TopLevel::TLDef(name, ..) if *name == "std::answer::value")
+    }));
+}
+
+#[test]
+fn qualified_std_call_without_use_resolves_public_symbol() {
+    let root = temp_project();
+    let std_root = root.join("custom_std");
+    write_std(&std_root, "lib.lig", "pub mod io\n");
+    write_std(
+        &std_root,
+        "io.lig",
+        "extern def puts (s : str) : IO c_int\n\
+         pub def put_str (s : str) : IO () := do\n\
+           let _ = unsafe { puts s }\n\
+           ()\n",
+    );
+    write(
+        &root,
+        "main.lig",
+        "pub def main : IO () := do\n\
+           let _ = std::io::put_str \"hello\"\n\
+           ()\n",
+    );
+
+    let compiler = with_ligare_std_path(Some(std_root.to_string_lossy().into_owned()), || {
+        collect(&root)
+    })
+    .unwrap();
+
+    assert!(compiler.raw_defs().iter().any(|top| {
+        matches!(top, ligare::front::parser::TopLevel::TLDef(name, ..) if *name == "std::io::put_str")
     }));
 }
 
@@ -368,7 +527,7 @@ fn std_path_searches_multiple_roots_in_order() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap();

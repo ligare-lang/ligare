@@ -15,13 +15,13 @@ Struct arithmetic:
 
 ## struct_nested.lig
 Nested types:
-- Struct inside union variant payload (Shape)
-- Union inside struct field (Config)
+- Struct inside enum variant payload (Shape)
+- Enum inside struct field (Config)
 - Mixed construction and `#eval`
 
 ## color.lig
-Non-recursive union demo (full pipeline: parse → check → C codegen):
-- Enum-style union (Color)
+Non-recursive enum demo (full pipeline: parse -> check -> C codegen):
+- Enum (Color)
 - Pattern matching function (`to_int`)
 - `#eval` expressions compiled to native executable
 
@@ -31,18 +31,18 @@ Recursive Peano naturals (interpreter only):
 - Nested variant construction
 - Match with binding
 
-## union_basic.lig
-Union type feature tour:
+## enum_basic.lig
+Enum type feature tour:
 - Enum + payload variants
 - `#check` + `#eval` with match
 
-## union_single.lig
-Minimal smoke test: single union definition.
+## enum_single.lig
+Minimal smoke test: single enum definition.
 
-## union_color.lig
-Color enum union type.
+## enum_color.lig
+Color enum type.
 
-## union_option.lig
+## enum_option.lig
 Option type with payload and matching.
 
 ## ffi.lig

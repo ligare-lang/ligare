@@ -83,7 +83,7 @@ impl<'bump> WhnfEvaluator<'bump> {
             Term::Named(_) => Err("Named identifier reached WHNF before desugaring".into()),
             Term::NamedLam(_, _) => Err("NamedLam reached WHNF before desugaring".into()),
             Term::Do(_) => Err("Do block reached WHNF before desugaring".into()),
-            Term::UnionDef(..) => Ok(t),
+            Term::EnumDef(..) => Ok(t),
             Term::StructDef(..) => Ok(t),
             Term::StructCons(name, field_values) => {
                 let ev: Vec<_> = field_values
@@ -145,6 +145,7 @@ impl<'bump> WhnfEvaluator<'bump> {
                 Ok(self.arena.match_(s, self.arena.alloc_slice(&bs)))
             }
             Term::NamedMatch(..) => Err("NamedMatch reached WHNF before desugaring".into()),
+            Term::MethodCall(..) => Err("MethodCall reached WHNF before resolution".into()),
         }
     }
 

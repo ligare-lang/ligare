@@ -634,7 +634,7 @@ fn check_dirty_items<'bump>(
         let dep_own =
             declared_symbol_aliases(dep_ranges.iter().map(|(_, _, top)| top), &file.module_key);
         for (_, _, top) in &dep_ranges {
-            if let Some(top) = rewrite_top_for_module(arena, top, &dep_imports, &dep_own) {
+            for top in rewrite_top_for_module(arena, top, &dep_imports, &dep_own) {
                 work.push((usize::MAX, top, false));
             }
         }
@@ -647,9 +647,10 @@ fn check_dirty_items<'bump>(
         top_ranges
             .iter()
             .enumerate()
-            .filter_map(|(idx, (_, _, top))| {
+            .flat_map(|(idx, (_, _, top))| {
                 rewrite_top_for_module(arena, top, &imports, &own)
-                    .map(|top| (idx, top, dirty.contains(&idx)))
+                    .into_iter()
+                    .map(move |top| (idx, top, dirty.contains(&idx)))
             }),
     );
 
@@ -813,14 +814,44 @@ fn declared_symbol_aliases<'a, 'bump>(
 where
     'bump: 'a,
 {
-    tops.filter_map(|top| match unwrap_public(top) {
+    let mut aliases = HashMap::new();
+    for top in tops {
+        collect_declared_symbol_aliases(top, module, None, &mut aliases);
+    }
+    aliases
+}
+
+fn collect_declared_symbol_aliases(
+    top: &TopLevel<'_>,
+    module: &ModuleKey,
+    namespace: Option<&str>,
+    aliases: &mut HashMap<String, String>,
+) {
+    match unwrap_public(top) {
         TopLevel::TLDef(name, ..) | TopLevel::TLTheorem(name, ..) => {
-            Some(((*name).to_string(), module.join_symbol(name)))
+            let local = namespace
+                .map(|namespace| format!("{namespace}::{name}"))
+                .unwrap_or_else(|| (*name).to_string());
+            aliases.insert(local.clone(), module.join_symbol(&local));
         }
-        TopLevel::TLExternDef(name, ..) => Some(((*name).to_string(), (*name).to_string())),
-        _ => None,
-    })
-    .collect()
+        TopLevel::TLExternDef(name, ..) => {
+            let local = namespace
+                .map(|namespace| format!("{namespace}::{name}"))
+                .unwrap_or_else(|| (*name).to_string());
+            let target = if namespace.is_some() {
+                module.join_symbol(&local)
+            } else {
+                (*name).to_string()
+            };
+            aliases.insert(local, target);
+        }
+        TopLevel::TLNamespace(name, items, _) => {
+            for item in *items {
+                collect_declared_symbol_aliases(item, module, Some(name), aliases);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn use_module_diagnostics<'bump>(
@@ -838,9 +869,29 @@ fn use_module_diagnostics<'bump>(
     let mut imports = Vec::<ImportDiagnosticInfo>::new();
     for (idx, (_, _, top)) in top_ranges.iter().enumerate() {
         match unwrap_public(top) {
-            TopLevel::TLUse(uses, _, span) => {
+            TopLevel::TLUse(uses, visibility, span) => {
                 for tree in *uses {
                     if tree.path.len() < 2 {
+                        if dirty.contains(&idx) {
+                            let message = if matches!(
+                                visibility,
+                                ligare::front::parser::Visibility::Public
+                            ) {
+                                "pub use path must include a module and symbol"
+                            } else {
+                                "use path must include a module and symbol"
+                            };
+                            diagnostics.push((
+                                idx,
+                                lsp::Diagnostic {
+                                    range: lsp_range_for_span(source, span),
+                                    severity: Some(lsp::DiagnosticSeverity::ERROR),
+                                    source: Some("ligare".to_string()),
+                                    message: message.to_string(),
+                                    ..Default::default()
+                                },
+                            ));
+                        }
                         continue;
                     }
                     let local = tree
@@ -1024,7 +1075,7 @@ fn rewrite_top_for_module<'bump>(
     top: &TopLevel<'bump>,
     imports: &HashMap<String, String>,
     own_names: &HashMap<String, String>,
-) -> Option<TopLevel<'bump>> {
+) -> Vec<TopLevel<'bump>> {
     match unwrap_public(top) {
         TopLevel::TLDef(name, params, ret, body, span) => {
             let qname = own_names.get(*name).map(String::as_str).unwrap_or(name);
@@ -1043,7 +1094,7 @@ fn rewrite_top_for_module<'bump>(
             let ret = ret
                 .map(|term| rewrite_term_for_module(arena, term, imports, own_names, &mut scope));
             let body = rewrite_term_for_module(arena, body, imports, own_names, &mut scope);
-            Some(TopLevel::TLDef(qname, params, ret, body, span.clone()))
+            vec![TopLevel::TLDef(qname, params, ret, body, span.clone())]
         }
         TopLevel::TLExternDef(name, params, ret, span) => {
             let mut scope = RewriteScope::default();
@@ -1058,12 +1109,12 @@ fn rewrite_top_for_module<'bump>(
                 &mut RewriteScope::default(),
             );
             let ret = rewrite_term_for_module(arena, ret, imports, own_names, &mut scope);
-            Some(TopLevel::TLExternDef(name, params, ret, span.clone()))
+            vec![TopLevel::TLExternDef(name, params, ret, span.clone())]
         }
         TopLevel::TLInstance(name, constraint, value, span) => {
             let qname = own_names.get(*name).map(String::as_str).unwrap_or(name);
             let qname = arena.alloc_str(qname);
-            Some(TopLevel::TLInstance(
+            vec![TopLevel::TLInstance(
                 qname,
                 rewrite_term_for_module(
                     arena,
@@ -1080,7 +1131,7 @@ fn rewrite_top_for_module<'bump>(
                     &mut RewriteScope::default(),
                 ),
                 span.clone(),
-            ))
+            )]
         }
         TopLevel::TLTheorem(name, prop, body, span) => {
             let qname = own_names.get(*name).map(String::as_str).unwrap_or(name);
@@ -1099,9 +1150,9 @@ fn rewrite_top_for_module<'bump>(
                 own_names,
                 &mut RewriteScope::default(),
             );
-            Some(TopLevel::TLTheorem(qname, prop, body, span.clone()))
+            vec![TopLevel::TLTheorem(qname, prop, body, span.clone())]
         }
-        TopLevel::TLCheck(term, constraint, span) => Some(TopLevel::TLCheck(
+        TopLevel::TLCheck(term, constraint, span) => vec![TopLevel::TLCheck(
             rewrite_term_for_module(
                 arena,
                 term,
@@ -1117,8 +1168,8 @@ fn rewrite_top_for_module<'bump>(
                 &mut RewriteScope::default(),
             ),
             span.clone(),
-        )),
-        TopLevel::TLEval(term, span) => Some(TopLevel::TLEval(
+        )],
+        TopLevel::TLEval(term, span) => vec![TopLevel::TLEval(
             rewrite_term_for_module(
                 arena,
                 term,
@@ -1127,8 +1178,8 @@ fn rewrite_top_for_module<'bump>(
                 &mut RewriteScope::default(),
             ),
             span.clone(),
-        )),
-        TopLevel::TLExpr(term, span) => Some(TopLevel::TLExpr(
+        )],
+        TopLevel::TLExpr(term, span) => vec![TopLevel::TLExpr(
             rewrite_term_for_module(
                 arena,
                 term,
@@ -1137,8 +1188,131 @@ fn rewrite_top_for_module<'bump>(
                 &mut RewriteScope::default(),
             ),
             span.clone(),
-        )),
-        TopLevel::TLUse(..) | TopLevel::TLMod(..) | TopLevel::TLPublic(_) => None,
+        )],
+        TopLevel::TLNamespace(name, items, _) => {
+            let mut rewritten = Vec::new();
+            for item in *items {
+                rewrite_namespace_item_for_module(
+                    arena,
+                    name,
+                    item,
+                    imports,
+                    own_names,
+                    &mut rewritten,
+                );
+            }
+            rewritten
+        }
+        TopLevel::TLUse(..) | TopLevel::TLMod(..) | TopLevel::TLPublic(_) => Vec::new(),
+    }
+}
+
+fn rewrite_namespace_item_for_module<'bump>(
+    arena: &'bump TermArena<'bump>,
+    namespace: &str,
+    top: &TopLevel<'bump>,
+    imports: &HashMap<String, String>,
+    own_names: &HashMap<String, String>,
+    out: &mut Vec<TopLevel<'bump>>,
+) {
+    match unwrap_public(top) {
+        TopLevel::TLDef(name, params, ret, body, span) => {
+            let local = format!("{namespace}::{name}");
+            let qname = own_names
+                .get(&local)
+                .map(String::as_str)
+                .unwrap_or(local.as_str());
+            let qname = arena.alloc_str(qname);
+            let mut scope = RewriteScope::default();
+            for (param, _) in params.iter().rev() {
+                scope.push(param);
+            }
+            let params = rewrite_params_for_module(
+                arena,
+                params,
+                imports,
+                own_names,
+                &mut RewriteScope::default(),
+            );
+            let ret = ret
+                .map(|term| rewrite_term_for_module(arena, term, imports, own_names, &mut scope));
+            let body = rewrite_term_for_module(arena, body, imports, own_names, &mut scope);
+            out.push(TopLevel::TLDef(qname, params, ret, body, span.clone()));
+        }
+        TopLevel::TLExternDef(name, params, ret, span) => {
+            let local = format!("{namespace}::{name}");
+            let qname = own_names
+                .get(&local)
+                .map(String::as_str)
+                .unwrap_or(local.as_str());
+            let qname = arena.alloc_str(qname);
+            let mut scope = RewriteScope::default();
+            for (param, _) in params.iter().rev() {
+                scope.push(param);
+            }
+            let params = rewrite_params_for_module(
+                arena,
+                params,
+                imports,
+                own_names,
+                &mut RewriteScope::default(),
+            );
+            let ret = rewrite_term_for_module(arena, ret, imports, own_names, &mut scope);
+            out.push(TopLevel::TLExternDef(qname, params, ret, span.clone()));
+        }
+        TopLevel::TLInstance(name, constraint, value, span) => {
+            let local = format!("{namespace}::{name}");
+            let qname = own_names
+                .get(&local)
+                .map(String::as_str)
+                .unwrap_or(local.as_str());
+            let qname = arena.alloc_str(qname);
+            out.push(TopLevel::TLInstance(
+                qname,
+                rewrite_term_for_module(
+                    arena,
+                    constraint,
+                    imports,
+                    own_names,
+                    &mut RewriteScope::default(),
+                ),
+                rewrite_term_for_module(
+                    arena,
+                    value,
+                    imports,
+                    own_names,
+                    &mut RewriteScope::default(),
+                ),
+                span.clone(),
+            ));
+        }
+        TopLevel::TLTheorem(name, prop, body, span) => {
+            let local = format!("{namespace}::{name}");
+            let qname = own_names
+                .get(&local)
+                .map(String::as_str)
+                .unwrap_or(local.as_str());
+            let qname = arena.alloc_str(qname);
+            out.push(TopLevel::TLTheorem(
+                qname,
+                rewrite_term_for_module(
+                    arena,
+                    prop,
+                    imports,
+                    own_names,
+                    &mut RewriteScope::default(),
+                ),
+                rewrite_term_for_module(
+                    arena,
+                    body,
+                    imports,
+                    own_names,
+                    &mut RewriteScope::default(),
+                ),
+                span.clone(),
+            ));
+        }
+        _ => {}
     }
 }
 
@@ -1246,7 +1420,7 @@ fn rewrite_term_for_module<'bump>(
                 .collect::<Vec<_>>();
             arena.by_proof(inner, arena.alloc_slice(&tactics))
         }
-        Term::UnionDef(name, variants) => {
+        Term::EnumDef(name, variants) => {
             let qname = qualify_type_name(arena, name, own_names);
             let variants = variants
                 .iter()
@@ -1266,7 +1440,7 @@ fn rewrite_term_for_module<'bump>(
                     (qvariant, arena.alloc_slice(&fields))
                 })
                 .collect::<Vec<_>>();
-            arena.union_def(qname, arena.alloc_slice(&variants))
+            arena.enum_def(qname, arena.alloc_slice(&variants))
         }
         Term::StructDef(name, fields) => {
             let qname = qualify_type_name(arena, name, own_names);
@@ -1380,6 +1554,10 @@ fn rewrite_term_for_module<'bump>(
             rewrite_term_for_module(arena, inner, imports, own_names, scope),
             *index,
         ),
+        Term::MethodCall(receiver, method) => arena.method_call(
+            rewrite_term_for_module(arena, receiver, imports, own_names, scope),
+            method,
+        ),
         Term::Unsafe(inner) => arena.unsafe_(rewrite_term_for_module(
             arena, inner, imports, own_names, scope,
         )),
@@ -1418,7 +1596,8 @@ fn item_name(top: &TopLevel<'_>) -> Option<String> {
         | TopLevel::TLExternDef(name, ..)
         | TopLevel::TLInstance(name, ..)
         | TopLevel::TLTheorem(name, ..)
-        | TopLevel::TLMod(name, _) => Some((*name).to_string()),
+        | TopLevel::TLMod(name, _)
+        | TopLevel::TLNamespace(name, _, _) => Some((*name).to_string()),
         TopLevel::TLUse(uses, _, _) => uses
             .first()
             .and_then(|tree| tree.alias.or_else(|| tree.path.last().copied()))
@@ -1436,6 +1615,7 @@ fn item_kind(top: &TopLevel<'_>) -> &'static str {
         TopLevel::TLTheorem(..) => "theorem",
         TopLevel::TLUse(..) => "use",
         TopLevel::TLMod(..) => "mod",
+        TopLevel::TLNamespace(..) => "namespace",
         TopLevel::TLCheck(..) => "check",
         TopLevel::TLEval(..) => "eval",
         TopLevel::TLExpr(..) => "expr",
@@ -1461,9 +1641,11 @@ fn item_constraint(top: &TopLevel<'_>) -> Option<String> {
         TopLevel::TLTheorem(_, prop, _, _) | TopLevel::TLCheck(_, prop, _) => {
             Some(Constraint::from_term(prop).display)
         }
-        TopLevel::TLUse(..) | TopLevel::TLMod(..) | TopLevel::TLEval(..) | TopLevel::TLExpr(..) => {
-            None
-        }
+        TopLevel::TLUse(..)
+        | TopLevel::TLMod(..)
+        | TopLevel::TLNamespace(..)
+        | TopLevel::TLEval(..)
+        | TopLevel::TLExpr(..) => None,
         TopLevel::TLPublic(_) => unreachable!(),
     }
 }
@@ -1506,6 +1688,11 @@ fn item_dependencies(top: &TopLevel<'_>) -> HashSet<String> {
             collect_term_names(term, &mut names)
         }
         TopLevel::TLUse(..) | TopLevel::TLMod(..) => {}
+        TopLevel::TLNamespace(_, items, _) => {
+            for item in *items {
+                names.extend(item_dependencies(item));
+            }
+        }
         TopLevel::TLPublic(_) => unreachable!(),
     }
     if let Some(name) = item_name(top) {
@@ -1528,7 +1715,8 @@ fn collect_term_names(term: &Term<'_>, names: &mut HashSet<String>) {
         | Term::NamedLam(_, body)
         | Term::Unsafe(body)
         | Term::Pure(body)
-        | Term::StructProj(body, _) => {
+        | Term::StructProj(body, _)
+        | Term::MethodCall(body, _) => {
             collect_term_names(body, names);
         }
         Term::Pi(_, a, b) | Term::Refine(_, a, b) | Term::Annot(a, b) => {
@@ -1560,7 +1748,7 @@ fn collect_term_names(term: &Term<'_>, names: &mut HashSet<String>) {
                 }
             }
         }
-        Term::UnionDef(_, variants) => {
+        Term::EnumDef(_, variants) => {
             for (_, fields) in *variants {
                 for (_, constraint) in *fields {
                     collect_term_names(constraint, names);
@@ -1633,11 +1821,28 @@ fn exported_names(top: &TopLevel<'_>) -> Vec<String> {
 }
 
 fn module_imports_for_top(top: &TopLevel<'_>) -> Vec<Vec<String>> {
-    match unwrap_public(top) {
+    let mut imports = match unwrap_public(top) {
         TopLevel::TLUse(uses, _, _) => uses.iter().filter_map(use_tree_module).collect(),
         TopLevel::TLMod(name, _) => vec![vec![(*name).to_string()]],
         _ => Vec::new(),
-    }
+    };
+    imports.extend(qualified_module_imports_for_top(top));
+    imports.sort();
+    imports.dedup();
+    imports
+}
+
+fn qualified_module_imports_for_top(top: &TopLevel<'_>) -> Vec<Vec<String>> {
+    item_dependencies(top)
+        .into_iter()
+        .filter_map(|name| {
+            let mut parts = name.split("::").map(str::to_string).collect::<Vec<_>>();
+            (parts.len() > 1).then(|| {
+                parts.pop();
+                parts
+            })
+        })
+        .collect()
 }
 
 fn use_tree_module(tree: &UseTree<'_>) -> Option<Vec<String>> {

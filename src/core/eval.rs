@@ -97,7 +97,7 @@ impl<'bump> Evaluator<'bump> {
             Term::Named(_) => Err("Named identifier reached eval before desugaring".into()),
             Term::NamedLam(_, _) => Err("NamedLam reached eval before desugaring".into()),
             Term::Do(_) => Err("Do block reached eval before desugaring".into()),
-            Term::UnionDef(..) => Ok(t),
+            Term::EnumDef(..) => Ok(t),
             Term::StructDef(..) => Ok(t),
             Term::StructCons(name, field_values) => {
                 let ev: Vec<_> = field_values
@@ -149,6 +149,7 @@ impl<'bump> Evaluator<'bump> {
                 Ok(self.arena.match_(s, self.arena.alloc_slice(&bs)))
             }
             Term::NamedMatch(..) => Err("NamedMatch reached eval before desugaring".into()),
+            Term::MethodCall(..) => Err("MethodCall reached eval before resolution".into()),
         }
     }
 

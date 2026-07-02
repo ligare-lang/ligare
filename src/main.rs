@@ -199,7 +199,7 @@ fn emit_or_compile_to(compiler: &Compiler<'_>, output: Option<&Path>) {
             codegen.tops,
             codegen.raw_defs,
             codegen.fun_sigs,
-            codegen.union_types,
+            codegen.enum_types,
             codegen.struct_types,
         ) {
             Ok(c) => c,
@@ -222,7 +222,7 @@ fn emit_or_compile_to(compiler: &Compiler<'_>, output: Option<&Path>) {
         codegen.tops,
         codegen.raw_defs,
         codegen.fun_sigs,
-        codegen.union_types,
+        codegen.enum_types,
         codegen.struct_types,
     ) {
         Ok(c) => c,
@@ -251,7 +251,7 @@ fn emit_library_to(compiler: &Compiler<'_>, output: Option<&Path>) {
         codegen.tops,
         codegen.raw_defs,
         codegen.fun_sigs,
-        codegen.union_types,
+        codegen.enum_types,
         codegen.struct_types,
     ) {
         Ok(c) => c,

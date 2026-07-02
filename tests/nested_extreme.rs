@@ -50,7 +50,7 @@ fn collect_c(source: &str) -> String {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"))
@@ -66,7 +66,7 @@ fn collect_eval_c(source: &str) -> String {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"))
@@ -78,7 +78,7 @@ fn collect_eval_c(source: &str) -> String {
 #[test]
 fn parse_deeply_nested_program_mix() {
     assert_parse_ok(
-        "def Option : prop := union\n  | None\n  | Some of (val : int)\n\
+        "def Option : prop := enum\n  | None\n  | Some of (val : int)\n\
          def Box : prop := struct\n  value : Option\n  fallback : int\n\
          #check let b : Box := Box.mk (Some 5) 0 in match Box.value b with | None => Box.fallback b | Some x => x : int\n",
     );
@@ -87,16 +87,16 @@ fn parse_deeply_nested_program_mix() {
 #[test]
 fn parse_match_branch_with_nested_match_body() {
     assert_parse_ok(
-        "def Option : prop := union\n  | None\n  | Some of (val : int)\n\
+        "def Option : prop := enum\n  | None\n  | Some of (val : int)\n\
          #check match Some 1 with | None => 0 | Some x => match Some x with | None => -1 | Some y => y : int\n",
     );
 }
 
 #[test]
-fn parse_large_union_definition() {
+fn parse_large_enum_definition() {
     let variants = (0..32).map(|i| format!("  | V{i}\n")).collect::<String>();
     assert_parse_ok(&format!(
-        "def Big : prop := union\n{variants}#check V31 : Big\n"
+        "def Big : prop := enum\n{variants}#check V31 : Big\n"
     ));
 }
 
@@ -224,13 +224,13 @@ fn wide_struct_construct_and_project_last_field() {
     ));
 }
 
-// Union and match nesting.
+// Enum and match nesting.
 
 #[test]
-fn nested_union_match_returns_inner_payload() {
+fn nested_enum_match_returns_inner_payload() {
     assert_process_ok(
-        "def Option : prop := union\n  | None\n  | Some of (val : int)\n\
-         def Outer : prop := union\n  | Empty\n  | Wrapped of (opt : Option)\n\
+        "def Option : prop := enum\n  | None\n  | Some of (val : int)\n\
+         def Outer : prop := enum\n  | Empty\n  | Wrapped of (opt : Option)\n\
          #check match Wrapped (Some 9) with | Empty => 0 | Wrapped opt => match opt with | None => -1 | Some x => x : int\n",
     );
 }
@@ -239,46 +239,46 @@ fn nested_union_match_returns_inner_payload() {
 fn match_branches_can_construct_structs() {
     assert_process_ok(
         "def Point : prop := struct\n  x : int\n  y : int\n\
-         def Choice : prop := union\n  | Origin\n  | At of (x : int) (y : int)\n\
+         def Choice : prop := enum\n  | Origin\n  | At of (x : int) (y : int)\n\
          #check match At 3 4 with | Origin => Point.mk 0 0 | At x y => Point.mk x y : Point\n",
     );
 }
 
 #[test]
-fn union_constructor_rejects_payload_count_too_few() {
+fn enum_constructor_rejects_payload_count_too_few() {
     assert_process_err(
-        "def PairLike : prop := union\n  | Both of (left : int) (right : int)\n#check Both 1 : PairLike\n",
+        "def PairLike : prop := enum\n  | Both of (left : int) (right : int)\n#check Both 1 : PairLike\n",
         "Both needs two payload fields",
     );
 }
 
 #[test]
-fn union_constructor_rejects_payload_count_too_many() {
+fn enum_constructor_rejects_payload_count_too_many() {
     assert_process_err(
-        "def PairLike : prop := union\n  | Both of (left : int) (right : int)\n#check Both 1 2 3 : PairLike\n",
+        "def PairLike : prop := enum\n  | Both of (left : int) (right : int)\n#check Both 1 2 3 : PairLike\n",
         "Both has only two payload fields",
     );
 }
 
 #[test]
-fn union_constructor_rejects_payload_type_deep_in_args() {
+fn enum_constructor_rejects_payload_type_deep_in_args() {
     assert_process_err(
-        "def Quad : prop := union\n  | Q of (a : int) (b : bool) (c : str) (d : int)\n#check Q 1 true \"ok\" false : Quad\n",
+        "def Quad : prop := enum\n  | Q of (a : int) (b : bool) (c : str) (d : int)\n#check Q 1 true \"ok\" false : Quad\n",
         "fourth payload should be int",
     );
 }
 
 #[test]
-fn recursive_union_nested_value_checks() {
+fn recursive_enum_nested_value_checks() {
     assert_process_ok(
-        "def Nat : prop := union\n  | Zero\n  | Succ of (pred : Nat)\ndef three : Nat := Succ (Succ (Succ Zero))\n#check three : Nat\n",
+        "def Nat : prop := enum\n  | Zero\n  | Succ of (pred : Nat)\ndef three : Nat := Succ (Succ (Succ Zero))\n#check three : Nat\n",
     );
 }
 
 #[test]
-fn nested_recursive_union_match_function_checks() {
+fn nested_recursive_enum_match_function_checks() {
     assert_process_ok(
-        "def Nat : prop := union\n  | Zero\n  | Succ of (pred : Nat)\n\
+        "def Nat : prop := enum\n  | Zero\n  | Succ of (pred : Nat)\n\
          def is_zero (n : Nat) : bool := match n with | Zero => true | Succ p => false\n\
          def pred_or_zero (n : Nat) : Nat := match n with | Zero => Zero | Succ p => p\n\
          #check is_zero (pred_or_zero (Succ Zero)) : bool\n",
@@ -286,10 +286,10 @@ fn nested_recursive_union_match_function_checks() {
 }
 
 #[test]
-fn many_variant_union_checks_last_variant() {
+fn many_variant_enum_checks_last_variant() {
     let variants = (0..40).map(|i| format!("  | V{i}\n")).collect::<String>();
     assert_process_ok(&format!(
-        "def Big : prop := union\n{variants}#check V39 : Big\n"
+        "def Big : prop := enum\n{variants}#check V39 : Big\n"
     ));
 }
 
@@ -323,9 +323,9 @@ fn generic_higher_order_rejects_wrong_function_domain() {
 }
 
 #[test]
-fn generic_union_nested_instance_checks() {
+fn generic_enum_nested_instance_checks() {
     assert_process_ok(
-        "def Option (A : prop) : prop := union\n  | None\n  | Some of (val : A)\n\
+        "def Option (A : prop) : prop := enum\n  | None\n  | Some of (val : A)\n\
          def unwrap (A : prop) (opt : Option A) (default : A) : A := match opt with | None => default | Some x => x\n\
          #check unwrap int (Some (unwrap int (Some 7) 0)) 0 : int\n",
     );
@@ -349,10 +349,10 @@ fn codegen_nested_structs_include_referenced_types_and_fields() {
 }
 
 #[test]
-fn codegen_nested_union_match_uses_multiple_switches() {
+fn codegen_nested_enum_match_uses_multiple_switches() {
     let c = collect_eval_c(
-        "def Option : prop := union\n  | None\n  | Some of (val : int)\n\
-         def Outer : prop := union\n  | Empty\n  | Wrapped of (opt : Option)\n\
+        "def Option : prop := enum\n  | None\n  | Some of (val : int)\n\
+         def Outer : prop := enum\n  | Empty\n  | Wrapped of (opt : Option)\n\
          #eval match Wrapped (Some 9) with | Empty => 0 | Wrapped opt => match opt with | None => -1 | Some x => x\n",
     );
     let switch_count = c.matches("switch").count();

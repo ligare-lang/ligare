@@ -67,7 +67,7 @@ pub trait CodeGenerator {
         tops: &[TopLevel<'_>],
         raw_defs: &[TopLevel<'_>],
         struct_types: &[(&str, &Term<'_>)],
-        union_types: &[(&str, &Term<'_>)],
+        enum_types: &[(&str, &Term<'_>)],
     ) -> Result<String, Diagnostic>;
 
     /// Generate an eval-only helper source file.
@@ -76,7 +76,7 @@ pub trait CodeGenerator {
         tops: &[TopLevel<'_>],
         raw_defs: &[TopLevel<'_>],
         struct_types: &[(&str, &Term<'_>)],
-        union_types: &[(&str, &Term<'_>)],
+        enum_types: &[(&str, &Term<'_>)],
     ) -> Result<Option<String>, Diagnostic>;
 }
 
@@ -109,19 +109,19 @@ impl<'a> CEmitter<'a> {
     /// Builds all sub-components and wires them together.
     pub fn new(
         struct_types: &[(&str, &Term<'_>)],
-        union_types: &[(&str, &Term<'_>)],
+        enum_types: &[(&str, &Term<'_>)],
         fun_sigs: &'a [(&'a str, FunSig)],
     ) -> Result<Self, Diagnostic> {
-        Self::new_with_options(struct_types, union_types, fun_sigs, CEmitOptions::default())
+        Self::new_with_options(struct_types, enum_types, fun_sigs, CEmitOptions::default())
     }
 
     pub fn new_with_options(
         struct_types: &[(&str, &Term<'_>)],
-        union_types: &[(&str, &Term<'_>)],
+        enum_types: &[(&str, &Term<'_>)],
         fun_sigs: &'a [(&'a str, FunSig)],
         options: CEmitOptions,
     ) -> Result<Self, Diagnostic> {
-        let type_analyzer = TypeAnalyzer::new(struct_types, union_types)?;
+        let type_analyzer = TypeAnalyzer::new(struct_types, enum_types)?;
         let expr_emitter = ExpressionEmitter::new(fun_sigs);
         Ok(Self {
             fun_sigs,
@@ -149,7 +149,7 @@ impl<'a> CEmitter<'a> {
                 let value = self.expr_emitter.emit_expr(
                     body,
                     &mut ctx,
-                    self.type_analyzer.union_map(),
+                    self.type_analyzer.enum_map(),
                     self.type_analyzer.struct_map(),
                 )?;
                 let code = value.expr.code()?;
@@ -209,14 +209,14 @@ impl<'a> CEmitter<'a> {
         let body_value = self.expr_emitter.emit_expr(
             body,
             &mut ctx,
-            self.type_analyzer.union_map(),
+            self.type_analyzer.enum_map(),
             self.type_analyzer.struct_map(),
         )?;
         let return_stmt = match body_value.expr {
             CExpr::Match(plan) => {
                 let block = self
                     .match_emitter
-                    .emit(&plan, 0, self.type_analyzer.union_map());
+                    .emit(&plan, 0, self.type_analyzer.enum_map());
                 format!("{block}    return {};\n", self.name_resolver.result_temp(0))
             }
             CExpr::Code(code) => format!("    return {};\n", code.as_str()),
@@ -247,7 +247,7 @@ impl<'a> CEmitter<'a> {
                 out.push_str(&format!("    printf(\"%ld\\n\", (int64_t)({}));\n", expr))
             }
             CType::Ptr(_) => out.push_str(&format!("    printf(\"%p\\n\", (void*)({}));\n", expr)),
-            CType::Union(_) => out.push_str(&format!("    printf(\"%d\\n\", ({}).tag);\n", expr)),
+            CType::Enum(_) => out.push_str(&format!("    printf(\"%d\\n\", ({}).tag);\n", expr)),
             CType::Struct(_) => out.push_str("    printf(\"<struct>\\n\");\n"),
         }
     }
@@ -379,9 +379,15 @@ impl<'a> CEmitter<'a> {
             Term::Unsafe(inner) | Term::Pure(inner) | Term::Lam(inner) => {
                 self.term_requires_allocation(inner)
             }
-            Term::StructCons(_, values) | Term::Variant(_, _, values) => values
+            Term::StructCons(_, values) => values
                 .iter()
                 .any(|value| self.term_requires_allocation(value)),
+            Term::Variant(uname, idx, values) => {
+                self.variant_requires_heap_payload(uname, *idx)
+                    || values
+                        .iter()
+                        .any(|value| self.term_requires_allocation(value))
+            }
             Term::StructProj(subject, _) => self.term_requires_allocation(subject),
             Term::Match(scrut, branches) => {
                 self.term_requires_allocation(scrut)
@@ -392,6 +398,18 @@ impl<'a> CEmitter<'a> {
             }
             _ => false,
         }
+    }
+
+    fn variant_requires_heap_payload(&self, uname: &str, idx: usize) -> bool {
+        self.type_analyzer
+            .enum_map()
+            .get(uname)
+            .and_then(|info| info.variants.get(idx))
+            .is_some_and(|variant| {
+                variant.fields.iter().any(|(_, cty)| {
+                    matches!(cty, CType::Ptr(inner) if matches!(inner.as_ref(), CType::Enum(inner_name) if inner_name == uname))
+                })
+            })
     }
 
     fn is_string_concat_app(&self, term: &Term<'_>) -> bool {
@@ -438,7 +456,7 @@ impl<'a> CEmitter<'a> {
         tops: &[TopLevel<'_>],
         raw_defs: &[TopLevel<'_>],
         struct_types: &[(&str, &Term<'_>)],
-        union_types: &[(&str, &Term<'_>)],
+        enum_types: &[(&str, &Term<'_>)],
         outputs: &[&Term<'_>],
     ) -> Result<String, Diagnostic> {
         let mut called_names: HashSet<String> = if outputs.is_empty() {
@@ -475,7 +493,7 @@ impl<'a> CEmitter<'a> {
         }
 
         self.type_analyzer
-            .emit_type_declarations(&mut out, struct_types, union_types)?;
+            .emit_type_declarations(&mut out, struct_types, enum_types)?;
 
         for (name, sig) in self.fun_sigs {
             if self.name_resolver.is_extern_name(name, raw_defs) {
@@ -535,7 +553,7 @@ impl<'a> CEmitter<'a> {
             let value = self.expr_emitter.emit_expr(
                 main_body,
                 &mut ctx,
-                self.type_analyzer.union_map(),
+                self.type_analyzer.enum_map(),
                 self.type_analyzer.struct_map(),
             )?;
             match value.expr {
@@ -543,7 +561,7 @@ impl<'a> CEmitter<'a> {
                     let block = self.match_emitter.emit(
                         &plan,
                         match_counter,
-                        self.type_analyzer.union_map(),
+                        self.type_analyzer.enum_map(),
                     );
                     match_counter += 1;
                     out.push_str(&block);
@@ -556,7 +574,7 @@ impl<'a> CEmitter<'a> {
             let value = self.expr_emitter.emit_expr(
                 term,
                 &mut ctx,
-                self.type_analyzer.union_map(),
+                self.type_analyzer.enum_map(),
                 self.type_analyzer.struct_map(),
             )?;
             match value.expr {
@@ -564,7 +582,7 @@ impl<'a> CEmitter<'a> {
                     let block = self.match_emitter.emit(
                         &plan,
                         match_counter,
-                        self.type_analyzer.union_map(),
+                        self.type_analyzer.enum_map(),
                     );
                     match_counter += 1;
                     out.push_str(&block);
@@ -631,10 +649,10 @@ impl<'a> CodeGenerator for CEmitter<'a> {
         tops: &[TopLevel<'_>],
         raw_defs: &[TopLevel<'_>],
         struct_types: &[(&str, &Term<'_>)],
-        union_types: &[(&str, &Term<'_>)],
+        enum_types: &[(&str, &Term<'_>)],
     ) -> Result<String, Diagnostic> {
         let outputs = self.collect_outputs(tops, false, true);
-        self.generate_with_outputs(tops, raw_defs, struct_types, union_types, &outputs)
+        self.generate_with_outputs(tops, raw_defs, struct_types, enum_types, &outputs)
     }
 
     fn generate_eval(
@@ -642,13 +660,13 @@ impl<'a> CodeGenerator for CEmitter<'a> {
         tops: &[TopLevel<'_>],
         raw_defs: &[TopLevel<'_>],
         struct_types: &[(&str, &Term<'_>)],
-        union_types: &[(&str, &Term<'_>)],
+        enum_types: &[(&str, &Term<'_>)],
     ) -> Result<Option<String>, Diagnostic> {
         let outputs = self.collect_outputs(tops, true, false);
         if outputs.is_empty() {
             return Ok(None);
         }
-        self.generate_with_outputs(tops, raw_defs, struct_types, union_types, &outputs)
+        self.generate_with_outputs(tops, raw_defs, struct_types, enum_types, &outputs)
             .map(Some)
     }
 }

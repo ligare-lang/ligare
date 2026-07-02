@@ -58,6 +58,26 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             return Ok(self.with_visibility(top, visibility));
         }
 
+        if self.peek_token() == Some(Token::KwNamespace) {
+            self.advance();
+            let name = self.parse_ident()?;
+            self.expect(&Token::LBrace)?;
+            let mut tops = Vec::new();
+            while self.peek_token() != Some(Token::RBrace) {
+                if self.is_at_end() {
+                    return Err(ParseError {
+                        message: "unterminated namespace block".into(),
+                        span: start_span.clone(),
+                    });
+                }
+                tops.push(self.parse_top_level()?);
+            }
+            self.expect(&Token::RBrace)?;
+            let top =
+                TopLevel::TLNamespace(name, self.arena.bump().alloc_slice_clone(&tops), start_span);
+            return Ok(self.with_visibility(top, visibility));
+        }
+
         if self.peek_token() == Some(Token::KwExtern) {
             self.advance();
             let (name, params, ret) = self.parse_extern_def()?;
@@ -106,7 +126,8 @@ impl<'a, 'bump> Parser<'a, 'bump> {
 
         if matches!(visibility, Visibility::Public) {
             return Err(ParseError {
-                message: "`pub` may only prefix `def`, `instance`, `theorem`, `use`, or `mod`"
+                message:
+                    "`pub` may only prefix `def`, `instance`, `theorem`, `use`, `mod`, or `namespace`"
                     .into(),
                 span: start_span,
             });
@@ -159,6 +180,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 | Token::KwPub
                 | Token::KwUse
                 | Token::KwMod
+                | Token::KwNamespace
                 | Token::KwExtern
                 | Token::KwInstance
                 | Token::HashGlobalAllocator
@@ -199,12 +221,23 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                         imports.push(UseTree {
                             path: self.arena.alloc_slice(&full),
                             alias,
+                            wildcard: false,
                         });
                         if !self.try_expect(&Token::Comma) {
                             break;
                         }
                     }
                     self.expect(&Token::RBrace)?;
+                    path.clear();
+                    break;
+                }
+                if self.peek_token() == Some(Token::Star) {
+                    self.advance();
+                    imports.push(UseTree {
+                        path: self.arena.alloc_slice(&path),
+                        alias: None,
+                        wildcard: true,
+                    });
                     path.clear();
                     break;
                 }
@@ -224,6 +257,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             imports.push(UseTree {
                 path: self.arena.alloc_slice(&path),
                 alias,
+                wildcard: false,
             });
             if !self.try_expect(&Token::Comma) {
                 break;

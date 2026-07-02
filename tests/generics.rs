@@ -140,34 +140,34 @@ fn generic_partial_application() {
     assert!(result.is_ok(), "Error: {:?}", result.err());
 }
 
-// ── Generic union type definition ──
+// ── Generic enum type definition ──
 
 #[test]
-fn generic_union_definition() {
+fn generic_enum_definition() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     let result = compiler.process_file_str(
-        "def Option (A : prop) : prop := union\n  | None\n  | Some of (val : A)\n",
+        "def Option (A : prop) : prop := enum\n  | None\n  | Some of (val : A)\n",
     );
     assert!(result.is_ok(), "Error: {:?}", result.err());
 }
 
 #[test]
-fn generic_union_check() {
+fn generic_enum_check() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     let result = compiler.process_file_str(
-        "def Option (A : prop) : prop := union\n  | None\n  | Some of (val : A)\n#check None : Option int\n",
+        "def Option (A : prop) : prop := enum\n  | None\n  | Some of (val : A)\n#check None : Option int\n",
     );
     assert!(result.is_ok(), "Error: {:?}", result.err());
 }
 
 #[test]
-fn generic_union_some_check() {
+fn generic_enum_some_check() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     let result = compiler.process_file_str(
-        "def Option (A : prop) : prop := union\n  | None\n  | Some of (val : A)\n#check Some 42 : Option int\n",
+        "def Option (A : prop) : prop := enum\n  | None\n  | Some of (val : A)\n#check Some 42 : Option int\n",
     );
     assert!(result.is_ok(), "Error: {:?}", result.err());
 }
@@ -270,7 +270,7 @@ fn codegen_generic_id_monomorphizes_int() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -278,7 +278,7 @@ fn codegen_generic_id_monomorphizes_int() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"))
@@ -298,7 +298,7 @@ fn codegen_generic_id_monomorphizes_str() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -306,7 +306,7 @@ fn codegen_generic_id_monomorphizes_str() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"))
@@ -328,7 +328,7 @@ fn codegen_generic_const_monomorphizes() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -336,7 +336,7 @@ fn codegen_generic_const_monomorphizes() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"))
@@ -361,7 +361,7 @@ fn codegen_generic_three_type_params_monomorphizes() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -369,7 +369,7 @@ fn codegen_generic_three_type_params_monomorphizes() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"))
@@ -381,22 +381,20 @@ fn codegen_generic_three_type_params_monomorphizes() {
     );
 }
 
-// ── Generic union codegen ──
+// ── Generic enum codegen ──
 
 #[test]
-fn codegen_unused_generic_union_emits_no_runtime_type() {
+fn codegen_unused_generic_enum_emits_no_runtime_type() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     compiler
-        .collect_file_str(
-            "def Option (A : prop) : prop := union\n  | None\n  | Some of (val : A)\n",
-        )
+        .collect_file_str("def Option (A : prop) : prop := enum\n  | None\n  | Some of (val : A)\n")
         .unwrap();
     let c = ligare::backend::c::emit_c(
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -405,19 +403,19 @@ fn codegen_unused_generic_union_emits_no_runtime_type() {
 }
 
 #[test]
-fn codegen_generic_union_monomorphizes_used_instance() {
+fn codegen_generic_enum_monomorphizes_used_instance() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     compiler
         .collect_file_str(
-            "def Option (A : prop) : prop := union\n  | None\n  | Some of (val : A)\ndef unwrap (A : prop) (opt : Option A) (default : A) : A :=\n  match opt with\n  | None => default\n  | Some x => x\n#eval unwrap int (Some 42) 0\n",
+            "def Option (A : prop) : prop := enum\n  | None\n  | Some of (val : A)\ndef unwrap (A : prop) (opt : Option A) (default : A) : A :=\n  match opt with\n  | None => default\n  | Some x => x\n#eval unwrap int (Some 42) 0\n",
         )
         .unwrap();
     let c = ligare::backend::c::emit_c(
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -425,7 +423,7 @@ fn codegen_generic_union_monomorphizes_used_instance() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"))
@@ -433,6 +431,16 @@ fn codegen_generic_union_monomorphizes_used_instance() {
     assert!(c.contains("typedef struct Option__int"), "{c}");
     assert!(c.contains("int64_t unwrap__int(Option__int opt"), "{c}");
     assert!(eval_c.contains("unwrap__int(((Option__int)"), "{eval_c}");
+}
+
+#[test]
+fn namespace_function_method_call_monomorphizes_receiver_type() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    let result = compiler.process_file_str(
+            "def List (A : prop) : prop := enum\n  | Nil\n  | Cons of (head : A) (tail : List A)\nnamespace List { def append {A : prop} (xs : List A) (x : A) : List A := Cons x xs }\ndef main : List int := let xs := Nil in xs.append 1\n",
+        );
+    assert!(result.is_ok(), "Error: {:?}", result.err());
 }
 
 // ── Generic struct codegen ──
@@ -448,7 +456,7 @@ fn codegen_unused_generic_struct_emits_no_runtime_type() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use bumpalo::Bump;
 use ligare::checker::builtin::BUILTIN_CONSTRAINT_NAMES;
+use ligare::config::GLOBAL_ALLOCATOR_NAME_PREFIX;
 use ligare::core::pool::TermArena;
 use ligare::core::syntax::Term;
 use ligare::front::parser::{TopLevel, Visibility};
@@ -13,7 +14,8 @@ use crate::cache::LspCache;
 use crate::semantic::decode_semantic_tokens;
 use crate::text::{offset_to_position, position_to_offset};
 use crate::{
-    AstNode, DiagnosticPublisher, DiagnosticService, completion_items_for_source, parse_program_lsp,
+    AstNode, DiagnosticCheck, DiagnosticPublisher, DiagnosticService, completion_items_for_source,
+    lsp_diagnostics_for_source, parse_program_lsp,
 };
 
 fn arena() -> (&'static Bump, TermArena<'static>) {
@@ -30,7 +32,7 @@ pub use std::io
 def Point : prop := struct
   x : int
   y : int
-def Option : prop := union
+def Option : prop := enum
   | None
   | Some of (value : int)
 def main : int := match Option.Some 1 with | Some value => value | None => 0
@@ -53,6 +55,24 @@ def main : int := match Option.Some 1 with | Some value => value | None => 0
         ast.items[5],
         AstNode::TopLevel(TopLevel::TLEval(term, _)) if matches!(*term, Term::Named("Point.x"))
     ));
+}
+
+#[test]
+fn global_allocator_attribute_is_parsed_with_following_def() {
+    let (bump, arena) = arena();
+    let source = "#[global_allocator]\ndef alloc : int := 1\ndef after : int := 2";
+
+    let (ast, errors) = parse_program_lsp(source, bump, &arena);
+
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(ast.top_levels().count(), 2);
+    let alloc_name = format!("{GLOBAL_ALLOCATOR_NAME_PREFIX}alloc");
+    assert!(
+        matches!(ast.items[0], AstNode::TopLevel(TopLevel::TLDef(name, ..)) if name == alloc_name)
+    );
+    assert!(
+        matches!(ast.items[1], AstNode::TopLevel(TopLevel::TLDef(name, ..)) if name == "after")
+    );
 }
 
 #[test]
@@ -124,6 +144,19 @@ def after : int := 42
     assert!(
         matches!(ast.items[1], AstNode::TopLevel(TopLevel::TLDef(name, ..)) if name == "after")
     );
+}
+
+#[test]
+fn diagnostics_check_eval_like_forms_in_quiet_mode() {
+    for source in ["#eval missing", "missing"] {
+        let diagnostics = lsp_diagnostics_for_source(source, DiagnosticCheck::Fast);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("unbound: missing")),
+            "{diagnostics:#?}"
+        );
+    }
 }
 
 #[derive(Clone, Default)]
@@ -309,6 +342,25 @@ fn cache_reports_unknown_use_module() {
 }
 
 #[test]
+fn cache_reports_incomplete_use_path() {
+    let mut cache = LspCache::new();
+    let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+    let source = "use abcd\n#check 1 : int\n";
+
+    let update = cache.update_fast(uri, Some(1), source.to_string());
+
+    assert!(
+        update.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("use path must include a module and symbol")
+        }),
+        "{:#?}",
+        update.diagnostics
+    );
+}
+
+#[test]
 fn cache_reports_unknown_declared_module() {
     let mut cache = LspCache::new();
     let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
@@ -352,7 +404,7 @@ async fn service_publishes_module_import_diagnostics() {
     let publisher = RecordingPublisher::default();
     let service = DiagnosticService::new(publisher.clone());
     let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
-    let source = "mod missing\nuse missing::thing\nuse missing::thing\n#check 1 : int\n";
+    let source = "mod missing\nuse abcd\nuse missing::thing\nuse missing::thing\n#check 1 : int\n";
 
     service
         .did_open(uri.clone(), Some(1), source.to_string())
@@ -365,6 +417,12 @@ async fn service_publishes_module_import_diagnostics() {
         diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message.contains("module not found: missing")),
+        "{diagnostics:#?}"
+    );
+    assert!(
+        diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("use path must include a module and symbol")),
         "{diagnostics:#?}"
     );
     assert!(
@@ -401,7 +459,7 @@ fn semantic_tokens_classify_semantic_identifier_kinds() {
     let source = r#"
 mod math
 pub use std::io::print
-pub def Option : prop := union
+pub def Option : prop := enum
   | None
   | Some of (value : int)
 def Point : prop := struct
@@ -435,6 +493,62 @@ def opt : Option := Some 1
 }
 
 #[test]
+fn semantic_tokens_classify_namespace_members_and_qualified_references() {
+    let mut cache = LspCache::new();
+    let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+    let source = r#"
+namespace Ops {
+  pub def inc (x : int) : int := x + 1
+  pub def Flag : prop := enum
+    | On
+}
+#eval Ops::inc 1
+#check Ops::On : Ops::Flag
+"#;
+
+    cache.update_fast(uri.clone(), Some(1), source.to_string());
+    let tokens = cache.semantic_tokens(&uri).expect("semantic tokens");
+    let decoded = decode_semantic_tokens(source, &tokens);
+
+    assert!(
+        decoded
+            .iter()
+            .filter(|token| token.text == "Ops" && token.kind == "namespace")
+            .count()
+            >= 3,
+        "{decoded:#?}"
+    );
+    assert_eq!(
+        decoded
+            .iter()
+            .filter(|token| token.text == "inc" && token.kind == "function")
+            .count(),
+        2,
+        "{decoded:#?}"
+    );
+    assert_eq!(
+        decoded
+            .iter()
+            .filter(|token| token.text == "Flag" && token.kind == "constraint")
+            .count(),
+        2,
+        "{decoded:#?}"
+    );
+    assert_token(&decoded, "On", "constructor");
+}
+
+#[test]
+fn semantic_tokens_legend_exposes_constraints_as_lsp_types() {
+    let legend = crate::semantic_tokens_legend();
+
+    assert_eq!(
+        legend.token_types[3],
+        lsp::SemanticTokenType::TYPE,
+        "semantic constraints are user-facing types and should use the standard LSP token type"
+    );
+}
+
+#[test]
 fn semantic_tokens_classify_builtin_constraints() {
     let mut cache = LspCache::new();
     let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
@@ -450,6 +564,112 @@ fn semantic_tokens_classify_builtin_constraints() {
     for builtin in BUILTIN_CONSTRAINT_NAMES {
         assert_token(&decoded, builtin, "constraint");
     }
+}
+
+#[test]
+fn semantic_tokens_classify_refinement_constraint_aliases() {
+    let mut cache = LspCache::new();
+    let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+    let source = r#"
+def Nat := int where (x => x >= 0)
+def zero : Nat := 0
+#check zero : Nat
+"#;
+
+    cache.update_fast(uri.clone(), Some(1), source.to_string());
+    let tokens = cache.semantic_tokens(&uri).expect("semantic tokens");
+    let decoded = decode_semantic_tokens(source, &tokens);
+
+    assert!(
+        decoded.iter().any(|token| {
+            token.text == "Nat"
+                && token.kind == "constraint"
+                && token.modifiers.contains(&"definition")
+        }),
+        "{decoded:#?}"
+    );
+    assert_eq!(
+        decoded
+            .iter()
+            .filter(|token| token.text == "Nat" && token.kind == "constraint")
+            .count(),
+        3,
+        "{decoded:#?}"
+    );
+}
+
+#[test]
+fn semantic_tokens_classify_parameterized_constraint_definitions() {
+    let mut cache = LspCache::new();
+    let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+    let source = r#"
+def Option (A : prop) : prop := enum
+  | None
+  | Some of (value : A)
+def maybe : Option int := Some 1
+"#;
+
+    cache.update_fast(uri.clone(), Some(1), source.to_string());
+    let tokens = cache.semantic_tokens(&uri).expect("semantic tokens");
+    let decoded = decode_semantic_tokens(source, &tokens);
+
+    assert!(
+        decoded.iter().any(|token| {
+            token.text == "Option"
+                && token.kind == "constraint"
+                && token.modifiers.contains(&"definition")
+        }),
+        "{decoded:#?}"
+    );
+    assert!(
+        decoded
+            .iter()
+            .any(|token| token.text == "Option" && token.kind == "constraint"),
+        "{decoded:#?}"
+    );
+}
+
+#[test]
+fn semantic_tokens_classify_type_parameters_as_constraints() {
+    let mut cache = LspCache::new();
+    let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+    let source = r#"
+def id (A : prop) (x : A) : A := x
+def Option (A : prop) : prop := enum
+  | None
+  | Some of (value : A)
+def map (A : prop) (opt : Option A) : Option A := opt
+def implicit {B : prop} (y : B) : B := y
+"#;
+
+    cache.update_fast(uri.clone(), Some(1), source.to_string());
+    let tokens = cache.semantic_tokens(&uri).expect("semantic tokens");
+    let decoded = decode_semantic_tokens(source, &tokens);
+
+    assert_eq!(
+        decoded
+            .iter()
+            .filter(|token| token.text == "A" && token.kind == "constraint")
+            .count(),
+        8,
+        "{decoded:#?}"
+    );
+    assert_eq!(
+        decoded
+            .iter()
+            .filter(|token| token.text == "B" && token.kind == "constraint")
+            .count(),
+        3,
+        "{decoded:#?}"
+    );
+    assert_token(&decoded, "x", "parameter");
+    assert_token(&decoded, "y", "parameter");
+    assert!(
+        decoded
+            .iter()
+            .all(|token| !matches!(token.text.as_str(), "A" | "B") || token.kind != "parameter"),
+        "{decoded:#?}"
+    );
 }
 
 #[test]
@@ -647,23 +867,22 @@ def main : int := let x : int := <|> in x
 }
 
 #[test]
-fn dot_completion_uses_receiver_constraint_for_methods() {
+fn dot_completion_lists_only_interface_instance_methods() {
     let labels = completion_labels(
         r#"
-def Point : prop := struct
-  x : int
-  y : int
-def length (p : Point) : int := Point.x p
-def show (n : int) : str := "n"
-def p : Point := Point.mk 1 2
-#eval p.<|>
+def ShowInt : prop := struct
+  show : int -> str
+def show_int (n : int) : str := "n"
+instance showInt : ShowInt := ShowInt.mk show_int
+def free (n : int) : str := "free"
+def n : int := 1
+#eval n.<|>
 "#,
     );
 
-    assert!(labels.contains(&"length".to_string()), "{labels:?}");
-    assert!(labels.contains(&"x".to_string()), "{labels:?}");
-    assert!(labels.contains(&"y".to_string()), "{labels:?}");
-    assert!(!labels.contains(&"show".to_string()), "{labels:?}");
+    assert!(labels.contains(&"show".to_string()), "{labels:?}");
+    assert!(!labels.contains(&"show_int".to_string()), "{labels:?}");
+    assert!(!labels.contains(&"free".to_string()), "{labels:?}");
 }
 
 #[test]
@@ -691,6 +910,18 @@ use std::<|>
 
     assert!(labels.contains(&"io".to_string()), "{labels:?}");
     assert!(!labels.contains(&"print".to_string()), "{labels:?}");
+}
+
+#[test]
+fn namespace_qualified_completion_lists_visible_functions() {
+    let labels = completion_labels(
+        r#"
+namespace Ops { pub def inc (x : int) : int := x + 1 }
+#eval Ops::<|>
+"#,
+    );
+
+    assert!(labels.contains(&"inc".to_string()), "{labels:?}");
 }
 
 #[tokio::test]
@@ -748,7 +979,7 @@ async fn goto_definition_resolves_constructor_and_struct_projector() {
     let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
     let (source, some_position) = source_and_position(
         r#"
-def Option : prop := union
+def Option : prop := enum
   | None
   | Some of (value : int)
 def Point : prop := struct
@@ -910,6 +1141,60 @@ pub def main : IO () := let _ := <|>inc 1 in ()
 }
 
 #[tokio::test]
+async fn service_resolves_qualified_std_path_without_use() {
+    let publisher = RecordingPublisher::default();
+    let service = DiagnosticService::new(publisher.clone());
+    let root = std::env::temp_dir().join(format!(
+        "ligare_lsp_std_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let std_root = root.join("std");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(std_root.join("src")).unwrap();
+    std::fs::write(
+        root.join("ligare.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nstd = { path = \"std\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        std_root.join("ligare.toml"),
+        "[package]\nname = \"std\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(std_root.join("src/main.lig"), "pub mod io\n").unwrap();
+    let io = "pub def put_str : int := 1\n".to_string();
+    let io_path = std_root.join("src/io.lig");
+    std::fs::write(&io_path, &io).unwrap();
+    let main_uri = lsp::Url::from_file_path(root.join("src/main.lig")).unwrap();
+    let io_uri = lsp::Url::from_file_path(&io_path).unwrap();
+    let (source, position) = source_and_position("#check std::io::<|>put_str : int\n");
+
+    service.did_open(main_uri.clone(), Some(1), source).await;
+    let definition = service
+        .goto_definition(&main_uri, position)
+        .await
+        .expect("qualified std definition");
+    let lsp::GotoDefinitionResponse::Scalar(location) = definition else {
+        panic!("expected scalar definition");
+    };
+    let notifications = publisher.wait_for_notifications(1).await;
+    let diagnostics = &notifications.last().unwrap().1;
+
+    assert_eq!(location.uri, io_uri);
+    assert_eq!(range_text(&io, location.range), "put_str");
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message.contains("unbound: std::io::put_str")),
+        "{diagnostics:#?}"
+    );
+}
+
+#[tokio::test]
 async fn service_diagnostics_resolve_package_imports_from_manifest() {
     let publisher = RecordingPublisher::default();
     let service = DiagnosticService::new(publisher.clone());
@@ -953,6 +1238,64 @@ async fn service_diagnostics_resolve_package_imports_from_manifest() {
             .all(|diagnostic| !diagnostic.message.contains("unbound: inc")),
         "{diagnostics:#?}"
     );
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+}
+
+#[tokio::test]
+async fn service_diagnostics_resolve_std_namespace_methods_from_manifest() {
+    let publisher = RecordingPublisher::default();
+    let service = DiagnosticService::new(publisher.clone());
+    let root = std::env::temp_dir().join(format!(
+        "ligare_lsp_std_method_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let std_root = root.join("std");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(std_root.join("src/mem")).unwrap();
+    std::fs::write(
+        root.join("ligare.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\ntype = \"binary\"\n\n[dependencies]\nstd = { path = \"std\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        std_root.join("ligare.toml"),
+        "[package]\nname = \"std\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(std_root.join("src/main.lig"), "pub mod mem\n").unwrap();
+    std::fs::write(std_root.join("src/mem/mod.lig"), "pub mod list\n").unwrap();
+    std::fs::write(
+        std_root.join("src/mem/list.lig"),
+        r#"
+pub def List (T : prop) : prop := enum
+  | Nil
+  | Const of (head : T) (next : List T)
+
+namespace List {
+  pub def append {T : prop} (l : List T) (n : T) : List T := Const n l
+}
+"#,
+    )
+    .unwrap();
+    let main_uri = lsp::Url::from_file_path(root.join("src/main.lig")).unwrap();
+    let source = r#"
+use std::mem::list::List
+
+pub def main : IO () := do
+  let list := Nil
+  let list_ := list.append 1
+  ()
+"#
+    .to_string();
+
+    service.did_open(main_uri, Some(1), source).await;
+    let notifications = publisher.wait_for_notifications(2).await;
+    let diagnostics = &notifications.last().unwrap().1;
+
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
 }
 

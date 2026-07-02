@@ -275,7 +275,9 @@ impl IndexedDocument {
         Some(Reference {
             name,
             offset,
-            use_path: self.use_path_at(token_index),
+            use_path: self
+                .use_path_at(token_index)
+                .or_else(|| self.qualified_path_at(token_index)),
         })
     }
 
@@ -337,6 +339,46 @@ impl IndexedDocument {
             }
         }
         None
+    }
+
+    fn qualified_path_at(&self, token_index: usize) -> Option<Vec<String>> {
+        if !matches!(self.tokens.get(token_index)?.token, Token::Ident(_)) {
+            return None;
+        }
+
+        let mut start = token_index;
+        while start >= 2
+            && self.tokens[start - 1].token == Token::PathSep
+            && matches!(self.tokens[start - 2].token, Token::Ident(_))
+        {
+            start -= 2;
+        }
+
+        let mut end = token_index;
+        while self
+            .tokens
+            .get(end + 1)
+            .is_some_and(|token| token.token == Token::PathSep)
+            && self
+                .tokens
+                .get(end + 2)
+                .is_some_and(|token| matches!(token.token, Token::Ident(_)))
+        {
+            end += 2;
+        }
+
+        if start == end {
+            return None;
+        }
+
+        let parts = (start..=token_index)
+            .step_by(2)
+            .filter_map(|idx| match &self.tokens[idx].token {
+                Token::Ident(part) => Some(part.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        (parts.len() > 1).then_some(parts)
     }
 
     fn import_for_name(&self, name: &str) -> Option<Vec<String>> {
@@ -516,6 +558,24 @@ impl IndexedDocument {
                     });
                 }
             }
+            TopLevel::TLNamespace(name, _, _) => {
+                if let Some(span) = self.find_decl_name_span(start, end, name) {
+                    self.push_symbol(NavSymbol {
+                        name: (*name).to_string(),
+                        detail: "namespace".to_string(),
+                        constraint: None,
+                        signature: None,
+                        kind: SymbolKind::Module,
+                        uri: self.uri.clone(),
+                        range: self.span_to_range(span.clone()),
+                        byte_start: span.start,
+                        module_key: self.module_key.clone(),
+                        imported_path: Some(vec![(*name).to_string()]),
+                        doc: doc_comment_before(&self.text, start),
+                        scope: None,
+                    });
+                }
+            }
             TopLevel::TLCheck(_, _, _) | TopLevel::TLEval(_, _) | TopLevel::TLExpr(_, _) => {}
             TopLevel::TLPublic(_) => unreachable!(),
         }
@@ -527,20 +587,20 @@ impl IndexedDocument {
             other => other,
         };
         match inner {
-            Term::UnionDef(union_name, variants) => {
+            Term::EnumDef(enum_name, variants) => {
                 for (variant_name, fields) in *variants {
-                    let signature = constructor_signature(union_name, fields);
-                    if let Some(span) = self.find_union_variant_span(start, end, variant_name) {
+                    let signature = constructor_signature(enum_name, fields);
+                    if let Some(span) = self.find_enum_variant_span(start, end, variant_name) {
                         self.push_symbol(NavSymbol {
                             name: (*variant_name).to_string(),
                             detail: signature
                                 .as_ref()
                                 .map(|sig| sig.whole.display.clone())
-                                .unwrap_or_else(|| union_name.to_string()),
+                                .unwrap_or_else(|| enum_name.to_string()),
                             constraint: signature
                                 .as_ref()
                                 .map(|sig| sig.whole.clone())
-                                .or_else(|| Some(Constraint::named(union_name))),
+                                .or_else(|| Some(Constraint::named(enum_name))),
                             signature,
                             kind: SymbolKind::Constructor,
                             uri: self.uri.clone(),
@@ -784,7 +844,7 @@ impl IndexedDocument {
             })
     }
 
-    fn find_union_variant_span(
+    fn find_enum_variant_span(
         &self,
         start: usize,
         end: usize,

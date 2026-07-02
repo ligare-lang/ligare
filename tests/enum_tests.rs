@@ -1,8 +1,9 @@
-//! Integration tests for union types and pattern matching.
+//! Integration tests for enum types and pattern matching.
 //! These tests exercise the full parse → check → eval pipeline.
 
 use bumpalo::Bump;
 use ligare::backend::c::{emit_c, emit_eval_c};
+use ligare::backend::compile::{CompileError, compile_and_run_c};
 use ligare::compiler::Compiler;
 use ligare::core::pool::TermArena;
 
@@ -13,26 +14,26 @@ fn setup() -> (&'static Bump, TermArena<'static>) {
 }
 
 #[test]
-fn union_definition_and_variant_check() {
+fn enum_definition_and_variant_check() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     assert!(
         compiler
             .process_file_str(
-                "def Color : prop := union\n  | Red\n  | Green\n  | Blue\n#check Red : Color\n#check Green : Color\n"
+                "def Color : prop := enum\n  | Red\n  | Green\n  | Blue\n#check Red : Color\n#check Green : Color\n"
             )
             .is_ok()
     );
 }
 
 #[test]
-fn union_with_payload_check() {
+fn enum_with_payload_check() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     assert!(
         compiler
             .process_file_str(
-                "def Option : prop := union\n  | None\n  | Some of (val : int)\n#check Some 5 : Option\n#check None : Option\n"
+                "def Option : prop := enum\n  | None\n  | Some of (val : int)\n#check Some 5 : Option\n#check None : Option\n"
             )
             .is_ok()
     );
@@ -45,7 +46,7 @@ fn match_reduces_on_variant() {
     assert!(
         compiler
             .process_file_str(
-                "def Color : prop := union\n  | Red\n  | Green\n  | Blue\n#check (match Red with | Red => 1 | Green => 2 | Blue => 3) : int\n"
+                "def Color : prop := enum\n  | Red\n  | Green\n  | Blue\n#check (match Red with | Red => 1 | Green => 2 | Blue => 3) : int\n"
             )
             .is_ok()
     );
@@ -56,7 +57,7 @@ fn match_uses_variant_names_not_branch_order() {
     let (bump, arena) = setup();
     let mut c = Compiler::new(bump, &arena);
     c.process_file_str(
-        "def Color : prop := union\n  | Red\n  | Green\n#check match Red with | Green => false | Red => true : true\n",
+        "def Color : prop := enum\n  | Red\n  | Green\n#check match Red with | Green => false | Red => true : true\n",
     )
     .unwrap_or_else(|e| panic!("{e}"));
 }
@@ -68,7 +69,7 @@ fn eval_match() {
     assert!(
         compiler
             .process_file_str(
-                "def Color : prop := union\n  | Red\n  | Green\n  | Blue\n#eval match Red with | Red => 42 | Green => 0 | Blue => 0\n"
+                "def Color : prop := enum\n  | Red\n  | Green\n  | Blue\n#eval match Red with | Red => 42 | Green => 0 | Blue => 0\n"
             )
             .is_ok()
     );
@@ -81,7 +82,7 @@ fn match_with_binding_eval() {
     assert!(
         compiler
             .process_file_str(
-                "def Option : prop := union\n  | None\n  | Some of (val : int)\n#eval match Some 5 with | None => -1 | Some x => x\n"
+                "def Option : prop := enum\n  | None\n  | Some of (val : int)\n#eval match Some 5 with | None => -1 | Some x => x\n"
             )
             .is_ok()
     );
@@ -94,7 +95,7 @@ fn match_none_eval() {
     assert!(
         compiler
             .process_file_str(
-                "def Option : prop := union\n  | None\n  | Some of (val : int)\n#eval match None with | None => 0 | Some x => 1\n"
+                "def Option : prop := enum\n  | None\n  | Some of (val : int)\n#eval match None with | None => 0 | Some x => 1\n"
             )
             .is_ok()
     );
@@ -106,19 +107,19 @@ fn wrong_variant_type_fails() {
     let mut compiler = Compiler::new(bump, &arena);
     assert!(
         compiler
-            .process_file_str("def Color : prop := union\n  | Red\n  | Green\n#check Red : int\n")
+            .process_file_str("def Color : prop := enum\n  | Red\n  | Green\n#check Red : int\n")
             .is_err()
     );
 }
 
 #[test]
-fn wrong_union_member_fails() {
+fn wrong_enum_member_fails() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     assert!(
         compiler
             .process_file_str(
-                "def Color : prop := union\n  | Red\n  | Green\ndef Shape : prop := union\n  | Circle\n  | Square\n#check Circle : Color\n"
+                "def Color : prop := enum\n  | Red\n  | Green\ndef Shape : prop := enum\n  | Circle\n  | Square\n#check Circle : Color\n"
             )
             .is_err()
     );
@@ -127,50 +128,58 @@ fn wrong_union_member_fails() {
 // ── C codegen ──
 
 #[test]
-fn codegen_recursive_union_typedef() {
+fn codegen_recursive_enum_typedef() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     compiler
         .collect_file_str(
-            "def Nat : prop := union\n  | Zero\n  | Succ of (pred : Nat)\ndef zero : Nat := Zero\n",
+            "def Nat : prop := enum\n  | Zero\n  | Succ of (pred : Nat)\ndef zero : Nat := Zero\n",
         )
         .unwrap();
     let c = emit_c(
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
-    assert!(
-        c.contains("struct Nat* pred;"),
-        "typedef missing struct Nat*:\n{c}"
-    );
+    assert!(c.contains("Nat* pred;"), "typedef missing Nat*:\n{c}");
     assert!(c.contains(".Zero = {0}"), "empty variant init wrong:\n{c}");
 }
 
 #[test]
-fn codegen_recursive_variant_address_of() {
+fn codegen_recursive_variant_heap_allocates_payload() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     compiler
         .collect_file_str(
-            "def Nat : prop := union\n  | Zero\n  | Succ of (pred : Nat)\ndef one : Nat := Succ Zero\n",
+            "def Nat : prop := enum\n  | Zero\n  | Succ of (pred : Nat)\ndef one : Nat := Succ Zero\n",
         )
         .unwrap();
     let c = emit_c(
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
-    assert!(c.contains("&((Nat)"), "recursive field missing &:\n{c}");
+    assert!(
+        c.contains(".pred = ({ Nat* _ligare_heap"),
+        "recursive field should be heap-backed:\n{c}"
+    );
+    assert!(
+        c.contains("ligare_default_allocate(sizeof(Nat))"),
+        "recursive field should use allocator:\n{c}"
+    );
+    assert!(
+        !c.contains("&((Nat)"),
+        "recursive field used address-of:\n{c}"
+    );
 }
 
-// ── Additional match and union tests (test coverage) ──
+// ── Additional match and enum tests (test coverage) ──
 
 #[test]
 fn match_nested_variants() {
@@ -179,7 +188,7 @@ fn match_nested_variants() {
     assert!(
         compiler
             .process_file_str(
-                "def Tree : prop := union\n  | Leaf\n  | Node of (left : Tree) (val : int) (right : Tree)\ndef t : Tree := Node Leaf 1 Leaf\n#check t : Tree\n"
+                "def Tree : prop := enum\n  | Leaf\n  | Node of (left : Tree) (val : int) (right : Tree)\ndef t : Tree := Node Leaf 1 Leaf\n#check t : Tree\n"
             )
             .is_ok()
     );
@@ -192,7 +201,7 @@ fn match_with_bound_var_eval() {
     assert!(
         compiler
             .process_file_str(
-                "def Option : prop := union\n  | None\n  | Some of (val : int)\n#eval match Some 42 with | None => -1 | Some x => x + 1\n"
+                "def Option : prop := enum\n  | None\n  | Some of (val : int)\n#eval match Some 42 with | None => -1 | Some x => x + 1\n"
             )
             .is_ok()
     );
@@ -205,46 +214,79 @@ fn match_all_variants_covered() {
     assert!(
         compiler
             .process_file_str(
-                "def Color : prop := union\n  | Red\n  | Green\n  | Blue\ndef f (c : Color) : int := match c with | Red => 1 | Green => 2 | Blue => 3\n"
+                "def Color : prop := enum\n  | Red\n  | Green\n  | Blue\ndef f (c : Color) : int := match c with | Red => 1 | Green => 2 | Blue => 3\n"
             )
             .is_ok()
     );
 }
 
 #[test]
-fn match_single_variant_union() {
+fn match_single_variant_enum() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     assert!(
         compiler
             .process_file_str(
-                "def Singleton : prop := union\n  | Only\n#eval match Only with | Only => 99\n"
+                "def Singleton : prop := enum\n  | Only\n#eval match Only with | Only => 99\n"
             )
             .is_ok()
     );
 }
 
 #[test]
-fn recursive_union_match() {
+fn recursive_enum_match() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     assert!(
         compiler
             .process_file_str(
-                "def Nat : prop := union\n  | Zero\n  | Succ of (pred : Nat)\ndef depth (n : Nat) : int := match n with | Zero => 0 | Succ p => 1 + depth p\n"
+                "def Nat : prop := enum\n  | Zero\n  | Succ of (pred : Nat)\ndef depth (n : Nat) : int := match n with | Zero => 0 | Succ p => 1 + depth p\n"
             )
             .is_ok()
     );
 }
 
 #[test]
-fn union_with_mixed_payload_types() {
+fn codegen_recursive_enum_match_compiles_and_runs() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    compiler
+        .collect_file_str(
+            "def Nat : prop := enum\n  | Zero\n  | Succ of (pred : Nat)\n\
+             def depth (n : Nat) : int := match n with | Zero => 0 | Succ p => 1 + depth p\n\
+             #eval depth (Succ (Succ Zero))\n",
+        )
+        .unwrap();
+    let eval_c = emit_eval_c(
+        compiler.tops(),
+        compiler.raw_defs(),
+        compiler.fun_sigs(),
+        &compiler.enum_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"))
+    .expect("program has #eval output");
+    assert!(
+        eval_c.contains("Nat p = *("),
+        "recursive match bind should dereference heap payload:\n{eval_c}"
+    );
+    match compile_and_run_c(&eval_c) {
+        Ok(stdout) => assert_eq!(stdout, "2\n"),
+        Err(CompileError::CompilerNotFound) => {
+            eprintln!("skipping recursive enum native run: C compiler not found")
+        }
+        Err(err) => panic!("recursive enum native run failed: {err}\n{eval_c}"),
+    }
+}
+
+#[test]
+fn enum_with_mixed_payload_types() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     assert!(
         compiler
             .process_file_str(
-                "def Value : prop := union\n  | IntVal of (n : int)\n  | StrVal of (s : str)\n  | BoolVal of (b : bool)\n#check IntVal 5 : Value\n"
+                "def Value : prop := enum\n  | IntVal of (n : int)\n  | StrVal of (s : str)\n  | BoolVal of (b : bool)\n#check IntVal 5 : Value\n"
             )
             .is_ok()
     );
@@ -257,7 +299,7 @@ fn match_exhaustiveness_not_required_at_typecheck() {
     assert!(
         compiler
             .process_file_str(
-                "def Color : prop := union\n  | Red\n  | Green\n  | Blue\ndef f (c : Color) : int := match c with | Red => 1 | Green => 2\n"
+                "def Color : prop := enum\n  | Red\n  | Green\n  | Blue\ndef f (c : Color) : int := match c with | Red => 1 | Green => 2\n"
             )
             .is_ok()
     );
@@ -271,14 +313,14 @@ fn codegen_match_with_binding_emits_decl() {
     let mut compiler = Compiler::new(bump, &arena);
     compiler
         .collect_file_str(
-            "def Option : prop := union\n  | None\n  | Some of (val : int)\n#eval match Some 42 with | None => -1 | Some x => x\n",
+            "def Option : prop := enum\n  | None\n  | Some of (val : int)\n#eval match Some 42 with | None => -1 | Some x => x\n",
         )
         .unwrap();
     let c = emit_eval_c(
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"))
@@ -296,14 +338,14 @@ fn codegen_multiple_matches_unique_vars() {
     let mut compiler = Compiler::new(bump, &arena);
     compiler
         .collect_file_str(
-            "def Color : prop := union\n  | Red\n  | Green\n#eval match Red with | Red => 1 | Green => 2\n#eval match Green with | Red => 10 | Green => 20\n",
+            "def Color : prop := enum\n  | Red\n  | Green\n#eval match Red with | Red => 1 | Green => 2\n#eval match Green with | Red => 10 | Green => 20\n",
         )
         .unwrap();
     let c = emit_eval_c(
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"))
@@ -315,43 +357,43 @@ fn codegen_multiple_matches_unique_vars() {
 }
 
 #[test]
-fn codegen_function_returning_union() {
+fn codegen_function_returning_enum() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     compiler
         .collect_file_str(
-            "def Option : prop := union\n  | None\n  | Some of (val : int)\ndef some_val : Option := Some 42\n#eval some_val\n",
+            "def Option : prop := enum\n  | None\n  | Some of (val : int)\ndef some_val : Option := Some 42\n#eval some_val\n",
         )
         .unwrap();
     let c = emit_c(
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
     assert!(
         c.contains("const Option some_val"),
-        "missing union const:\n{c}"
+        "missing enum const:\n{c}"
     );
     assert!(c.contains("Some"), "missing variant in const:\n{c}");
 }
 
 #[test]
-fn codegen_tagged_union_typedef() {
+fn codegen_tagged_enum_typedef() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     compiler
         .collect_file_str(
-            "def Shape : prop := union\n  | Circle\n  | Square\n  | Triangle\ndef s : Shape := Square\ndef c : Shape := Circle\n#eval s\n#eval c\n",
+            "def Shape : prop := enum\n  | Circle\n  | Square\n  | Triangle\ndef s : Shape := Square\ndef c : Shape := Circle\n#eval s\n#eval c\n",
         )
         .unwrap();
     let c = emit_c(
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -369,13 +411,13 @@ fn codegen_empty_main_with_no_output() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     compiler
-        .collect_file_str("def Color : prop := union\n  | Red\n  | Green\ndef x : Color := Red\n")
+        .collect_file_str("def Color : prop := enum\n  | Red\n  | Green\ndef x : Color := Red\n")
         .unwrap();
     let c = emit_c(
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));

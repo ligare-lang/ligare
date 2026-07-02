@@ -238,7 +238,7 @@ impl<'arena, 'bump> Desugarer<'arena, 'bump> {
                 let pred2 = self.try_desugar_with_env(pred_with_param, env, resolver, effect)?;
                 self.arena.refine(name, p2, pred2)
             }
-            Term::UnionDef(name, variants) => {
+            Term::EnumDef(name, variants) => {
                 let variants2: Vec<_> = variants
                     .iter()
                     .map(|(variant_name, fields)| {
@@ -255,7 +255,7 @@ impl<'arena, 'bump> Desugarer<'arena, 'bump> {
                     })
                     .collect::<Result<Vec<_>, String>>()?;
                 self.arena
-                    .union_def(name, self.arena.alloc_slice(&variants2))
+                    .enum_def(name, self.arena.alloc_slice(&variants2))
             }
             Term::StructDef(name, fields) => {
                 let fields2 = fields
@@ -341,6 +341,10 @@ impl<'arena, 'bump> Desugarer<'arena, 'bump> {
             Term::StructProj(subject, idx) => self.arena.struct_proj(
                 self.try_desugar_with_env(subject, env, resolver, effect)?,
                 *idx,
+            ),
+            Term::MethodCall(receiver, method) => self.arena.method_call(
+                self.try_desugar_with_env(receiver, env, resolver, effect)?,
+                method,
             ),
             Term::Do(stmts) => {
                 let effect = effect.ok_or_else(|| {
@@ -563,7 +567,7 @@ impl<'bump> SubstitutionContext<'bump> {
                 self.arena
                     .refine(n, recurse(par, cutoff), recurse(p, cutoff))
             }
-            Term::UnionDef(name, variants) => {
+            Term::EnumDef(name, variants) => {
                 let mapped: Vec<_> = variants
                     .iter()
                     .map(|(vname, fields)| {
@@ -574,7 +578,7 @@ impl<'bump> SubstitutionContext<'bump> {
                         (*vname, self.arena.alloc_slice(&mf))
                     })
                     .collect();
-                self.arena.union_def(name, self.arena.alloc_slice(&mapped))
+                self.arena.enum_def(name, self.arena.alloc_slice(&mapped))
             }
             Term::Variant(name, idx, payloads) => {
                 let mapped: Vec<_> = payloads.iter().map(|p| recurse(p, cutoff)).collect();
@@ -614,6 +618,9 @@ impl<'bump> SubstitutionContext<'bump> {
             }
             Term::StructProj(subject, idx) => {
                 self.arena.struct_proj(recurse(subject, cutoff), *idx)
+            }
+            Term::MethodCall(receiver, method) => {
+                self.arena.method_call(recurse(receiver, cutoff), method)
             }
             Term::Unsafe(inner) => self.arena.unsafe_(recurse(inner, cutoff)),
             Term::Pure(inner) => self.arena.pure(recurse(inner, cutoff)),
@@ -752,6 +759,9 @@ fn shift_term<'bump>(
         ),
         Term::Unsafe(inner) => arena.unsafe_(shift_term(arena, d, cutoff, inner)),
         Term::Pure(inner) => arena.pure(shift_term(arena, d, cutoff, inner)),
+        Term::MethodCall(receiver, method) => {
+            arena.method_call(shift_term(arena, d, cutoff, receiver), method)
+        }
         // All other nodes: return unchanged (no Var children that need shifting
         // beyond what's already covered by recursive cases, or leaf nodes).
         _ => t,

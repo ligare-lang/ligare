@@ -1,4 +1,4 @@
-def Color : prop := union
+def Color : prop := enum
   | Red
   | Green
   | Blue

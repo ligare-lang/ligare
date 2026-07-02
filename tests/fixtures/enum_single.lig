@@ -1,0 +1,5 @@
+-- just one enum
+def Color : prop := enum
+  | Red
+  | Green
+  | Blue

@@ -1,7 +1,7 @@
 //! Tests for the C code generation backend.
 //!
 //! Tests cover literals, constants, functions with confirmed signatures,
-//! function calls, let bindings, and union/struct codegen.
+//! function calls, let bindings, and enum/struct codegen.
 
 use crate::backend::c::{CEmitter, CodeGenerator};
 use crate::backend::ir::{CType, FunSig};
@@ -58,12 +58,12 @@ fn emit_with_types(
     tops: &[TopLevel<'_>],
     raw_defs: &[TopLevel<'_>],
     fun_sigs: &[(&str, FunSig)],
-    union_types: &[(&str, &Term<'_>)],
+    enum_types: &[(&str, &Term<'_>)],
     struct_types: &[(&str, &Term<'_>)],
 ) -> String {
-    let emitter = CEmitter::new(struct_types, union_types, fun_sigs).unwrap();
+    let emitter = CEmitter::new(struct_types, enum_types, fun_sigs).unwrap();
     emitter
-        .generate(tops, raw_defs, struct_types, union_types)
+        .generate(tops, raw_defs, struct_types, enum_types)
         .unwrap()
 }
 
@@ -71,12 +71,12 @@ fn emit_eval_err_with_types(
     tops: &[TopLevel<'_>],
     raw_defs: &[TopLevel<'_>],
     fun_sigs: &[(&str, FunSig)],
-    union_types: &[(&str, &Term<'_>)],
+    enum_types: &[(&str, &Term<'_>)],
     struct_types: &[(&str, &Term<'_>)],
 ) -> String {
-    let emitter = CEmitter::new(struct_types, union_types, fun_sigs).unwrap();
+    let emitter = CEmitter::new(struct_types, enum_types, fun_sigs).unwrap();
     emitter
-        .generate_eval(tops, raw_defs, struct_types, union_types)
+        .generate_eval(tops, raw_defs, struct_types, enum_types)
         .unwrap_err()
         .message
 }
@@ -350,11 +350,11 @@ fn emit_multiple_defs_and_outputs() {
     assert!(c.contains("%s"));
 }
 
-// ── Union codegen ──
+// ── Enum codegen ──
 
-/// Build a union typedef with empty and payload variants.
+/// Build an enum typedef with empty and payload variants.
 #[test]
-fn union_typedef_with_recursive_field() {
+fn enum_typedef_with_recursive_field() {
     let (_b, arena) = setup();
     let nat_name = arena.alloc_str("Nat");
     let zero_variant: (
@@ -371,8 +371,8 @@ fn union_typedef_with_recursive_field() {
         crate::core::syntax::Name,
         &[(crate::core::syntax::Name, &crate::core::syntax::Term)],
     )] = arena.alloc_slice(&[zero_variant, succ_variant]);
-    let nat_udef = arena.union_def(nat_name, variants);
-    let union_types: &[(&str, &crate::core::syntax::Term)] =
+    let nat_udef = arena.enum_def(nat_name, variants);
+    let enum_types: &[(&str, &crate::core::syntax::Term)] =
         arena.bump().alloc([(nat_name, nat_udef)]);
 
     let top_name = arena.alloc_str("zero");
@@ -385,24 +385,21 @@ fn union_typedef_with_recursive_field() {
         0..0,
     )];
 
-    let c = emit_with_types(tops, &[], &[], union_types, &[]);
-    // Typedef uses struct pointer for recursive field
-    assert!(
-        c.contains("struct Nat* pred;"),
-        "expected struct Nat* pred; in:\n{c}"
-    );
+    let c = emit_with_types(tops, &[], &[], enum_types, &[]);
+    // Typedef uses a pointer for recursive fields.
+    assert!(c.contains("Nat* pred;"), "expected Nat* pred; in:\n{c}");
     // Empty variant uses proper initializer
     assert!(c.contains(".Zero = {0}"), "expected .Zero = {{0}} in:\n{c}");
-    // Constant declaration uses union type name
+    // Constant declaration uses enum type name
     assert!(
         c.contains("const Nat zero ="),
         "expected const Nat zero in:\n{c}"
     );
 }
 
-/// Recursive variant construction emits address-of.
+/// Recursive variant construction heap-copies the payload.
 #[test]
-fn union_recursive_variant_emits_address_of() {
+fn enum_recursive_variant_heap_allocates_payload() {
     let (_b, arena) = setup();
     let nat_name = arena.alloc_str("Nat");
     let zero_variant: (
@@ -419,8 +416,8 @@ fn union_recursive_variant_emits_address_of() {
         crate::core::syntax::Name,
         &[(crate::core::syntax::Name, &crate::core::syntax::Term)],
     )] = arena.alloc_slice(&[zero_variant, succ_variant]);
-    let nat_udef = arena.union_def(nat_name, variants);
-    let union_types: &[(&str, &crate::core::syntax::Term)] =
+    let nat_udef = arena.enum_def(nat_name, variants);
+    let enum_types: &[(&str, &crate::core::syntax::Term)] =
         arena.bump().alloc([(nat_name, nat_udef)]);
 
     // Build: Succ(Zero)
@@ -434,26 +431,32 @@ fn union_recursive_variant_emits_address_of() {
         0..0,
     )];
 
-    let c = emit_with_types(tops, &[], &[], union_types, &[]);
-    // Recursive reference must emit & (address-of) for the pointer field
+    let c = emit_with_types(tops, &[], &[], enum_types, &[]);
+    // Recursive fields copy the payload to heap storage instead of taking the
+    // address of a temporary value.
     assert!(
-        c.contains("&((Nat)"),
-        "expected &((Nat){{...}}) for recursive field in:\n{c}"
+        c.contains(".pred = ({ Nat* _ligare_heap"),
+        "expected heap-backed recursive field in:\n{c}"
     );
+    assert!(
+        c.contains("ligare_default_allocate(sizeof(Nat))"),
+        "expected allocator call for recursive field in:\n{c}"
+    );
+    assert!(!c.contains("&((Nat)"), "unexpected address-of in:\n{c}");
 }
 
 #[test]
-fn unknown_union_variant_errors() {
+fn unknown_enum_variant_errors() {
     let (_b, arena) = setup();
     let missing_name = arena.alloc_str("Missing");
     let term = arena.variant(missing_name, 0, arena.alloc_slice(&[]));
     let tops = &[TopLevel::TLEval(term, 0..0)];
     let err = emit_eval_err_with_types(tops, tops, &[], &[], &[]);
-    assert!(err.contains("unknown union `Missing`"), "{err}");
+    assert!(err.contains("unknown enum `Missing`"), "{err}");
 }
 
 #[test]
-fn union_variant_payload_count_errors() {
+fn enum_variant_payload_count_errors() {
     let (_b, arena) = setup();
     let nat_name = arena.alloc_str("Nat");
     let zero_variant: (
@@ -470,13 +473,13 @@ fn union_variant_payload_count_errors() {
         crate::core::syntax::Name,
         &[(crate::core::syntax::Name, &crate::core::syntax::Term)],
     )] = arena.alloc_slice(&[zero_variant, succ_variant]);
-    let nat_udef = arena.union_def(nat_name, variants);
-    let union_types: &[(&str, &crate::core::syntax::Term)] =
+    let nat_udef = arena.enum_def(nat_name, variants);
+    let enum_types: &[(&str, &crate::core::syntax::Term)] =
         arena.bump().alloc([(nat_name, nat_udef)]);
 
     let malformed = arena.variant(nat_name, 1, arena.alloc_slice(&[]));
     let tops = &[TopLevel::TLEval(malformed, 0..0)];
-    let err = emit_eval_err_with_types(tops, tops, &[], union_types, &[]);
+    let err = emit_eval_err_with_types(tops, tops, &[], enum_types, &[]);
     assert!(
         err.contains("Variant `Nat.Succ` expects 1 payload(s), got 0"),
         "{err}"

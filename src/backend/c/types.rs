@@ -11,16 +11,16 @@ use std::collections::{HashMap, HashSet};
 
 // ── Type info structs ──
 
-/// Info about a union variant for C codegen.
+/// Info about an enum variant for C codegen.
 #[derive(Debug, Clone)]
 pub struct VariantInfo {
     pub name: String,
     pub fields: Vec<(String, CType)>,
 }
 
-/// Union type info for C codegen.
+/// Enum type info for C codegen.
 #[derive(Debug, Clone)]
-pub struct UnionInfo {
+pub struct EnumInfo {
     pub variants: Vec<VariantInfo>,
 }
 
@@ -51,12 +51,12 @@ pub trait TypeMapper {
 /// Owns the type name sets and the built maps; all type-related operations
 /// are methods on this struct (OOP encapsulation).
 pub struct TypeAnalyzer {
-    /// Set of union type names.
-    union_names: HashSet<String>,
+    /// Set of enum type names.
+    enum_names: HashSet<String>,
     /// Set of struct type names.
     struct_names: HashSet<String>,
-    /// Union type info keyed by name.
-    union_map: HashMap<String, UnionInfo>,
+    /// Enum type info keyed by name.
+    enum_map: HashMap<String, EnumInfo>,
     /// Struct type info keyed by name.
     struct_map: HashMap<String, StructInfo>,
 }
@@ -65,17 +65,17 @@ impl TypeAnalyzer {
     /// Build a type analyzer from raw type definitions.
     pub fn new(
         struct_types: &[(&str, &Term<'_>)],
-        union_types: &[(&str, &Term<'_>)],
+        enum_types: &[(&str, &Term<'_>)],
     ) -> Result<Self, Diagnostic> {
-        let union_names: HashSet<String> = union_types.iter().map(|(n, _)| n.to_string()).collect();
+        let enum_names: HashSet<String> = enum_types.iter().map(|(n, _)| n.to_string()).collect();
         let struct_names: HashSet<String> =
             struct_types.iter().map(|(n, _)| n.to_string()).collect();
-        let union_map = Self::build_union_map(union_types, &union_names, &struct_names)?;
-        let struct_map = Self::build_struct_map(struct_types, &union_names, &struct_names)?;
+        let enum_map = Self::build_enum_map(enum_types, &enum_names, &struct_names)?;
+        let struct_map = Self::build_struct_map(struct_types, &enum_names, &struct_names)?;
         Ok(Self {
-            union_names,
+            enum_names,
             struct_names,
-            union_map,
+            enum_map,
             struct_map,
         })
     }
@@ -84,7 +84,7 @@ impl TypeAnalyzer {
 
     fn build_struct_map(
         struct_types: &[(&str, &Term<'_>)],
-        union_names: &HashSet<String>,
+        enum_names: &HashSet<String>,
         struct_names: &HashSet<String>,
     ) -> Result<HashMap<String, StructInfo>, Diagnostic> {
         let mut map = HashMap::new();
@@ -93,7 +93,7 @@ impl TypeAnalyzer {
                 let fs: Vec<(String, CType)> = fields
                     .iter()
                     .map(|(fnm, fc)| {
-                        Self::constraint_to_ctype_static(fc, union_names, struct_names)
+                        Self::constraint_to_ctype_static(fc, enum_names, struct_names)
                             .map(|ct| (fnm.to_string(), ct))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
@@ -103,21 +103,27 @@ impl TypeAnalyzer {
         Ok(map)
     }
 
-    fn build_union_map(
-        union_types: &[(&str, &Term<'_>)],
-        union_names: &HashSet<String>,
+    fn build_enum_map(
+        enum_types: &[(&str, &Term<'_>)],
+        enum_names: &HashSet<String>,
         struct_names: &HashSet<String>,
-    ) -> Result<HashMap<String, UnionInfo>, Diagnostic> {
+    ) -> Result<HashMap<String, EnumInfo>, Diagnostic> {
         let mut map = HashMap::new();
-        for (name, udef) in union_types {
-            if let Term::UnionDef(_, variants) = udef {
+        for (name, udef) in enum_types {
+            if let Term::EnumDef(_, variants) = udef {
                 let mut vis = Vec::new();
                 for (vname, fields) in variants.iter() {
                     let fs: Vec<(String, CType)> = fields
                         .iter()
-                        .map(|(fnm, fc)| {
-                            Self::constraint_to_ctype_static(fc, union_names, struct_names)
-                                .map(|ct| (fnm.to_string(), ct))
+                        .map(|(fnm, fc)| -> Result<(String, CType), Diagnostic> {
+                            let cty =
+                                Self::constraint_to_ctype_static(fc, enum_names, struct_names)?;
+                            let cty = if matches!(&cty, CType::Enum(un) if un == *name) {
+                                CType::Ptr(Box::new(cty))
+                            } else {
+                                cty
+                            };
+                            Ok((fnm.to_string(), cty))
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     vis.push(VariantInfo {
@@ -125,7 +131,7 @@ impl TypeAnalyzer {
                         fields: fs,
                     });
                 }
-                map.insert(name.to_string(), UnionInfo { variants: vis });
+                map.insert(name.to_string(), EnumInfo { variants: vis });
             }
         }
         Ok(map)
@@ -133,12 +139,12 @@ impl TypeAnalyzer {
 
     // ── Type dependency analysis ──
 
-    /// Extract type dependencies from a type definition (struct or union).
+    /// Extract type dependencies from a type definition (struct or enum).
     pub fn type_dependencies(&self, def: &Term<'_>) -> HashSet<String> {
         let mut deps = HashSet::new();
         let fields: Option<&[(Name<'_>, &Term<'_>)]> = match def {
             Term::StructDef(_, f) => Some(*f),
-            Term::UnionDef(_, variants) => {
+            Term::EnumDef(_, variants) => {
                 let all: Vec<_> = variants
                     .iter()
                     .flat_map(|(_, fields)| fields.iter().map(|(n, t)| (*n, *t)))
@@ -166,7 +172,7 @@ impl TypeAnalyzer {
         match t {
             Term::Builtin(name) | Term::Global(name) => {
                 let s = name.to_string();
-                if self.union_names.contains(&s) || self.struct_names.contains(&s) {
+                if self.enum_names.contains(&s) || self.struct_names.contains(&s) {
                     deps.insert(s);
                 }
             }
@@ -184,29 +190,31 @@ impl TypeAnalyzer {
 
     // ── Typedef emission ──
 
-    /// Emit a C typedef for a union type (tagged union).
-    pub fn emit_union_typedef(&self, name: &str, udef: &Term<'_>) -> Result<String, Diagnostic> {
-        let Term::UnionDef(_, variants) = udef else {
+    /// Emit a C typedef for an enum type (tagged enum).
+    pub fn emit_enum_typedef(&self, name: &str, udef: &Term<'_>) -> Result<String, Diagnostic> {
+        let Term::EnumDef(_, variants) = udef else {
             return Ok(String::new());
         };
         let mut out = format!("// {name}\n");
         out.push_str(&format!("typedef struct {name} {{\n"));
         out.push_str("    int tag;\n");
         out.push_str("    union {\n");
-        for (vname, fields) in variants.iter() {
+        let info = self
+            .enum_map
+            .get(name)
+            .ok_or_else(|| Diagnostic::new(format!("Cannot emit unknown enum typedef `{name}`")))?;
+        for (variant_idx, (vname, fields)) in variants.iter().enumerate() {
             if fields.is_empty() {
                 out.push_str(&format!("        struct {{ char _empty; }} {vname};\n"));
             } else {
+                let vi = info.variants.get(variant_idx);
                 out.push_str("        struct { ");
-                for (fname, fty) in fields.iter() {
-                    let is_self_ref =
-                        matches!(fty, Term::Builtin(tn) | Term::Global(tn) if *tn == name);
-                    if is_self_ref {
-                        out.push_str(&format!("struct {}* {}; ", name, fname));
-                    } else {
-                        let cty = self.constraint_to_ctype(fty)?;
-                        out.push_str(&format!("{} {}; ", cty.c_name(), fname));
-                    }
+                for (field_idx, (fname, fty)) in fields.iter().enumerate() {
+                    let cty = vi
+                        .and_then(|variant| variant.fields.get(field_idx).map(|(_, cty)| cty))
+                        .cloned()
+                        .unwrap_or(self.constraint_to_ctype(fty)?);
+                    out.push_str(&format!("{} {}; ", cty.c_name(), fname));
                 }
                 out.push_str(&format!("}} {vname};\n"));
             }
@@ -231,7 +239,7 @@ impl TypeAnalyzer {
         Ok(out)
     }
 
-    /// Emit a struct typedef using pointers for union-typed fields (for cyclic deps).
+    /// Emit a struct typedef using pointers for enum-typed fields (for cyclic deps).
     pub fn emit_struct_typedef_ptr(
         &self,
         name: &str,
@@ -244,7 +252,7 @@ impl TypeAnalyzer {
         out.push_str(&format!("typedef struct {name} {{\n"));
         for (fname, fty) in fields.iter() {
             let cty = self.constraint_to_ctype(fty)?;
-            if matches!(cty, CType::Union(_)) {
+            if matches!(cty, CType::Enum(_)) {
                 out.push_str(&format!("    {}* {};\n", cty.c_name(), fname));
             } else {
                 out.push_str(&format!("    {} {};\n", cty.c_name(), fname));
@@ -259,13 +267,13 @@ impl TypeAnalyzer {
         &self,
         out: &mut String,
         struct_types: &[(&str, &Term<'_>)],
-        union_types: &[(&str, &Term<'_>)],
+        enum_types: &[(&str, &Term<'_>)],
     ) -> Result<(), Diagnostic> {
         // Forward declarations
         for (name, _) in struct_types {
             out.push_str(&format!("typedef struct {name} {name};\n"));
         }
-        for (name, _) in union_types {
+        for (name, _) in enum_types {
             out.push_str(&format!("typedef struct {name} {name};\n"));
         }
         out.push('\n');
@@ -276,7 +284,7 @@ impl TypeAnalyzer {
         for (n, s) in struct_types {
             remaining.push((n, *s, true));
         }
-        for (n, u) in union_types {
+        for (n, u) in enum_types {
             remaining.push((n, *u, false));
         }
 
@@ -291,7 +299,7 @@ impl TypeAnalyzer {
                     if is_struct {
                         out.push_str(&self.emit_struct_typedef(name, def)?);
                     } else {
-                        out.push_str(&self.emit_union_typedef(name, def)?);
+                        out.push_str(&self.emit_enum_typedef(name, def)?);
                     }
                     out.push('\n');
                     emitted.insert(name.to_string());
@@ -309,7 +317,7 @@ impl TypeAnalyzer {
                 if is_struct {
                     out.push_str(&self.emit_struct_typedef_ptr(name, def)?);
                 } else {
-                    out.push_str(&self.emit_union_typedef(name, def)?);
+                    out.push_str(&self.emit_enum_typedef(name, def)?);
                 }
                 out.push('\n');
             }
@@ -321,17 +329,17 @@ impl TypeAnalyzer {
 
     fn constraint_to_ctype_static(
         t: &Term<'_>,
-        union_names: &HashSet<String>,
+        enum_names: &HashSet<String>,
         struct_names: &HashSet<String>,
     ) -> Result<CType, Diagnostic> {
-        crate::backend::ir::constraint_to_ctype(t, union_names, struct_names)
+        crate::backend::ir::constraint_to_ctype(t, enum_names, struct_names)
     }
 
     // ── Public accessors ──
 
-    /// Access the union type map.
-    pub fn union_map(&self) -> &HashMap<String, UnionInfo> {
-        &self.union_map
+    /// Access the enum type map.
+    pub fn enum_map(&self) -> &HashMap<String, EnumInfo> {
+        &self.enum_map
     }
 
     /// Access the struct type map.
@@ -344,7 +352,7 @@ impl TypeAnalyzer {
 
 impl TypeMapper for TypeAnalyzer {
     fn constraint_to_ctype(&self, t: &Term<'_>) -> Result<CType, Diagnostic> {
-        crate::backend::ir::constraint_to_ctype(t, &self.union_names, &self.struct_names)
+        crate::backend::ir::constraint_to_ctype(t, &self.enum_names, &self.struct_names)
     }
 
     fn is_erased_parameter_constraint(&self, t: &Term<'_>) -> bool {

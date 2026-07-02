@@ -279,7 +279,7 @@ fn codegen_struct_typedef() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -304,7 +304,7 @@ fn codegen_struct_construction() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -324,7 +324,7 @@ fn codegen_struct_projection() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"))
@@ -345,7 +345,7 @@ fn codegen_struct_projection_uses_real_field_name() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"))
@@ -370,7 +370,7 @@ fn codegen_struct_function_param() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -393,7 +393,7 @@ fn codegen_struct_with_str_field() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -416,7 +416,7 @@ fn codegen_struct_single_field() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -426,49 +426,49 @@ fn codegen_struct_single_field() {
     );
 }
 
-// ── Nested types: struct-in-union, union-in-struct ──
+// ── Nested types: struct-in-enum, enum-in-struct ──
 
 #[test]
-fn union_with_struct_payload() {
+fn enum_with_struct_payload() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     let result = compiler.process_file_str(
-        "def Point : prop := struct\n  x : int\n  y : int\ndef Shape : prop := union\n  | Circle of (center : Point) (r : int)\n  | Rect of (tl : Point) (br : Point)\ndef c : Shape := Circle (Point.mk 0 0) 5\n#check c : Shape\n",
+        "def Point : prop := struct\n  x : int\n  y : int\ndef Shape : prop := enum\n  | Circle of (center : Point) (r : int)\n  | Rect of (tl : Point) (br : Point)\ndef c : Shape := Circle (Point.mk 0 0) 5\n#check c : Shape\n",
     );
     assert!(result.is_ok(), "Error: {:?}", result.err());
 }
 
 #[test]
-fn struct_with_union_field() {
+fn struct_with_enum_field() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     let result = compiler.process_file_str(
-        "def Option : prop := union\n  | None\n  | Some of (val : int)\ndef Config : prop := struct\n  name : str\n  opt : Option\ndef c : Config := Config.mk \"test\" (Some 42)\n#check c : Config\n",
+        "def Option : prop := enum\n  | None\n  | Some of (val : int)\ndef Config : prop := struct\n  name : str\n  opt : Option\ndef c : Config := Config.mk \"test\" (Some 42)\n#check c : Config\n",
     );
     assert!(result.is_ok(), "Error: {:?}", result.err());
 }
 
 #[test]
-fn codegen_union_with_struct_payload() {
+fn codegen_enum_with_struct_payload() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     compiler
         .collect_file_str(
-            "def Point : prop := struct\n  x : int\n  y : int\ndef Shape : prop := union\n  | Circle of (center : Point) (r : int)\n  | Rect\ndef s : Shape := Circle (Point.mk 1 2) 5\n",
+            "def Point : prop := struct\n  x : int\n  y : int\ndef Shape : prop := enum\n  | Circle of (center : Point) (r : int)\n  | Rect\ndef s : Shape := Circle (Point.mk 1 2) 5\n",
         )
         .unwrap();
     let c = emit_c(
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
-    // Union typedef should use Point struct as field type
+    // Enum typedef should use Point struct as field type
     assert!(
         c.contains("Point center;"),
-        "union variant should reference struct type:\n{c}"
+        "enum variant should reference struct type:\n{c}"
     );
 }
 
@@ -525,25 +525,25 @@ fn let_destruct_in_function() {
 }
 
 #[test]
-fn codegen_struct_with_union_field() {
+fn codegen_struct_with_enum_field() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     compiler
         .collect_file_str(
-            "def Option : prop := union\n  | None\n  | Some of (val : int)\ndef Config : prop := struct\n  name : str\n  opt : Option\ndef c : Config := Config.mk \"cfg\" (Some 99)\n",
+            "def Option : prop := enum\n  | None\n  | Some of (val : int)\ndef Config : prop := struct\n  name : str\n  opt : Option\ndef c : Config := Config.mk \"cfg\" (Some 99)\n",
         )
         .unwrap();
     let c = emit_c(
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
-    // Struct typedef should use Option union as field type
+    // Struct typedef should use Option enum as field type
     assert!(
         c.contains("Option opt;"),
-        "struct field should reference union type:\n{c}"
+        "struct field should reference enum type:\n{c}"
     );
 }

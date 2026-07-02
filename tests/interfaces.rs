@@ -112,7 +112,7 @@ def main : str := render 5
         input.tops,
         input.raw_defs,
         input.fun_sigs,
-        input.union_types,
+        input.enum_types,
         input.struct_types,
     )
     .expect("C generation should succeed");
@@ -120,4 +120,50 @@ def main : str := render 5
     assert!(c.contains("render__ShowInt__show_int(5)"), "{c}");
     assert!(!c.contains("struct ShowInt"), "{c}");
     assert!(!c.contains(".show"), "{c}");
+}
+
+#[test]
+fn interface_method_call_desugars_through_instance() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    let result = compiler.process_file_str(
+        r#"
+def ShowInt : prop := struct
+  show : int -> str
+
+def show_int (x : int) : str := "int"
+instance showInt : ShowInt := ShowInt.mk show_int
+
+def render (x : int) : str := x.show
+#check render 1 : str
+"#,
+    );
+    assert!(result.is_ok(), "Error: {:?}", result.err());
+}
+
+#[test]
+fn interface_method_call_reports_ambiguity() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    let result = compiler.process_file_str(
+        r#"
+def ShowInt : prop := struct
+  show : int -> str
+
+def show_a (x : int) : str := "a"
+def show_b (x : int) : str := "b"
+instance showA : ShowInt := ShowInt.mk show_a
+instance showB : ShowInt := ShowInt.mk show_b
+
+def render (x : int) : str := x.show
+"#,
+    );
+    let err = result.expect_err("ambiguous method should fail");
+    assert!(
+        err.message.contains("ambiguous method `show`"),
+        "{}",
+        err.message
+    );
+    assert!(err.message.contains("showA"), "{}", err.message);
+    assert!(err.message.contains("showB"), "{}", err.message);
 }

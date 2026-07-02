@@ -112,6 +112,7 @@ enum CompletionMode {
     Normal,
     Dot,
     ModulePath,
+    QualifiedPath,
 }
 
 #[derive(Debug, Clone)]
@@ -124,9 +125,38 @@ struct CompletionContext {
 }
 
 const KEYWORDS: &[&str] = &[
-    "let", "in", "if", "then", "else", "true", "false", "by", "fun", "func", "do", "where", "def",
-    "extern", "unsafe", "pure", "auto", "exact", "apply", "intro", "have", "theorem", "pub", "use",
-    "mod", "as", "struct", "union", "match", "with", "of",
+    "let",
+    "in",
+    "if",
+    "then",
+    "else",
+    "true",
+    "false",
+    "by",
+    "fun",
+    "func",
+    "do",
+    "where",
+    "def",
+    "extern",
+    "unsafe",
+    "pure",
+    "auto",
+    "exact",
+    "apply",
+    "intro",
+    "have",
+    "theorem",
+    "pub",
+    "use",
+    "mod",
+    "namespace",
+    "as",
+    "struct",
+    "enum",
+    "match",
+    "with",
+    "of",
 ];
 
 pub fn completion_items_for_source(
@@ -169,6 +199,7 @@ fn completion_items_at_offset(
     let mut candidates = match context.mode {
         CompletionMode::Dot => dot_candidates(&symbols, &context),
         CompletionMode::ModulePath => module_path_candidates(&module_paths, &context),
+        CompletionMode::QualifiedPath => qualified_path_candidates(&symbols, &context),
         CompletionMode::Normal => normal_candidates(&symbols, &context),
     };
 
@@ -299,7 +330,22 @@ pub(crate) fn collect_top_level_symbols(top: &TopLevel<'_>, symbols: &mut Vec<Sy
             kind: SymbolKind::Module,
             imported_path: Some(vec![(*name).to_string()]),
         }),
+        TopLevel::TLNamespace(name, items, _) => {
+            for item in *items {
+                collect_namespace_symbols(name, item, symbols);
+            }
+        }
         TopLevel::TLCheck(_, _, _) | TopLevel::TLEval(_, _) | TopLevel::TLExpr(_, _) => {}
+    }
+}
+
+fn collect_namespace_symbols(namespace: &str, top: &TopLevel<'_>, symbols: &mut Vec<Symbol>) {
+    let before = symbols.len();
+    collect_top_level_symbols(top, symbols);
+    for symbol in symbols.iter_mut().skip(before) {
+        if !symbol.name.contains("::") {
+            symbol.name = format!("{namespace}::{}", symbol.name);
+        }
     }
 }
 
@@ -309,19 +355,19 @@ fn collect_type_members(type_name: &str, body: &Term<'_>, symbols: &mut Vec<Symb
         other => other,
     };
     match inner {
-        Term::UnionDef(union_name, variants) => {
+        Term::EnumDef(enum_name, variants) => {
             for (variant_name, fields) in *variants {
-                let signature = constructor_signature(union_name, fields);
+                let signature = constructor_signature(enum_name, fields);
                 symbols.push(Symbol {
                     name: (*variant_name).to_string(),
                     detail: signature
                         .as_ref()
                         .map(|sig| sig.whole.display.clone())
-                        .unwrap_or_else(|| union_name.to_string()),
+                        .unwrap_or_else(|| enum_name.to_string()),
                     constraint: signature
                         .as_ref()
                         .map(|sig| sig.whole.clone())
-                        .or_else(|| Some(Constraint::named(union_name))),
+                        .or_else(|| Some(Constraint::named(enum_name))),
                     signature,
                     kind: SymbolKind::Constructor,
                     imported_path: None,
@@ -442,7 +488,7 @@ fn signature_from_constraint(term: &Term<'_>) -> Signature {
 
 pub(crate) fn type_or_value_kind(term: &Term<'_>) -> SymbolKind {
     match term {
-        Term::Annot(inner, _) if matches!(inner, Term::UnionDef(..) | Term::StructDef(..)) => {
+        Term::Annot(inner, _) if matches!(inner, Term::EnumDef(..) | Term::StructDef(..)) => {
             SymbolKind::Type
         }
         _ => SymbolKind::Value,
@@ -623,6 +669,15 @@ fn build_context(
             module_path_prefix: path_prefix,
         };
     }
+    if let Some(path_prefix) = qualified_path_context(source, prefix_range.start) {
+        return CompletionContext {
+            prefix,
+            mode: CompletionMode::QualifiedPath,
+            expected: None,
+            receiver_constraint: None,
+            module_path_prefix: path_prefix,
+        };
+    }
     if let Some(receiver_text) = dot_receiver_text(source, prefix_range.start) {
         let receiver_constraint = infer_expr_constraint(receiver_text, symbols);
         return CompletionContext {
@@ -641,6 +696,25 @@ fn build_context(
         receiver_constraint: None,
         module_path_prefix: Vec::new(),
     }
+}
+
+fn qualified_path_context(source: &str, prefix_start: usize) -> Option<Vec<String>> {
+    let before = source[..prefix_start].trim_end();
+    if !before.ends_with("::") {
+        return None;
+    }
+    let path_end = before.len().saturating_sub(2);
+    let path_start = source[..path_end]
+        .rfind(|ch: char| {
+            ch.is_whitespace()
+                || matches!(
+                    ch,
+                    '(' | ')' | '{' | '}' | '[' | ']' | ',' | ';' | ':' | '=' | '<' | '>'
+                )
+        })
+        .map_or(0, |idx| idx + 1);
+    let path = source[path_start..path_end].trim();
+    (!path.is_empty()).then(|| path.split("::").map(|part| part.to_string()).collect())
 }
 
 fn identifier_prefix_range(source: &str, offset: usize) -> Range<usize> {
@@ -972,15 +1046,45 @@ fn dot_candidates(symbols: &[Symbol], context: &CompletionContext) -> Vec<Symbol
             symbol.name.starts_with(&context.prefix)
                 || method_name(&symbol.name).starts_with(&context.prefix)
         })
-        .filter(|symbol| {
-            symbol
-                .signature
-                .as_ref()
-                .and_then(|sig| sig.params.first())
-                .is_some_and(|first| first.matches_expected(receiver))
-        })
+        .filter(|symbol| interface_method_available(symbol, symbols, receiver))
         .cloned()
         .collect()
+}
+
+fn interface_method_available(symbol: &Symbol, symbols: &[Symbol], receiver: &Constraint) -> bool {
+    if symbol.kind != SymbolKind::Function || !symbol.name.contains('.') {
+        return false;
+    }
+    let Some(interface_name) = symbol.name.rsplit_once('.').map(|(head, _)| head) else {
+        return false;
+    };
+    let first_param_matches = symbol
+        .signature
+        .as_ref()
+        .and_then(|sig| sig.params.first())
+        .is_some_and(|first| first.matches_expected(receiver));
+    let method_param_matches = symbol.signature.as_ref().is_some_and(|sig| {
+        let result = sig.result.display.trim();
+        result.starts_with(&format!("({} ->", receiver.display))
+            || result.starts_with(&format!("{} ->", receiver.display))
+    });
+    symbols.iter().any(|candidate| {
+        if candidate.kind != SymbolKind::Value {
+            return false;
+        }
+        let Some(constraint) = &candidate.constraint else {
+            return false;
+        };
+        let parts = constraint.display.split_whitespace().collect::<Vec<_>>();
+        if parts.first().copied() != Some(interface_name) {
+            return false;
+        }
+        first_param_matches
+            || method_param_matches
+            || parts
+                .get(1)
+                .is_some_and(|arg| Constraint::named(arg).matches_expected(receiver))
+    })
 }
 
 fn module_path_candidates(
@@ -1011,6 +1115,22 @@ fn module_path_candidates(
         });
     }
     out
+}
+
+fn qualified_path_candidates(symbols: &[Symbol], context: &CompletionContext) -> Vec<Symbol> {
+    let prefix_path = context.module_path_prefix.join("::");
+    let qualified_prefix = format!("{prefix_path}::");
+    symbols
+        .iter()
+        .filter(|symbol| symbol.name.starts_with(&qualified_prefix))
+        .filter(|symbol| {
+            symbol
+                .name
+                .strip_prefix(&qualified_prefix)
+                .is_some_and(|tail| !tail.contains("::") && tail.starts_with(&context.prefix))
+        })
+        .cloned()
+        .collect()
 }
 
 fn collect_module_paths(symbols: &[Symbol]) -> Vec<Vec<String>> {
@@ -1074,6 +1194,13 @@ fn symbol_to_completion(symbol: Symbol, context: &CompletionContext) -> lsp::Com
 fn display_name(symbol: &Symbol, context: &CompletionContext) -> String {
     if context.mode == CompletionMode::Dot {
         method_name(&symbol.name).to_string()
+    } else if context.mode == CompletionMode::QualifiedPath {
+        symbol
+            .name
+            .rsplit("::")
+            .next()
+            .unwrap_or(&symbol.name)
+            .to_string()
     } else {
         symbol.name.clone()
     }
@@ -1160,6 +1287,7 @@ pub(crate) fn top_start(top: &TopLevel<'_>) -> usize {
         | TopLevel::TLTheorem(_, _, _, span)
         | TopLevel::TLUse(_, _, span)
         | TopLevel::TLMod(_, span)
+        | TopLevel::TLNamespace(_, _, span)
         | TopLevel::TLCheck(_, _, span)
         | TopLevel::TLEval(_, span)
         | TopLevel::TLExpr(_, span) => span.start,

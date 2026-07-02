@@ -190,6 +190,9 @@ impl ProjectContext {
                 paths.push(path);
             }
         }
+        if !self.graph.packages.contains_key(STANDARD_LIBRARY_PACKAGE) {
+            paths.extend(standard_library_public_module_paths(&self.std_roots));
+        }
         paths.sort();
         paths.dedup();
         paths
@@ -352,6 +355,31 @@ fn standard_library_module_roots() -> Vec<PathBuf> {
             } else {
                 root
             }
+        })
+        .collect()
+}
+
+fn standard_library_public_module_paths(roots: &[PathBuf]) -> Vec<Vec<String>> {
+    roots
+        .iter()
+        .flat_map(|root| {
+            let lib = root.join("lib.lig");
+            let Ok(source) = std::fs::read_to_string(lib) else {
+                return Vec::new();
+            };
+            source
+                .lines()
+                .filter_map(|line| {
+                    let line = line.trim_start();
+                    let name = line.strip_prefix("pub mod ")?;
+                    let name = name
+                        .split(|ch: char| ch.is_whitespace() || ch == '-' || ch == '{')
+                        .next()
+                        .unwrap_or_default();
+                    (!name.is_empty())
+                        .then(|| vec![STANDARD_LIBRARY_PACKAGE.to_string(), name.to_string()])
+                })
+                .collect::<Vec<_>>()
         })
         .collect()
 }

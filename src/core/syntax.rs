@@ -152,12 +152,12 @@ pub enum Term<'bump> {
     ByProof(Option<&'bump Term<'bump>>, &'bump [Tactic<'bump>]),
     AutoProof,
     RefParam,
-    /// Union type definition (in `prop`): (name, [(variant_name, [(field_name, constraint)])])
-    UnionDef(
+    /// Enum type definition (in `prop`): (name, [(variant_name, [(field_name, constraint)])])
+    EnumDef(
         Name<'bump>,
         &'bump [(Name<'bump>, &'bump [(Name<'bump>, &'bump Term<'bump>)])],
     ),
-    /// Variant constructor (in `data`): (union_name, variant_index, payload_values)
+    /// Variant constructor (in `data`): (enum_name, variant_index, payload_values)
     Variant(Name<'bump>, usize, &'bump [&'bump Term<'bump>]),
     /// Pattern match elimination (in `data`): (scrutinee, [(var_idx, [(bind_name, bind_type)], body)])
     Match(&'bump Term<'bump>, &'bump [MatchBranch<'bump>]),
@@ -175,6 +175,8 @@ pub enum Term<'bump> {
     StructCons(Name<'bump>, &'bump [&'bump Term<'bump>]),
     /// Struct field projection (in `data`): (subject, field_index)
     StructProj(&'bump Term<'bump>, usize),
+    /// Parser-level implicit method call receiver: `receiver.method`.
+    MethodCall(&'bump Term<'bump>, Name<'bump>),
 }
 
 #[cfg(test)]

@@ -20,7 +20,7 @@ fn emit(source: &str) -> String {
         input.tops,
         input.raw_defs,
         input.fun_sigs,
-        input.union_types,
+        input.enum_types,
         input.struct_types,
     )
     .expect("C generation should succeed")
@@ -79,7 +79,7 @@ fn bare_metal_target_requires_explicit_allocator_for_implicit_allocation() {
         input.tops,
         input.raw_defs,
         input.fun_sigs,
-        input.union_types,
+        input.enum_types,
         input.struct_types,
         CEmitOptions {
             target: CTarget::BareMetal,

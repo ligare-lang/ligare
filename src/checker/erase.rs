@@ -81,13 +81,16 @@ impl<'bump> Eraser<'bump> {
             Term::Do(_) => {
                 panic!("Do block reached erasure before desugaring")
             }
-            Term::UnionDef(..) => self.unit(),
+            Term::EnumDef(..) => self.unit(),
             Term::StructDef(..) => self.unit(),
             Term::StructCons(name, field_values) => {
                 let ev: Vec<_> = field_values.iter().map(|v| self.erase(v)).collect();
                 self.arena.struct_cons(name, self.arena.alloc_slice(&ev))
             }
             Term::StructProj(subject, idx) => self.arena.struct_proj(self.erase(subject), *idx),
+            Term::MethodCall(_, _) => {
+                panic!("MethodCall reached erasure before resolution")
+            }
             Term::Variant(name, idx, payloads) => {
                 let ep: Vec<_> = payloads.iter().map(|p| self.erase(p)).collect();
                 self.arena.variant(name, *idx, self.arena.alloc_slice(&ep))

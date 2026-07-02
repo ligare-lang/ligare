@@ -43,7 +43,7 @@ def unit (A : prop) : int := 0
 
 -- ── Generic Option type ──
 
-def Option (A : prop) : prop := union
+def Option (A : prop) : prop := enum
   | None
   | Some of (val : A)
 

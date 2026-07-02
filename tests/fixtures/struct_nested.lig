@@ -1,12 +1,12 @@
--- Nested types: struct inside union, union inside struct
+-- Nested types: struct inside enum, enum inside struct
 
 -- Point struct
 def Point : prop := struct
   x : int
   y : int
 
--- Shape union with struct payload
-def Shape : prop := union
+-- Shape enum with struct payload
+def Shape : prop := enum
   | Circle of (center : Point) (radius : int)
   | Rectangle of (tl : Point) (br : Point)
   | Empty
@@ -16,12 +16,12 @@ def Shape : prop := union
 #check Rectangle (Point.mk 1 1) (Point.mk 4 5) : Shape
 #check Empty : Shape
 
--- Option union
-def Option : prop := union
+-- Option enum
+def Option : prop := enum
   | None
   | Some of (val : int)
 
--- Config struct with union field
+-- Config struct with enum field
 def Config : prop := struct
   name : str
   opt : Option
@@ -29,6 +29,6 @@ def Config : prop := struct
 #check Config.mk "server" (Some 8080) : Config
 #check Config.mk "default" None : Config
 
--- Show struct with union field
+-- Show struct with enum field
 def cfg : Config := Config.mk "test" (Some 42)
 #eval Config.name cfg

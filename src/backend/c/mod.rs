@@ -14,8 +14,8 @@
 //! Usage:
 //! ```ignore
 //! use ligare::backend::c::{CEmitter, CodeGenerator};
-//! let emitter = CEmitter::new(struct_types, union_types, fun_sigs)?;
-//! let c_source = emitter.generate(tops, raw_defs, struct_types, union_types)?;
+//! let emitter = CEmitter::new(struct_types, enum_types, fun_sigs)?;
+//! let c_source = emitter.generate(tops, raw_defs, struct_types, enum_types)?;
 //! ```
 
 pub mod context;
@@ -36,7 +36,7 @@ pub use emitter::{CEmitOptions, CEmitter, CTarget, CodeGenerator};
 pub use expr::ExpressionEmitter;
 pub use match_emit::MatchEmitter;
 pub use names::NameResolver;
-pub use types::{StructInfo, TypeAnalyzer, TypeMapper, UnionInfo, VariantInfo};
+pub use types::{EnumInfo, StructInfo, TypeAnalyzer, TypeMapper, VariantInfo};
 
 use crate::backend::ir::FunSig;
 use crate::core::syntax::Term;
@@ -51,23 +51,23 @@ pub fn emit_c(
     tops: &[TopLevel<'_>],
     raw_defs: &[TopLevel<'_>],
     fun_sigs: &[(&str, FunSig)],
-    union_types: &[(&str, &Term<'_>)],
+    enum_types: &[(&str, &Term<'_>)],
     struct_types: &[(&str, &Term<'_>)],
 ) -> Result<String, Diagnostic> {
-    let emitter = CEmitter::new(struct_types, union_types, fun_sigs)?;
-    emitter.generate(tops, raw_defs, struct_types, union_types)
+    let emitter = CEmitter::new(struct_types, enum_types, fun_sigs)?;
+    emitter.generate(tops, raw_defs, struct_types, enum_types)
 }
 
 pub fn emit_c_with_options(
     tops: &[TopLevel<'_>],
     raw_defs: &[TopLevel<'_>],
     fun_sigs: &[(&str, FunSig)],
-    union_types: &[(&str, &Term<'_>)],
+    enum_types: &[(&str, &Term<'_>)],
     struct_types: &[(&str, &Term<'_>)],
     options: CEmitOptions,
 ) -> Result<String, Diagnostic> {
-    let emitter = CEmitter::new_with_options(struct_types, union_types, fun_sigs, options)?;
-    emitter.generate(tops, raw_defs, struct_types, union_types)
+    let emitter = CEmitter::new_with_options(struct_types, enum_types, fun_sigs, options)?;
+    emitter.generate(tops, raw_defs, struct_types, enum_types)
 }
 
 /// Produce a temporary eval-only C source file, if the program contains `#eval`.
@@ -75,9 +75,9 @@ pub fn emit_eval_c(
     tops: &[TopLevel<'_>],
     raw_defs: &[TopLevel<'_>],
     fun_sigs: &[(&str, FunSig)],
-    union_types: &[(&str, &Term<'_>)],
+    enum_types: &[(&str, &Term<'_>)],
     struct_types: &[(&str, &Term<'_>)],
 ) -> Result<Option<String>, Diagnostic> {
-    let emitter = CEmitter::new(struct_types, union_types, fun_sigs)?;
-    emitter.generate_eval(tops, raw_defs, struct_types, union_types)
+    let emitter = CEmitter::new(struct_types, enum_types, fun_sigs)?;
+    emitter.generate_eval(tops, raw_defs, struct_types, enum_types)
 }

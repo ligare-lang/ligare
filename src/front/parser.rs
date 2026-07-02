@@ -18,6 +18,7 @@ pub use api::{parse_def_top, parse_expr_top, parse_program};
 pub struct UseTree<'bump> {
     pub path: &'bump [Name<'bump>],
     pub alias: Option<Name<'bump>>,
+    pub wildcard: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +49,7 @@ pub enum TopLevel<'bump> {
     TLTheorem(Name<'bump>, &'bump Term<'bump>, &'bump Term<'bump>, Span),
     TLUse(&'bump [UseTree<'bump>], Visibility, Span),
     TLMod(Name<'bump>, Span),
+    TLNamespace(Name<'bump>, &'bump [TopLevel<'bump>], Span),
     TLPublic(&'bump TopLevel<'bump>),
     TLCheck(&'bump Term<'bump>, &'bump Term<'bump>, Span),
     TLEval(&'bump Term<'bump>, Span),
@@ -55,8 +57,30 @@ pub enum TopLevel<'bump> {
 }
 
 pub(super) const KEYWORDS: &[&str] = &[
-    "let", "in", "if", "then", "else", "true", "false", "by", "fun", "func", "where", "def", "do",
-    "extern", "instance", "unsafe", "pure", "auto", "theorem", "pub", "use", "mod", "as",
+    "let",
+    "in",
+    "if",
+    "then",
+    "else",
+    "true",
+    "false",
+    "by",
+    "fun",
+    "func",
+    "where",
+    "def",
+    "do",
+    "extern",
+    "instance",
+    "unsafe",
+    "pure",
+    "auto",
+    "theorem",
+    "pub",
+    "use",
+    "mod",
+    "namespace",
+    "as",
 ];
 
 /// Names that represent language builtins (not user-defined).

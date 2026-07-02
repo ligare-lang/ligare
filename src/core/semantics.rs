@@ -11,7 +11,7 @@ pub enum ConstraintKind {
     BuiltinDataConstraint,
     Refine,
     Pi,
-    UnionConstraint,
+    EnumConstraint,
     StructConstraint,
     LogicalOp,
     Unknown,
@@ -61,11 +61,13 @@ impl<'a> SemanticQueries<'a> {
             Term::Builtin(name) | Term::Global(name) => {
                 self.builtins.universe_of(name).or(Some(Universe::UData))
             }
-            Term::UnionDef(..) => Some(Universe::UProp),
+            Term::EnumDef(..) => Some(Universe::UProp),
             Term::Variant(..) => Some(Universe::UData),
             Term::StructDef(..) => Some(Universe::UProp),
             Term::StructCons(..) => Some(Universe::UData),
-            Term::StructProj(subject, _) => self.universe(ctx, subject),
+            Term::StructProj(subject, _) | Term::MethodCall(subject, _) => {
+                self.universe(ctx, subject)
+            }
             Term::Match(_, branches) => branches
                 .first()
                 .and_then(|(_, _, body)| self.universe(ctx, body)),
@@ -99,7 +101,7 @@ impl<'a> SemanticQueries<'a> {
             }
             Term::Refine(..) => ConstraintKind::Refine,
             Term::Pi(..) => ConstraintKind::Pi,
-            Term::UnionDef(..) => ConstraintKind::UnionConstraint,
+            Term::EnumDef(..) => ConstraintKind::EnumConstraint,
             Term::StructDef(..) => ConstraintKind::StructConstraint,
             _ => ConstraintKind::Unknown,
         }
@@ -123,14 +125,18 @@ impl<'a> SemanticQueries<'a> {
             Term::Annot(inner, _) | Term::ByProof(Some(inner), _) => self.erase_policy(inner),
             Term::App(f, _) => self.data_policy(f),
             Term::Builtin(_) | Term::Global(_) => self.data_policy(term),
-            Term::Named(_) | Term::NamedLam(..) | Term::NamedMatch(..) | Term::Do(_) => {
+            Term::Named(_)
+            | Term::NamedLam(..)
+            | Term::NamedMatch(..)
+            | Term::Do(_)
+            | Term::MethodCall(..) => {
                 panic!("parser-level term reached erase-policy query before desugaring")
             }
             Term::ByProof(None, _)
             | Term::AutoProof
             | Term::Pi(..)
             | Term::Universe(Universe::UProp | Universe::UTheorem | Universe::UProof)
-            | Term::UnionDef(..)
+            | Term::EnumDef(..)
             | Term::StructDef(..) => ErasePolicy::EraseToUnit,
             _ => ErasePolicy::KeepData,
         }

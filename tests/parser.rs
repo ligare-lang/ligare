@@ -92,6 +92,19 @@ fn do_block_parses_statements() {
 }
 
 #[test]
+fn braced_do_let_accepts_equals_with_constraint() {
+    let (b, arena) = a();
+    let term = parse_expr_top("do { let y : int = 1; y }", b, &arena).unwrap();
+    match term {
+        Term::Do(stmts) => {
+            assert_eq!(stmts.len(), 2);
+            assert!(matches!(stmts[0], DoStmt::Let(name, _, Some(_)) if name == "y"));
+        }
+        other => panic!("expected do block, got {other:?}"),
+    }
+}
+
+#[test]
 fn do_block_parses_haskell_layout_statements() {
     let (b, arena) = a();
     let term = parse_expr_top("do\n  x <- read\n  let y : int = x + 1\n  y", b, &arena).unwrap();
@@ -382,13 +395,13 @@ fn program_with_def_and_check() {
     assert!(matches!(tops[1], TopLevel::TLCheck(..)));
 }
 
-// ── Union & Match tests ──
+// ── Enum & Match tests ──
 
 #[test]
-fn parse_union_def() {
+fn parse_enum_def() {
     let (b, arena) = a();
     let result = parse_program(
-        "def Color : prop := union\n  | Red\n  | Green\n  | Blue",
+        "def Color : prop := enum\n  | Red\n  | Green\n  | Blue",
         b,
         &arena,
     );
@@ -399,10 +412,10 @@ fn parse_union_def() {
 }
 
 #[test]
-fn parse_union_with_payload() {
+fn parse_enum_with_payload() {
     let (b, arena) = a();
     let result = parse_program(
-        "def Option : prop := union\n  | None\n  | Some of (val : int)",
+        "def Option : prop := enum\n  | None\n  | Some of (val : int)",
         b,
         &arena,
     );
@@ -607,14 +620,11 @@ fn struct_field_types_do_not_consume_following_fields() {
 }
 
 #[test]
-fn empty_union_definition_fails() {
+fn empty_enum_definition_fails() {
     let (b, arena) = a();
-    let err = parse_def_top("def Empty : prop := union", b, &arena)
-        .expect_err("union without variants must fail");
-    assert!(
-        err.contains("union must have at least one variant"),
-        "{err}"
-    );
+    let err = parse_def_top("def Empty : prop := enum", b, &arena)
+        .expect_err("enum without variants must fail");
+    assert!(err.contains("enum must have at least one variant"), "{err}");
 }
 
 #[test]

@@ -54,13 +54,15 @@ enum TokKind {
     KwPub,
     KwUse,
     KwMod,
+    KwNamespace,
     KwAs,
     KwStruct,
-    KwUnion,
+    KwEnum,
     KwMatch,
     KwWith,
     KwOf,
     Bar,
+    HashGlobalAllocator,
     HashCheck,
     HashEval,
     BlockComment,
@@ -181,13 +183,15 @@ fn kind(token: &Token) -> TokKind {
         Token::KwPub => TokKind::KwPub,
         Token::KwUse => TokKind::KwUse,
         Token::KwMod => TokKind::KwMod,
+        Token::KwNamespace => TokKind::KwNamespace,
         Token::KwAs => TokKind::KwAs,
         Token::KwStruct => TokKind::KwStruct,
-        Token::KwUnion => TokKind::KwUnion,
+        Token::KwEnum => TokKind::KwEnum,
         Token::KwMatch => TokKind::KwMatch,
         Token::KwWith => TokKind::KwWith,
         Token::KwOf => TokKind::KwOf,
         Token::Bar => TokKind::Bar,
+        Token::HashGlobalAllocator => TokKind::HashGlobalAllocator,
         Token::HashCheck => TokKind::HashCheck,
         Token::HashEval => TokKind::HashEval,
         Token::BlockComment => TokKind::BlockComment,
@@ -257,9 +261,12 @@ fn split_top_level_chunks(source: &str, tokens: &[SpannedToken]) -> Vec<Chunk> {
     let mut start = first_non_newline(tokens, 0);
 
     while start < tokens.len() {
+        let namespace_chunk = is_namespace_chunk_start(tokens, start);
         let mut end = start + 1;
         while end < tokens.len() {
-            if is_sync_start(source, tokens, end) {
+            if is_sync_start(source, tokens, end)
+                && (!namespace_chunk || is_top_level_boundary(tokens, start, end))
+            {
                 break;
             }
             end += 1;
@@ -285,8 +292,20 @@ fn first_non_newline(tokens: &[SpannedToken], mut index: usize) -> usize {
     index
 }
 
+fn is_namespace_chunk_start(tokens: &[SpannedToken], start: usize) -> bool {
+    matches!(tokens.get(start), Some((Token::KwNamespace, _)))
+        || matches!(tokens.get(start), Some((Token::KwPub, _)))
+            && next_non_newline_kind(tokens, start + 1) == Some(TokKind::KwNamespace)
+}
+
 fn is_sync_start(source: &str, tokens: &[SpannedToken], index: usize) -> bool {
     if !is_line_start(source, tokens[index].1.start) {
+        return false;
+    }
+    if matches!(
+        previous_non_newline_kind(tokens, index),
+        Some(TokKind::HashGlobalAllocator | TokKind::KwPub)
+    ) {
         return false;
     }
     match tokens[index].0 {
@@ -295,6 +314,8 @@ fn is_sync_start(source: &str, tokens: &[SpannedToken], index: usize) -> bool {
         | Token::KwTheorem
         | Token::KwUse
         | Token::KwMod
+        | Token::KwNamespace
+        | Token::HashGlobalAllocator
         | Token::HashCheck
         | Token::HashEval => true,
         Token::KwPub => next_non_newline_kind(tokens, index + 1).is_some_and(|k| {
@@ -305,10 +326,26 @@ fn is_sync_start(source: &str, tokens: &[SpannedToken], index: usize) -> bool {
                     | TokKind::KwTheorem
                     | TokKind::KwUse
                     | TokKind::KwMod
+                    | TokKind::KwNamespace
             )
         }),
         _ => false,
     }
+}
+
+fn is_top_level_boundary(tokens: &[SpannedToken], start: usize, end: usize) -> bool {
+    let mut parens = 0usize;
+    let mut braces = 0usize;
+    for (token, _) in &tokens[start..end] {
+        match token {
+            Token::LParen => parens += 1,
+            Token::RParen => parens = parens.saturating_sub(1),
+            Token::LBrace => braces += 1,
+            Token::RBrace => braces = braces.saturating_sub(1),
+            _ => {}
+        }
+    }
+    parens == 0 && braces == 0
 }
 
 fn is_line_start(source: &str, offset: usize) -> bool {
@@ -322,6 +359,17 @@ fn next_non_newline_kind(tokens: &[SpannedToken], mut index: usize) -> Option<To
         index += 1;
     }
     tokens.get(index).map(|(token, _)| kind(token))
+}
+
+fn previous_non_newline_kind(tokens: &[SpannedToken], index: usize) -> Option<TokKind> {
+    let mut index = index;
+    while index > 0 {
+        index -= 1;
+        if !matches!(tokens[index].0, Token::Newline) {
+            return Some(kind(&tokens[index].0));
+        }
+    }
+    None
 }
 
 fn validate_header(tokens: &[SpannedToken], eof_span: Span) -> Vec<ParseError> {
@@ -353,6 +401,7 @@ fn starts_with_header(tokens: &[SpannedToken]) -> bool {
             | Token::KwTheorem
             | Token::KwUse
             | Token::KwMod
+            | Token::HashGlobalAllocator
             | Token::HashCheck
             | Token::HashEval,
         ) => true,
@@ -361,6 +410,7 @@ fn starts_with_header(tokens: &[SpannedToken]) -> bool {
 }
 
 fn header_parser() -> impl Parser<TokKind, HeaderKind, Error = Simple<TokKind>> {
+    let newlines = || just(TokKind::Newline).repeated().ignored();
     let def = just(TokKind::KwDef)
         .ignore_then(just(TokKind::Ident))
         .to(HeaderKind::Def);
@@ -378,8 +428,10 @@ fn header_parser() -> impl Parser<TokKind, HeaderKind, Error = Simple<TokKind>> 
     let check = just(TokKind::HashCheck).to(HeaderKind::Check);
     let eval = just(TokKind::HashEval).to(HeaderKind::Eval);
 
-    just(TokKind::KwPub)
+    just(TokKind::HashGlobalAllocator)
+        .then_ignore(newlines())
         .or_not()
+        .ignore_then(just(TokKind::KwPub).then_ignore(newlines()).or_not())
         .ignore_then(choice((extern_def, def, theorem, use_, mod_, check, eval)))
         .recover_with(skip_then_retry_until([TokKind::Newline]))
 }
@@ -410,6 +462,18 @@ fn offset_top_level<'bump>(
             TopLevel::TLUse(imports, visibility, offset_span(span, offset))
         }
         TopLevel::TLMod(name, span) => TopLevel::TLMod(name, offset_span(span, offset)),
+        TopLevel::TLNamespace(name, items, span) => {
+            let shifted = items
+                .iter()
+                .cloned()
+                .map(|item| offset_top_level(item, offset, arena))
+                .collect::<Vec<_>>();
+            TopLevel::TLNamespace(
+                name,
+                arena.bump().alloc_slice_clone(&shifted),
+                offset_span(span, offset),
+            )
+        }
         TopLevel::TLPublic(inner) => {
             let shifted = offset_top_level((*inner).clone(), offset, arena);
             TopLevel::TLPublic(arena.bump().alloc(shifted))

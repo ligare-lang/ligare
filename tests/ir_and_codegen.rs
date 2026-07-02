@@ -38,12 +38,12 @@ fn constraint_str_is_str() {
 }
 
 #[test]
-fn constraint_union_name_returns_union() {
-    let names: HashSet<String> = ["MyUnion".into()].into();
+fn constraint_enum_name_returns_enum() {
+    let names: HashSet<String> = ["MyEnum".into()].into();
     let empty = HashSet::new();
     assert_eq!(
-        constraint_to_ctype(&Term::Global("MyUnion"), &names, &empty).unwrap(),
-        CType::Union("MyUnion".into())
+        constraint_to_ctype(&Term::Global("MyEnum"), &names, &empty).unwrap(),
+        CType::Enum("MyEnum".into())
     );
 }
 
@@ -139,14 +139,14 @@ fn codegen_match_with_str_payload() {
     let mut compiler = Compiler::new(bump, &arena);
     compiler
         .collect_file_str(
-            "def Msg : prop := union\n  | Text of (s : str)\n  | Code of (n : int)\n#eval match Text \"hi\" with | Text s => s | Code n => \"err\"\n",
+            "def Msg : prop := enum\n  | Text of (s : str)\n  | Code of (n : int)\n#eval match Text \"hi\" with | Text s => s | Code n => \"err\"\n",
         )
         .unwrap();
     let c = emit_c(
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -164,7 +164,7 @@ fn codegen_ptr_cast_emits_c_cast() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -173,22 +173,22 @@ fn codegen_ptr_cast_emits_c_cast() {
     assert!(!c.contains("ptr_cast("), "{c}");
 }
 
-// ── C codegen: multiple unions ──
+// ── C codegen: multiple enums ──
 
 #[test]
-fn codegen_multiple_unions() {
+fn codegen_multiple_enums() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     compiler
         .collect_file_str(
-            "def A : prop := union\n  | A1\n  | A2\ndef B : prop := union\n  | B1\n  | B2\ndef a : A := A1\ndef b : B := B2\n#eval a\n#eval b\n",
+            "def A : prop := enum\n  | A1\n  | A2\ndef B : prop := enum\n  | B1\n  | B2\ndef a : A := A1\ndef b : B := B2\n#eval a\n#eval b\n",
         )
         .unwrap();
     let c = emit_c(
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -206,14 +206,14 @@ fn codegen_function_with_match_body() {
     let mut compiler = Compiler::new(bump, &arena);
     compiler
         .collect_file_str(
-            "def Color : prop := union\n  | Red\n  | Green\ndef f (c : Color) : int := match c with | Red => 1 | Green => 2\n#eval f Red\n",
+            "def Color : prop := enum\n  | Red\n  | Green\ndef f (c : Color) : int := match c with | Red => 1 | Green => 2\n#eval f Red\n",
         )
         .unwrap();
     let c = emit_c(
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -229,14 +229,14 @@ fn codegen_wildcard_match_no_decl() {
     let mut compiler = Compiler::new(bump, &arena);
     compiler
         .collect_file_str(
-            "def Opt : prop := union\n  | None\n  | Some of (val : int)\n#eval match Some 7 with | None => 0 | Some _ => 1\n",
+            "def Opt : prop := enum\n  | None\n  | Some of (val : int)\n#eval match Some 7 with | None => 0 | Some _ => 1\n",
         )
         .unwrap();
     let c = emit_c(
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -255,14 +255,14 @@ fn codegen_constant_constructed_from_match() {
     let mut compiler = Compiler::new(bump, &arena);
     compiler
         .collect_file_str(
-            "def Color : prop := union\n  | Red\n  | Green\ndef x : Color := Red\n#eval x\n",
+            "def Color : prop := enum\n  | Red\n  | Green\ndef x : Color := Red\n#eval x\n",
         )
         .unwrap();
     let c = emit_c(
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -270,7 +270,7 @@ fn codegen_constant_constructed_from_match() {
         compiler.tops(),
         compiler.raw_defs(),
         compiler.fun_sigs(),
-        &compiler.union_types,
+        &compiler.enum_types,
         &compiler.struct_types,
     )
     .unwrap_or_else(|e| panic!("{e}"))
@@ -362,26 +362,26 @@ fn eval_without_self_name_does_not_resolve_recursion() {
 // ── Error cases ──
 
 #[test]
-fn variant_of_wrong_union_fails() {
+fn variant_of_wrong_enum_fails() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     // Red belongs to Color, not Shape
     assert!(
         compiler
             .process_file_str(
-                "def Color : prop := union\n  | Red\ndef Shape : prop := union\n  | Circle\n#check Red : Shape\n"
+                "def Color : prop := enum\n  | Red\ndef Shape : prop := enum\n  | Circle\n#check Red : Shape\n"
             )
             .is_err()
     );
 }
 
 #[test]
-fn check_int_as_union_fails() {
+fn check_int_as_enum_fails() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
     assert!(
         compiler
-            .process_file_str("def Color : prop := union\n  | Red\n#check 42 : Color\n")
+            .process_file_str("def Color : prop := enum\n  | Red\n#check 42 : Color\n")
             .is_err()
     );
 }
@@ -425,7 +425,7 @@ fn codegen_extern_call_is_direct_c_call() {
         codegen.tops,
         codegen.raw_defs,
         codegen.fun_sigs,
-        codegen.union_types,
+        codegen.enum_types,
         codegen.struct_types,
     )
     .unwrap();
@@ -456,7 +456,7 @@ fn codegen_io_extern_uses_inner_c_repr() {
         codegen.tops,
         codegen.raw_defs,
         codegen.fun_sigs,
-        codegen.union_types,
+        codegen.enum_types,
         codegen.struct_types,
     )
     .unwrap();
