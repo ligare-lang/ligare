@@ -248,6 +248,56 @@ fn int_fails_for_bool() {
 }
 
 #[test]
+fn int_fails_for_ptr_c_int() {
+    let (_b, arena) = a();
+    let ptr_c_int = arena.app(
+        arena.builtin(s(&arena, "ptr")),
+        arena.builtin(s(&arena, "c_int")),
+    );
+    assert!(check_empty(&arena, &Term::LitInt(5), ptr_c_int).is_err());
+}
+
+#[test]
+fn ptr_cast_checks_inside_unsafe() {
+    let (b, arena) = a();
+    let mut compiler = Compiler::new(b, &arena);
+    assert_eq!(
+        compiler.process_file_str(
+            "def cast (p : ptr c_int) : ptr c_uint := unsafe { ptr_cast c_uint p }\n"
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn ptr_cast_requires_unsafe() {
+    let (b, arena) = a();
+    let mut compiler = Compiler::new(b, &arena);
+    let err = compiler
+        .process_file_str("def cast (p : ptr c_int) : ptr c_uint := ptr_cast c_uint p\n")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("ptr_cast") && err.contains("unsafe"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn ptr_cast_requires_pointer_argument() {
+    let (b, arena) = a();
+    let mut compiler = Compiler::new(b, &arena);
+    let err = compiler
+        .process_file_str("def bad : ptr c_uint := unsafe { ptr_cast c_uint 1 }\n")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("ptr_cast") && err.contains("pointer"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn lambda_int_to_int() {
     let (b, arena) = a();
     assert_eq!(

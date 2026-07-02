@@ -32,7 +32,7 @@ mod tests;
 // ── Re-exports for convenience ──
 
 pub use context::EmitCtx;
-pub use emitter::{CEmitter, CodeGenerator};
+pub use emitter::{CEmitOptions, CEmitter, CTarget, CodeGenerator};
 pub use expr::ExpressionEmitter;
 pub use match_emit::MatchEmitter;
 pub use names::NameResolver;
@@ -55,6 +55,18 @@ pub fn emit_c(
     struct_types: &[(&str, &Term<'_>)],
 ) -> Result<String, Diagnostic> {
     let emitter = CEmitter::new(struct_types, union_types, fun_sigs)?;
+    emitter.generate(tops, raw_defs, struct_types, union_types)
+}
+
+pub fn emit_c_with_options(
+    tops: &[TopLevel<'_>],
+    raw_defs: &[TopLevel<'_>],
+    fun_sigs: &[(&str, FunSig)],
+    union_types: &[(&str, &Term<'_>)],
+    struct_types: &[(&str, &Term<'_>)],
+    options: CEmitOptions,
+) -> Result<String, Diagnostic> {
+    let emitter = CEmitter::new_with_options(struct_types, union_types, fun_sigs, options)?;
     emitter.generate(tops, raw_defs, struct_types, union_types)
 }
 

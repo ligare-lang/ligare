@@ -79,6 +79,8 @@ pub enum Token {
     Bar,
 
     // Directives
+    #[token("#[global_allocator]")]
+    HashGlobalAllocator,
     #[token("#check")]
     HashCheck,
     #[token("#eval")]

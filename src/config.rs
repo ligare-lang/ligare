@@ -21,6 +21,8 @@ pub const BUILTIN_U32: &str = "u32";
 pub const BUILTIN_U64: &str = "u64";
 pub const BUILTIN_C_INT: &str = "c_int";
 pub const BUILTIN_C_UINT: &str = "c_uint";
+pub const BUILTIN_PTR: &str = "ptr";
+pub const BUILTIN_PTR_CAST: &str = "ptr_cast";
 pub const BUILTIN_BOOL: &str = "bool";
 pub const BUILTIN_STR: &str = "str";
 pub const BUILTIN_IO: &str = "IO";
@@ -41,3 +43,8 @@ pub const BUILTIN_IMPLIES: &str = "implies";
 
 pub const AND_INTRO: &str = "∧-intro";
 pub const AND_ELIM_LEFT: &str = "∧-elim-left";
+
+// ── Code generation attributes ──
+
+pub const GLOBAL_ALLOCATOR_ATTR: &str = "global_allocator";
+pub const GLOBAL_ALLOCATOR_NAME_PREFIX: &str = "__ligare_global_allocator__";

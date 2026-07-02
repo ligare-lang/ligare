@@ -5,15 +5,17 @@
 //! ownership semantics.
 
 use crate::backend::c::context::EmitCtx;
+use crate::backend::c::emitter::GlobalAllocator;
 use crate::backend::c::match_emit::MatchEmitter;
 use crate::backend::c::names::NameResolver;
 use crate::backend::c::types::{StructInfo, UnionInfo};
 use crate::backend::c::value::{CCode, CExpr, CValue, MatchBind, MatchCase, MatchPlan};
 use crate::backend::ir::{CType, FunSig};
-use crate::config::BUILTIN_UNIT;
+use crate::config::{BUILTIN_PTR_CAST, BUILTIN_UNIT};
 use crate::core::syntax::{MatchBranch, PrimOp, Term};
 use crate::diagnostic::Diagnostic;
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 fn c_string_literal(value: &str) -> String {
@@ -74,6 +76,10 @@ pub struct ExpressionEmitter<'a> {
     names: NameResolver,
     /// Counter for nested match expression temporaries.
     match_expr_counter: Cell<u32>,
+    /// Global allocator selected by the C emitter.
+    global_allocator: RefCell<Option<GlobalAllocator>>,
+    /// Counter for statement-expression temporaries used by allocator expansions.
+    allocation_counter: Cell<u32>,
 }
 
 impl<'a> ExpressionEmitter<'a> {
@@ -83,7 +89,13 @@ impl<'a> ExpressionEmitter<'a> {
             fun_sigs,
             names: NameResolver::new(),
             match_expr_counter: Cell::new(1000),
+            global_allocator: RefCell::new(None),
+            allocation_counter: Cell::new(0),
         }
+    }
+
+    pub(crate) fn set_global_allocator(&self, allocator: Option<GlobalAllocator>) {
+        *self.global_allocator.borrow_mut() = allocator;
     }
 
     // ── Main entry ──
@@ -477,6 +489,14 @@ impl<'a> ExpressionEmitter<'a> {
         {
             let left = self.emit_expr(left, ctx, union_map, struct_map)?;
             let right = self.emit_expr(a, ctx, union_map, struct_map)?;
+            if *op == PrimOp::Add && left.ctype == CType::Str && right.ctype == CType::Str {
+                let left_code = self.value_code(left, union_map)?;
+                let right_code = self.value_code(right, union_map)?;
+                return Ok(CValue::code(
+                    self.emit_string_concat(left_code.as_str(), right_code.as_str())?,
+                    CType::Str,
+                ));
+            }
             let left_code = self.value_code(left, union_map)?;
             let right_code = self.value_code(right, union_map)?;
             return Ok(CValue::code(
@@ -486,6 +506,9 @@ impl<'a> ExpressionEmitter<'a> {
         }
         if matches!(*f, Term::PrimOp(_)) {
             return self.emit_expr(a, ctx, union_map, struct_map);
+        }
+        if let Some((target, pointer)) = Self::ptr_cast_parts(term) {
+            return self.emit_ptr_cast(target, pointer, ctx, union_map, struct_map);
         }
         let call = self.collect_call_args(term, ctx, union_map, struct_map)?;
         let param_count = self
@@ -523,6 +546,45 @@ impl<'a> ExpressionEmitter<'a> {
         Ok(CValue::code(
             format!("{}({})", call.function.as_str(), args),
             ret_ty,
+        ))
+    }
+
+    fn ptr_cast_parts<'term>(
+        term: &'term Term<'term>,
+    ) -> Option<(&'term Term<'term>, &'term Term<'term>)> {
+        let Term::App(f, pointer) = term else {
+            return None;
+        };
+        let Term::App(head, target) = *f else {
+            return None;
+        };
+        if matches!(*head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_PTR_CAST) {
+            Some((target, pointer))
+        } else {
+            None
+        }
+    }
+
+    fn emit_ptr_cast(
+        &self,
+        target: &Term<'_>,
+        pointer: &Term<'_>,
+        ctx: &mut EmitCtx,
+        union_map: &HashMap<String, UnionInfo>,
+        struct_map: &HashMap<String, StructInfo>,
+    ) -> Result<CValue, Diagnostic> {
+        let pointer = self.emit_expr(pointer, ctx, union_map, struct_map)?;
+        let pointer_code = self.value_code(pointer, union_map)?;
+        let union_names: HashSet<String> = union_map.keys().cloned().collect();
+        let struct_names: HashSet<String> = struct_map.keys().cloned().collect();
+        let target_ty = CType::Ptr(Box::new(crate::backend::ir::constraint_to_ctype(
+            target,
+            &union_names,
+            &struct_names,
+        )?));
+        Ok(CValue::code(
+            format!("(({}){})", target_ty.c_name(), pointer_code.as_str()),
+            target_ty,
         ))
     }
 
@@ -574,5 +636,24 @@ impl<'a> ExpressionEmitter<'a> {
             PrimOp::Le => format!("({left} <= {right})"),
             PrimOp::Ge => format!("({left} >= {right})"),
         }
+    }
+
+    fn emit_string_concat(&self, left: &str, right: &str) -> Result<String, Diagnostic> {
+        let allocator =
+            self.global_allocator.borrow().clone().ok_or_else(|| {
+                Diagnostic::new("string concatenation requires a global allocator")
+            })?;
+        let id = self.allocation_counter.get();
+        self.allocation_counter.set(id + 1);
+        let l = format!("_ligare_l{id}");
+        let r = format!("_ligare_r{id}");
+        let ln = format!("_ligare_ln{id}");
+        let rn = format!("_ligare_rn{id}");
+        let i = format!("_ligare_i{id}");
+        let out = format!("_ligare_out{id}");
+        Ok(format!(
+            "({{ const char* {l} = ({left}); const char* {r} = ({right}); size_t {ln} = 0; while ({l}[{ln}] != '\\0') {{ {ln}++; }} size_t {rn} = 0; while ({r}[{rn}] != '\\0') {{ {rn}++; }} char* {out} = (char*){}({ln} + {rn} + 1); size_t {i} = 0; for (; {i} < {ln}; {i}++) {{ {out}[{i}] = {l}[{i}]; }} for (size_t _ligare_j{id} = 0; _ligare_j{id} < {rn}; _ligare_j{id}++) {{ {out}[{ln} + _ligare_j{id}] = {r}[_ligare_j{id}]; }} {out}[{ln} + {rn}] = '\\0'; {out}; }})",
+            allocator.allocate
+        ))
     }
 }

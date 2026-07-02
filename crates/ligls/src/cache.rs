@@ -1455,7 +1455,9 @@ fn item_constraint(top: &TopLevel<'_>) -> Option<String> {
             }
         }
         TopLevel::TLExternDef(_, _, ret, _) => Some(Constraint::from_term(ret).display),
-        TopLevel::TLInstance(_, constraint, _, _) => Some(Constraint::from_term(constraint).display),
+        TopLevel::TLInstance(_, constraint, _, _) => {
+            Some(Constraint::from_term(constraint).display)
+        }
         TopLevel::TLTheorem(_, prop, _, _) | TopLevel::TLCheck(_, prop, _) => {
             Some(Constraint::from_term(prop).display)
         }

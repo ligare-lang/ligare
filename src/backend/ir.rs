@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 
 use crate::checker::builtin::BuiltinRegistry;
-use crate::config::{BUILTIN_IO, BUILTIN_UNIT};
+use crate::config::{BUILTIN_IO, BUILTIN_PTR, BUILTIN_UNIT};
 use crate::core::semantics::SemanticQueries;
 use crate::core::syntax::Term;
 use crate::diagnostic::Diagnostic;
@@ -26,6 +26,7 @@ pub enum CType {
     CInt,
     CUInt,
     Str,
+    Ptr(Box<CType>),
     /// Named union type (for tagged unions)
     Union(String),
     /// Named struct type (for product types)
@@ -46,6 +47,7 @@ impl CType {
             CType::CInt => "int".into(),
             CType::CUInt => "unsigned int".into(),
             CType::Str => "const char*".into(),
+            CType::Ptr(inner) => format!("{}*", inner.c_name()),
             CType::Union(name) => name.clone(),
             CType::Struct(name) => name.clone(),
         }
@@ -63,7 +65,7 @@ impl CType {
             | CType::UInt64
             | CType::CInt
             | CType::CUInt => "0".into(),
-            CType::Str => "NULL".into(),
+            CType::Str | CType::Ptr(_) => "NULL".into(),
             CType::Union(name) | CType::Struct(name) => format!("({}){{0}}", name),
         }
     }
@@ -162,7 +164,9 @@ fn infer_ret_ctype(
             .or_else(|_| infer_ret_ctype(inner, param_types, union_names, struct_names)),
         Term::Unsafe(inner) => infer_ret_ctype(inner, param_types, union_names, struct_names),
         Term::Pure(inner) => infer_ret_ctype(inner, param_types, union_names, struct_names),
-        Term::App(f, _) if is_primop_app(f) => Ok(CType::Int64),
+        Term::App(f, _) if is_primop_app(f) => {
+            infer_primop_ret_ctype(body).unwrap_or(Ok(CType::Int64))
+        }
         Term::IfThenElse(_, then_term, else_term) => {
             let then_ty = infer_ret_ctype(then_term, param_types, union_names, struct_names)?;
             let else_ty = infer_ret_ctype(else_term, param_types, union_names, struct_names)?;
@@ -208,6 +212,36 @@ fn is_primop_app(term: &Term<'_>) -> bool {
     match term {
         Term::PrimOp(_) => true,
         Term::App(f, _) => is_primop_app(f),
+        _ => false,
+    }
+}
+
+fn infer_primop_ret_ctype(term: &Term<'_>) -> Option<Result<CType, Diagnostic>> {
+    let Term::App(f, right) = term else {
+        return None;
+    };
+    let Term::App(prim, left) = *f else {
+        return None;
+    };
+    let Term::PrimOp(op) = *prim else {
+        return None;
+    };
+    if *op == crate::core::syntax::PrimOp::Add && term_is_str_like(left) && term_is_str_like(right)
+    {
+        return Some(Ok(CType::Str));
+    }
+    Some(Ok(CType::Int64))
+}
+
+fn term_is_str_like(term: &Term<'_>) -> bool {
+    match term {
+        Term::LitStr(_) => true,
+        Term::Annot(_, constraint) => {
+            matches!(**constraint, Term::Builtin("str") | Term::Global("str"))
+        }
+        Term::Unsafe(inner) | Term::Pure(inner) => term_is_str_like(inner),
+        Term::App(_, _) => infer_primop_ret_ctype(term)
+            .is_some_and(|result| result.is_ok_and(|ty| ty == CType::Str)),
         _ => false,
     }
 }
@@ -262,6 +296,19 @@ pub fn constraint_to_ctype(
         // Handle monomorphized generic type applications like
         // `Option int` → Union("Option__int") when that instance exists.
         Term::App(head, _) => {
+            if matches!(head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_PTR) {
+                let (_, args) = collect_type_app(t);
+                let [inner] = args.as_slice() else {
+                    return Err(Diagnostic::new(format!(
+                        "`{BUILTIN_PTR}` expects exactly one type argument"
+                    )));
+                };
+                return Ok(CType::Ptr(Box::new(constraint_to_ctype(
+                    inner,
+                    union_names,
+                    struct_names,
+                )?)));
+            }
             if let Term::App(io_head, inner) = t
                 && matches!(io_head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_IO)
             {

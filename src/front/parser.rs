@@ -44,12 +44,7 @@ pub enum TopLevel<'bump> {
         Span,
     ),
     /// Compile-time implicit instance: name, constraint, value, span.
-    TLInstance(
-        Name<'bump>,
-        &'bump Term<'bump>,
-        &'bump Term<'bump>,
-        Span,
-    ),
+    TLInstance(Name<'bump>, &'bump Term<'bump>, &'bump Term<'bump>, Span),
     TLTheorem(Name<'bump>, &'bump Term<'bump>, &'bump Term<'bump>, Span),
     TLUse(&'bump [UseTree<'bump>], Visibility, Span),
     TLMod(Name<'bump>, Span),
@@ -67,7 +62,8 @@ pub(super) const KEYWORDS: &[&str] = &[
 /// Names that represent language builtins (not user-defined).
 pub(super) const BUILTIN_NAMES: &[&str] = &[
     "int", "bool", "str", "IO", "()", "data", "prop", "theorem", "proof", "and", "or", "not",
-    "implies", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "c_int", "c_uint",
+    "implies", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "c_int", "c_uint", "ptr",
+    "ptr_cast",
 ];
 
 pub(super) type SpannedToken = (Token, std::ops::Range<usize>);

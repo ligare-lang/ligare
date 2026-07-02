@@ -32,6 +32,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                         | Token::KwExtern
                         | Token::HashCheck
                         | Token::HashEval
+                        | Token::HashGlobalAllocator
                         | Token::KwTheorem
                         | Token::KwPub
                         | Token::KwUse
@@ -112,7 +113,11 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         let mconstr = self
             .parse_constraint_annotation()
             .map(|c| if implicit { self.arena.implicit(c) } else { c });
-        let close = if implicit { Token::RBrace } else { Token::RParen };
+        let close = if implicit {
+            Token::RBrace
+        } else {
+            Token::RParen
+        };
         if !self.try_expect(&close) {
             return None;
         }

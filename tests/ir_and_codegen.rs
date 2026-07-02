@@ -71,6 +71,20 @@ fn constraint_var_errors() {
     assert!(err.message.contains("Cannot map constraint"));
 }
 
+#[test]
+fn constraint_ptr_returns_pointer_type() {
+    let (_b, arena) = setup();
+    let names = HashSet::new();
+    let ptr_c_int = arena.app(
+        arena.builtin(s(&arena, "ptr")),
+        arena.builtin(s(&arena, "c_int")),
+    );
+    assert_eq!(
+        constraint_to_ctype(ptr_c_int, &names, &names).unwrap(),
+        CType::Ptr(Box::new(CType::CInt))
+    );
+}
+
 // ── FunSig::from_func ──
 
 #[test]
@@ -137,6 +151,26 @@ fn codegen_match_with_str_payload() {
     )
     .unwrap_or_else(|e| panic!("{e}"));
     assert!(c.contains("const char*"), "missing str support:\n{c}");
+}
+
+#[test]
+fn codegen_ptr_cast_emits_c_cast() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    compiler
+        .collect_file_str("def cast (p : ptr c_int) : ptr c_uint := unsafe { ptr_cast c_uint p }\n")
+        .unwrap();
+    let c = emit_c(
+        compiler.tops(),
+        compiler.raw_defs(),
+        compiler.fun_sigs(),
+        &compiler.union_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert!(c.contains("unsigned int* cast(int* p)"), "{c}");
+    assert!(c.contains("((unsigned int*)p)"), "{c}");
+    assert!(!c.contains("ptr_cast("), "{c}");
 }
 
 // ── C codegen: multiple unions ──

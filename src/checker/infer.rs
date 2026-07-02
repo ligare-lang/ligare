@@ -5,7 +5,7 @@ use crate::checker::builtin::LogicKind;
 use crate::checker::context::{
     Context, add_refine, add_theorem, expand_constraint, extend_ctx, extend_ctx_term, lookup_refine,
 };
-use crate::config::{BUILTIN_BOOL, BUILTIN_DATA, BUILTIN_IO};
+use crate::config::{BUILTIN_BOOL, BUILTIN_DATA, BUILTIN_IO, BUILTIN_PTR, BUILTIN_PTR_CAST};
 use crate::core::syntax::{MatchBranch, Name, PrimOp, Term, Universe};
 use crate::diagnostic::Diagnostic;
 use crate::pretty::PrettyPrinter;
@@ -36,6 +36,9 @@ impl<'bump> TypeChecker<'bump> {
         a: &'bump Term<'bump>,
         constraint: &'bump Term<'bump>,
     ) -> Result<(), Diagnostic> {
+        if let Some(target) = self.ptr_cast_target(f)? {
+            return self.check_ptr_cast(ctx, target, a, constraint);
+        }
         if let Some(name) = self.extern_head_name(f)?
             && self.unsafe_depth == 0
         {
@@ -119,7 +122,11 @@ impl<'bump> TypeChecker<'bump> {
                         let f_with_instance = self.arena.app(f, instance);
                         let result = self.check_app(ctx, f_with_instance, a, constraint);
                         return result.map_err(|err| {
-                            diag!("while applying implicit instance `{}`: {}", instance_name, err)
+                            diag!(
+                                "while applying implicit instance `{}`: {}",
+                                instance_name,
+                                err
+                            )
                         });
                     }
                     self.check(ctx, a, a_dom)?;
@@ -180,6 +187,24 @@ impl<'bump> TypeChecker<'bump> {
         constraint: &'bump Term<'bump>,
     ) -> Result<(), Diagnostic> {
         let int = self.arena.builtin(self.arena.alloc_str("int"));
+        if op == PrimOp::Add {
+            let str_ty = self.arena.builtin(self.arena.alloc_str("str"));
+            if self.check(ctx, first, str_ty).is_ok() && self.check(ctx, second, str_ty).is_ok() {
+                self.check_domain_match(str_ty, constraint)?;
+                let term = self
+                    .arena
+                    .app(self.arena.app(self.arena.prim_op(op), first), second);
+                return self
+                    .check_by_constraint(ctx, term, constraint)
+                    .or_else(|err| {
+                        if self.result_constraint_satisfies_constraint(str_ty, constraint) {
+                            Ok(())
+                        } else {
+                            Err(err)
+                        }
+                    });
+            }
+        }
         self.check(ctx, first, int)?;
         self.check(ctx, second, int)?;
         let result_ty = match op {
@@ -404,7 +429,11 @@ impl<'bump> TypeChecker<'bump> {
             Term::StructCons(sname, _) | Term::Variant(sname, _, _) => {
                 Ok(self.arena.builtin(sname))
             }
-            Term::Unsafe(inner) => self.infer_binding_constraint(ctx, inner),
+            Term::Unsafe(inner) => {
+                let mut checker = self.clone_for_unsafe();
+                checker.unsafe_depth += 1;
+                checker.infer_binding_constraint(ctx, inner)
+            }
             Term::Pure(inner) => self.infer_pure_constraint(ctx, inner),
             Term::Builtin(name) | Term::Global(name) if self.lookup_extern(name).is_some() => self
                 .lookup_extern(name)
@@ -412,13 +441,19 @@ impl<'bump> TypeChecker<'bump> {
             Term::StructProj(subject, idx) => {
                 self.infer_struct_projection_constraint(ctx, subject, *idx)
             }
+            Term::App(f, a) => {
+                if let Some(target) = self.ptr_cast_target(f)? {
+                    self.infer_ptr_cast_constraint(ctx, target, a)
+                } else {
+                    self.infer_app_constraint(ctx, f)
+                }
+            }
             Term::Builtin(name) | Term::Global(name) if self.is_struct_projector_name(name) => {
                 Err(diag!("unknown struct field projector: {}", name))
             }
             Term::IfThenElse(_, tbranch, _) | Term::Match(_, [.., (_, _, tbranch)]) => {
                 self.infer_binding_constraint(ctx, tbranch)
             }
-            Term::App(f, _) => self.infer_app_constraint(ctx, f),
             Term::Var(i) => ctx
                 .lookup(*i)
                 .ok_or_else(|| diag!("unbound term index {}", i)),
@@ -434,9 +469,18 @@ impl<'bump> TypeChecker<'bump> {
         let f_dsg = self.desugar_with_context(f)?;
         match f_dsg {
             Term::App(inner, _) if matches!(inner, Term::PrimOp(_)) => match inner {
-                Term::PrimOp(
-                    PrimOp::Add | PrimOp::Sub | PrimOp::Mul | PrimOp::Div | PrimOp::Mod_,
-                ) => Ok(self.arena.builtin(self.arena.alloc_str("int"))),
+                Term::PrimOp(PrimOp::Add) => {
+                    if let Term::App(_, first) = f_dsg {
+                        let str_ty = self.arena.builtin(self.arena.alloc_str("str"));
+                        if self.check(ctx, first, str_ty).is_ok() {
+                            return Ok(str_ty);
+                        }
+                    }
+                    Ok(self.arena.builtin(self.arena.alloc_str("int")))
+                }
+                Term::PrimOp(PrimOp::Sub | PrimOp::Mul | PrimOp::Div | PrimOp::Mod_) => {
+                    Ok(self.arena.builtin(self.arena.alloc_str("int")))
+                }
                 Term::PrimOp(
                     PrimOp::Eq | PrimOp::Lt | PrimOp::Gt | PrimOp::Le | PrimOp::Ge | PrimOp::Neq,
                 ) => Ok(self.arena.builtin(self.arena.alloc_str(BUILTIN_BOOL))),
@@ -466,6 +510,62 @@ impl<'bump> TypeChecker<'bump> {
                 },
                 None => Ok(self.arena.builtin(self.arena.alloc_str(BUILTIN_DATA))),
             },
+        }
+    }
+
+    fn ptr_cast_target(
+        &self,
+        f: &'bump Term<'bump>,
+    ) -> Result<Option<&'bump Term<'bump>>, Diagnostic> {
+        let f_dsg = self.desugar_with_context(f)?;
+        if let Term::App(head, target) = f_dsg
+            && matches!(head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_PTR_CAST)
+        {
+            Ok(Some(target))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn ptr_constraint(&self, inner: &'bump Term<'bump>) -> &'bump Term<'bump> {
+        self.arena
+            .app(self.arena.builtin(self.arena.alloc_str(BUILTIN_PTR)), inner)
+    }
+
+    fn check_ptr_cast(
+        &self,
+        ctx: &Context<'bump>,
+        target: &'bump Term<'bump>,
+        pointer: &'bump Term<'bump>,
+        constraint: &'bump Term<'bump>,
+    ) -> Result<(), Diagnostic> {
+        if self.unsafe_depth == 0 {
+            return Err(diag!(
+                "`{BUILTIN_PTR_CAST}` can only appear in an unsafe context"
+            ));
+        }
+        let result = self.infer_ptr_cast_constraint(ctx, target, pointer)?;
+        self.check_domain_match(result, constraint)
+    }
+
+    fn infer_ptr_cast_constraint(
+        &self,
+        ctx: &Context<'bump>,
+        target: &'bump Term<'bump>,
+        pointer: &'bump Term<'bump>,
+    ) -> Result<&'bump Term<'bump>, Diagnostic> {
+        let inferred = self.infer_binding_constraint(ctx, pointer)?;
+        let inferred_nf = self.evaluator.whnf(inferred)?;
+        match inferred_nf {
+            Term::App(head, _) if matches!(head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_PTR) =>
+            {
+                self.check(ctx, pointer, inferred)?;
+                Ok(self.ptr_constraint(target))
+            }
+            other => Err(diag!(
+                "`{BUILTIN_PTR_CAST}` expects a pointer argument, got {}",
+                PrettyPrinter::pretty(other)
+            )),
         }
     }
 
@@ -587,6 +687,10 @@ impl<'bump> TypeChecker<'bump> {
             Term::App(head, a) => {
                 if matches!(head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_IO) {
                     self.check(ctx, term, a)
+                } else if matches!(head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_PTR)
+                {
+                    let inferred = self.infer_binding_constraint(ctx, term)?;
+                    self.check_domain_match(inferred, norm)
                 } else {
                     self.try_check_logical_op(ctx, term, head, a, norm)
                 }
@@ -910,11 +1014,7 @@ impl<'bump> TypeChecker<'bump> {
         }
     }
 
-    pub(crate) fn constraint_equiv(
-        &self,
-        a: &'bump Term<'bump>,
-        b: &'bump Term<'bump>,
-    ) -> bool {
+    pub(crate) fn constraint_equiv(&self, a: &'bump Term<'bump>, b: &'bump Term<'bump>) -> bool {
         let Ok(a_val) = self.evaluator.whnf(Self::implicit_inner(a)) else {
             return false;
         };
@@ -969,7 +1069,10 @@ impl<'bump> TypeChecker<'bump> {
         let bh = collect(b, &mut bb);
         matches!((ah, bh), (Term::Builtin(x) | Term::Global(x), Term::Builtin(y) | Term::Global(y)) if x == y)
             && aa.len() == bb.len()
-            && aa.iter().zip(bb.iter()).all(|(x, y)| self.constraint_equiv(x, y))
+            && aa
+                .iter()
+                .zip(bb.iter())
+                .all(|(x, y)| self.constraint_equiv(x, y))
     }
 
     fn is_implicit_meta_constraint(&self, term: &'bump Term<'bump>) -> bool {

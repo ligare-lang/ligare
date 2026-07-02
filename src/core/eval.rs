@@ -233,6 +233,14 @@ impl<'bump> Evaluator<'bump> {
                 };
                 Ok(self.arena.alloc(op.apply(*x, *y)))
             }
+            (Term::LitStr(x), Term::LitStr(y))
+                if matches!(prim, Term::PrimOp(crate::core::syntax::PrimOp::Add)) =>
+            {
+                let mut joined = String::with_capacity(x.len() + y.len());
+                joined.push_str(x);
+                joined.push_str(y);
+                Ok(self.arena.lit_str(self.arena.alloc_str(&joined)))
+            }
             _ => Err(format!(
                 "Arithmetic on non-integer: {} and {}",
                 pretty(x),

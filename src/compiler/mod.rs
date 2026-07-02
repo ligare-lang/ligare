@@ -15,7 +15,7 @@ use bumpalo::Bump;
 use crate::backend::ir::FunSig;
 use crate::checker::context::empty_ctx;
 use crate::checker::{CheckMode, TypeChecker};
-use crate::config::BUILTIN_DATA;
+use crate::config::{BUILTIN_DATA, GLOBAL_ALLOCATOR_NAME_PREFIX};
 use crate::core::eval::Evaluator;
 use crate::core::pool::TermArena;
 use crate::core::semantics::SemanticQueries;
@@ -339,6 +339,7 @@ impl<'bump> Compiler<'bump> {
         body: &'bump Term<'bump>,
         span: std::ops::Range<usize>,
     ) -> Result<(), Diagnostic> {
+        let name = self.codegen_attribute_target_name(name);
         let body = self.desugar_checked_def(params, m_ret, body)?;
         let semantics = SemanticQueries::new(self.checker.builtins());
         let universe = semantics.universe(&empty_ctx(), body);
@@ -691,5 +692,11 @@ impl<'bump> Compiler<'bump> {
             Term::StructProj(subject, _) => Self::contains_do(subject),
             _ => false,
         }
+    }
+
+    pub(crate) fn codegen_attribute_target_name(&self, name: Name<'bump>) -> Name<'bump> {
+        name.strip_prefix(GLOBAL_ALLOCATOR_NAME_PREFIX)
+            .map(|stripped| self.arena.alloc_str(stripped))
+            .unwrap_or(name)
     }
 }

@@ -12,10 +12,49 @@ use crate::backend::c::names::NameResolver;
 use crate::backend::c::types::{TypeAnalyzer, TypeMapper};
 use crate::backend::c::value::CExpr;
 use crate::backend::ir::{CType, FunSig};
-use crate::core::syntax::{Name, Term};
+use crate::config::GLOBAL_ALLOCATOR_NAME_PREFIX;
+use crate::core::syntax::{Name, PrimOp, Term};
 use crate::diagnostic::Diagnostic;
 use crate::front::parser::TopLevel;
 use std::collections::HashSet;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CTarget {
+    Hosted,
+    BareMetal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CEmitOptions {
+    pub target: CTarget,
+}
+
+impl Default for CEmitOptions {
+    fn default() -> Self {
+        Self {
+            target: CTarget::Hosted,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GlobalAllocator {
+    pub(crate) allocate: String,
+    pub(crate) deallocate: String,
+    pub(crate) reallocate: String,
+    pub(crate) is_default: bool,
+}
+
+impl GlobalAllocator {
+    fn hosted_default() -> Self {
+        Self {
+            allocate: "ligare_default_allocate".into(),
+            deallocate: "ligare_default_deallocate".into(),
+            reallocate: "ligare_default_reallocate".into(),
+            is_default: true,
+        }
+    }
+}
 
 /// Generates complete C source code from Ligare top-level items.
 ///
@@ -60,6 +99,8 @@ pub struct CEmitter<'a> {
     expr_emitter: ExpressionEmitter<'a>,
     /// Match block translation.
     match_emitter: MatchEmitter,
+    /// Target-specific code generation options.
+    options: CEmitOptions,
 }
 
 impl<'a> CEmitter<'a> {
@@ -71,6 +112,15 @@ impl<'a> CEmitter<'a> {
         union_types: &[(&str, &Term<'_>)],
         fun_sigs: &'a [(&'a str, FunSig)],
     ) -> Result<Self, Diagnostic> {
+        Self::new_with_options(struct_types, union_types, fun_sigs, CEmitOptions::default())
+    }
+
+    pub fn new_with_options(
+        struct_types: &[(&str, &Term<'_>)],
+        union_types: &[(&str, &Term<'_>)],
+        fun_sigs: &'a [(&'a str, FunSig)],
+        options: CEmitOptions,
+    ) -> Result<Self, Diagnostic> {
         let type_analyzer = TypeAnalyzer::new(struct_types, union_types)?;
         let expr_emitter = ExpressionEmitter::new(fun_sigs);
         Ok(Self {
@@ -79,6 +129,7 @@ impl<'a> CEmitter<'a> {
             name_resolver: NameResolver::new(),
             expr_emitter,
             match_emitter: MatchEmitter::new(),
+            options,
         })
     }
 
@@ -195,6 +246,7 @@ impl<'a> CEmitter<'a> {
             | CType::CUInt => {
                 out.push_str(&format!("    printf(\"%ld\\n\", (int64_t)({}));\n", expr))
             }
+            CType::Ptr(_) => out.push_str(&format!("    printf(\"%p\\n\", (void*)({}));\n", expr)),
             CType::Union(_) => out.push_str(&format!("    printf(\"%d\\n\", ({}).tag);\n", expr)),
             CType::Struct(_) => out.push_str("    printf(\"<struct>\\n\");\n"),
         }
@@ -217,6 +269,170 @@ impl<'a> CEmitter<'a> {
         outputs
     }
 
+    fn resolve_global_allocator(
+        &self,
+        raw_defs: &[TopLevel<'_>],
+        allocation_required: bool,
+    ) -> Result<Option<GlobalAllocator>, Diagnostic> {
+        let mut found = Vec::new();
+        for raw_def in raw_defs {
+            let TopLevel::TLDef(name, _params, _ret, body, _) = raw_def else {
+                continue;
+            };
+            if !name.starts_with(GLOBAL_ALLOCATOR_NAME_PREFIX) {
+                continue;
+            }
+            found.push((*name, *body));
+        }
+        if found.len() > 1 {
+            return Err(Diagnostic::new(
+                "multiple #[global_allocator] definitions are not allowed",
+            ));
+        }
+        if let Some((encoded_name, body)) = found.into_iter().next() {
+            return self.allocator_from_definition(encoded_name, body).map(Some);
+        }
+        if !allocation_required {
+            return Ok(None);
+        }
+        match self.options.target {
+            CTarget::Hosted => Ok(Some(GlobalAllocator::hosted_default())),
+            CTarget::BareMetal => Err(Diagnostic::new(
+                "bare-metal target requires an explicit #[global_allocator]",
+            )),
+        }
+    }
+
+    fn allocator_from_definition(
+        &self,
+        encoded_name: &str,
+        body: &Term<'_>,
+    ) -> Result<GlobalAllocator, Diagnostic> {
+        let instance_name = encoded_name
+            .strip_prefix(GLOBAL_ALLOCATOR_NAME_PREFIX)
+            .unwrap_or(encoded_name);
+        let body = self.peel_annotations(body);
+        let Term::StructCons(_, fields) = body else {
+            return Ok(GlobalAllocator {
+                allocate: self
+                    .name_resolver
+                    .escape(&format!("{instance_name}_allocate")),
+                deallocate: self
+                    .name_resolver
+                    .escape(&format!("{instance_name}_deallocate")),
+                reallocate: self
+                    .name_resolver
+                    .escape(&format!("{instance_name}_reallocate")),
+                is_default: false,
+            });
+        };
+        if fields.len() < 3 {
+            return Err(Diagnostic::new(format!(
+                "#[global_allocator] `{instance_name}` must provide allocate, deallocate, and reallocate"
+            )));
+        }
+        Ok(GlobalAllocator {
+            allocate: self.allocator_field_name(fields[0], "allocate")?,
+            deallocate: self.allocator_field_name(fields[1], "deallocate")?,
+            reallocate: self.allocator_field_name(fields[2], "reallocate")?,
+            is_default: false,
+        })
+    }
+
+    fn peel_annotations<'t>(&self, mut term: &'t Term<'t>) -> &'t Term<'t> {
+        while let Term::Annot(inner, _) | Term::Unsafe(inner) | Term::Pure(inner) = term {
+            term = inner;
+        }
+        term
+    }
+
+    fn allocator_field_name(&self, term: &Term<'_>, field: &str) -> Result<String, Diagnostic> {
+        match self.peel_annotations(term) {
+            Term::Builtin(name) | Term::Global(name) => Ok(self.name_resolver.escape(name)),
+            other => Err(Diagnostic::new(format!(
+                "#[global_allocator] field `{field}` must be a direct function name, got {other:?}"
+            ))),
+        }
+    }
+
+    fn term_requires_allocation(&self, term: &Term<'_>) -> bool {
+        match term {
+            Term::App(f, _)
+                if self.is_string_concat_app(term) || self.term_requires_allocation(f) =>
+            {
+                true
+            }
+            Term::App(f, a) => self.term_requires_allocation(f) || self.term_requires_allocation(a),
+            Term::Let(_, val, body, c) => {
+                self.term_requires_allocation(val)
+                    || self.term_requires_allocation(body)
+                    || c.is_some_and(|c| self.term_requires_allocation(c))
+            }
+            Term::IfThenElse(c, t, f) => {
+                self.term_requires_allocation(c)
+                    || self.term_requires_allocation(t)
+                    || self.term_requires_allocation(f)
+            }
+            Term::Annot(inner, c) => {
+                self.term_requires_allocation(inner) || self.term_requires_allocation(c)
+            }
+            Term::Unsafe(inner) | Term::Pure(inner) | Term::Lam(inner) => {
+                self.term_requires_allocation(inner)
+            }
+            Term::StructCons(_, values) | Term::Variant(_, _, values) => values
+                .iter()
+                .any(|value| self.term_requires_allocation(value)),
+            Term::StructProj(subject, _) => self.term_requires_allocation(subject),
+            Term::Match(scrut, branches) => {
+                self.term_requires_allocation(scrut)
+                    || branches.iter().any(|(_, binds, body)| {
+                        self.term_requires_allocation(body)
+                            || binds.iter().any(|(_, c)| self.term_requires_allocation(c))
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    fn is_string_concat_app(&self, term: &Term<'_>) -> bool {
+        let Term::App(f, right) = term else {
+            return false;
+        };
+        let Term::App(prim, left) = *f else {
+            return false;
+        };
+        matches!(*prim, Term::PrimOp(PrimOp::Add))
+            && self.term_is_string_like(left)
+            && self.term_is_string_like(right)
+    }
+
+    fn term_is_string_like(&self, term: &Term<'_>) -> bool {
+        match term {
+            Term::LitStr(_) => true,
+            Term::Annot(_, constraint) => {
+                matches!(**constraint, Term::Builtin("str") | Term::Global("str"))
+            }
+            Term::Unsafe(inner) | Term::Pure(inner) => self.term_is_string_like(inner),
+            Term::App(f, _) if self.is_string_concat_app(term) => true,
+            Term::Builtin(name) | Term::Global(name) => self
+                .fun_sigs
+                .iter()
+                .find(|(n, _)| *n == *name)
+                .is_some_and(|(_, sig)| sig.ret_type == CType::Str),
+            _ => false,
+        }
+    }
+
+    fn emit_default_allocator(out: &mut String) {
+        out.push_str(
+            "static void* ligare_default_allocate(size_t size) { return malloc(size); }\n",
+        );
+        out.push_str("static void ligare_default_deallocate(void* ptr) { free(ptr); }\n");
+        out.push_str(
+            "static void* ligare_default_reallocate(void* ptr, size_t size) { return realloc(ptr, size); }\n\n",
+        );
+    }
+
     fn generate_with_outputs(
         &self,
         tops: &[TopLevel<'_>],
@@ -225,8 +441,38 @@ impl<'a> CEmitter<'a> {
         union_types: &[(&str, &Term<'_>)],
         outputs: &[&Term<'_>],
     ) -> Result<String, Diagnostic> {
+        let mut called_names: HashSet<String> = if outputs.is_empty() {
+            self.name_resolver.all_def_names(raw_defs)
+        } else {
+            self.name_resolver.collect_called_names(outputs, raw_defs)
+        };
+        let allocation_required =
+            self.codegen_roots_require_allocation(tops, raw_defs, outputs, &called_names);
+        let allocator = self.resolve_global_allocator(raw_defs, allocation_required)?;
+        self.expr_emitter.set_global_allocator(allocator.clone());
+        if let Some(allocator) = &allocator
+            && !allocator.is_default
+        {
+            called_names.insert(allocator.allocate.clone());
+            called_names.insert(allocator.deallocate.clone());
+            called_names.insert(allocator.reallocate.clone());
+        }
+
         let mut out =
-            String::from("#include <stdio.h>\n#include <stdint.h>\n#include <stddef.h>\n\n");
+            String::from("#include <stdio.h>\n#include <stdint.h>\n#include <stddef.h>\n");
+        if allocator
+            .as_ref()
+            .is_some_and(|allocator| allocator.is_default)
+        {
+            out.push_str("#include <stdlib.h>\n");
+        }
+        out.push('\n');
+        if allocator
+            .as_ref()
+            .is_some_and(|allocator| allocator.is_default)
+        {
+            Self::emit_default_allocator(&mut out);
+        }
 
         self.type_analyzer
             .emit_type_declarations(&mut out, struct_types, union_types)?;
@@ -266,14 +512,11 @@ impl<'a> CEmitter<'a> {
             }
         }
 
-        let called_names: HashSet<String> = if outputs.is_empty() {
-            self.name_resolver.all_def_names(raw_defs)
-        } else {
-            self.name_resolver.collect_called_names(outputs, raw_defs)
-        };
-
         for raw_def in raw_defs {
             if let TopLevel::TLDef(name, params, _m_ret, body, _) = raw_def {
+                if name.starts_with(GLOBAL_ALLOCATOR_NAME_PREFIX) {
+                    continue;
+                }
                 if *name == "main" || params.is_empty() && self.name_resolver.count_lams(body) == 0
                 {
                     continue;
@@ -333,6 +576,38 @@ impl<'a> CEmitter<'a> {
         }
         out.push_str("    return 0;\n}\n");
         Ok(out)
+    }
+
+    fn codegen_roots_require_allocation(
+        &self,
+        tops: &[TopLevel<'_>],
+        raw_defs: &[TopLevel<'_>],
+        outputs: &[&Term<'_>],
+        called_names: &HashSet<String>,
+    ) -> bool {
+        outputs
+            .iter()
+            .any(|term| self.term_requires_allocation(term))
+            || self
+                .runtime_main_body(tops)
+                .is_some_and(|body| self.term_requires_allocation(body))
+            || tops.iter().any(|top| {
+                matches!(
+                    top,
+                    TopLevel::TLDef(name, params, _, body, _)
+                        if *name != "main"
+                            && params.is_empty()
+                            && self.name_resolver.count_lams(body) == 0
+                            && self.term_requires_allocation(body)
+                )
+            })
+            || raw_defs.iter().any(|top| {
+                matches!(
+                    top,
+                    TopLevel::TLDef(name, _, _, body, _)
+                        if called_names.contains(*name) && self.term_requires_allocation(body)
+                )
+            })
     }
 
     fn runtime_main_body<'t>(&self, tops: &'t [TopLevel<'_>]) -> Option<&'t Term<'t>> {

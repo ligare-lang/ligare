@@ -86,7 +86,12 @@ impl<'a> SemanticQueries<'a> {
             }
             Term::Universe(Universe::UData) => ConstraintKind::DataTop,
             Term::Universe(_) => ConstraintKind::MetaConstraint,
-            Term::Builtin(name) | Term::Global(name) if matches!(*name, "int" | "bool" | "str") => {
+            Term::Builtin(name) | Term::Global(name)
+                if matches!(*name, "int" | "bool" | "str" | "ptr") =>
+            {
+                ConstraintKind::BuiltinDataConstraint
+            }
+            Term::App(head, _) if matches!(head, Term::Builtin(name) | Term::Global(name) if *name == "ptr") => {
                 ConstraintKind::BuiltinDataConstraint
             }
             Term::Builtin(name) | Term::Global(name) if matches!(*name, "and" | "or" | "not") => {

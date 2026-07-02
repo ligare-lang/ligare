@@ -150,9 +150,7 @@ impl<'bump> Compiler<'bump> {
             Term::Let(n, v, b, mc) => {
                 let v = self.elaborate_implicit_apps(v)?;
                 let b = self.elaborate_implicit_apps(b)?;
-                let mc = mc
-                    .map(|c| self.elaborate_implicit_apps(c))
-                    .transpose()?;
+                let mc = mc.map(|c| self.elaborate_implicit_apps(c)).transpose()?;
                 Ok(self.arena.let_(n, v, b, mc))
             }
             Term::Lam(body) => Ok(self.arena.lam(self.elaborate_implicit_apps(body)?)),
@@ -177,7 +175,9 @@ impl<'bump> Compiler<'bump> {
                     .iter()
                     .map(|f| self.elaborate_implicit_apps(f))
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(self.arena.struct_cons(name, self.arena.alloc_slice(&fields)))
+                Ok(self
+                    .arena
+                    .struct_cons(name, self.arena.alloc_slice(&fields)))
             }
             Term::StructProj(subject, idx) => Ok(self
                 .arena
@@ -187,7 +187,9 @@ impl<'bump> Compiler<'bump> {
                     .iter()
                     .map(|p| self.elaborate_implicit_apps(p))
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(self.arena.variant(name, *idx, self.arena.alloc_slice(&payloads)))
+                Ok(self
+                    .arena
+                    .variant(name, *idx, self.arena.alloc_slice(&payloads)))
             }
             Term::Match(scrut, branches) => {
                 let scrut = self.elaborate_implicit_apps(scrut)?;
@@ -218,9 +220,9 @@ impl<'bump> Compiler<'bump> {
             let Some((_, instance)) = self.checker.lookup_instance(domain)? else {
                 return Err(Diagnostic::new(format!(
                     "missing implicit instance for {}",
-                    crate::pretty::PrettyPrinter::pretty(crate::checker::TypeChecker::implicit_inner(
-                        domain
-                    ))
+                    crate::pretty::PrettyPrinter::pretty(
+                        crate::checker::TypeChecker::implicit_inner(domain)
+                    )
                 )));
             };
             f = self.arena.app(f, instance);
@@ -302,9 +304,7 @@ impl<'bump> Compiler<'bump> {
             Term::LitInt(_) => Some(self.arena.builtin(self.arena.alloc_str("int"))),
             Term::LitBool(_) => Some(self.arena.builtin(self.arena.alloc_str("bool"))),
             Term::LitStr(_) => Some(self.arena.builtin(self.arena.alloc_str("str"))),
-            Term::StructCons(name, _) | Term::Variant(name, _, _) => {
-                Some(self.arena.builtin(name))
-            }
+            Term::StructCons(name, _) | Term::Variant(name, _, _) => Some(self.arena.builtin(name)),
             Term::Builtin(name) | Term::Global(name) => self.env.get(name).and_then(|def| {
                 if let Term::Annot(_, constraint) = def {
                     Some(*constraint)

@@ -656,6 +656,10 @@ impl<'bump> Compiler<'bump> {
             .collect::<HashSet<_>>();
         let mut fun_sigs = Vec::new();
         for top in &codegen.raw_defs {
+            if matches!(top, TopLevel::TLDef(name, ..) if name.starts_with(crate::config::GLOBAL_ALLOCATOR_NAME_PREFIX))
+            {
+                continue;
+            }
             if let TopLevel::TLDef(name, params, ret, body, _) = top
                 && (!params.is_empty() || matches!(body, Term::Lam(_) | Term::Annot(_, _)))
             {
@@ -673,7 +677,8 @@ impl<'bump> Compiler<'bump> {
     fn refresh_env_for_codegen(&mut self, tops: &[TopLevel<'bump>]) {
         for top in tops {
             if let TopLevel::TLDef(name, _params, _ret, body, _) = top {
-                self.env.insert(*name, body);
+                let actual_name = self.codegen_attribute_target_name(name);
+                self.env.insert(actual_name, body);
             }
         }
     }

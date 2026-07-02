@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use crate::config::{
     BUILTIN_AND, BUILTIN_BOOL, BUILTIN_C_INT, BUILTIN_C_UINT, BUILTIN_DATA, BUILTIN_I8,
     BUILTIN_I16, BUILTIN_I32, BUILTIN_I64, BUILTIN_IMPLIES, BUILTIN_INT, BUILTIN_IO, BUILTIN_NOT,
-    BUILTIN_OR, BUILTIN_PROOF, BUILTIN_PROP, BUILTIN_STR, BUILTIN_THEOREM, BUILTIN_U8, BUILTIN_U16,
-    BUILTIN_U32, BUILTIN_U64, BUILTIN_UNIT,
+    BUILTIN_OR, BUILTIN_PROOF, BUILTIN_PROP, BUILTIN_PTR, BUILTIN_STR, BUILTIN_THEOREM, BUILTIN_U8,
+    BUILTIN_U16, BUILTIN_U32, BUILTIN_U64, BUILTIN_UNIT,
 };
 use crate::core::syntax::{Term, Universe};
 use crate::diagnostic::Diagnostic;
@@ -42,6 +42,7 @@ pub const BUILTIN_CONSTRAINT_NAMES: &[&str] = &[
     BUILTIN_U64,
     BUILTIN_C_INT,
     BUILTIN_C_UINT,
+    BUILTIN_PTR,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +138,7 @@ impl BuiltinRegistry {
                 (BUILTIN_U64, entry(Universe::UProp, check_int, None)),
                 (BUILTIN_C_INT, entry(Universe::UProp, check_int, None)),
                 (BUILTIN_C_UINT, entry(Universe::UProp, check_int, None)),
+                (BUILTIN_PTR, entry(Universe::UProp, check_any, None)),
                 (BUILTIN_BOOL, entry(Universe::UProp, check_bool, None)),
                 (BUILTIN_STR, entry(Universe::UProp, check_str, None)),
                 (BUILTIN_IO, entry(Universe::UProp, check_any, None)),

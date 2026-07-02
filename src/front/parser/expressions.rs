@@ -589,7 +589,17 @@ impl<'a, 'bump> Parser<'a, 'bump> {
     pub(super) fn is_struct_field_constraint_delim(tokens: &[SpannedToken], i: usize) -> bool {
         if matches!(
             tokens[i].0,
-            Token::KwDef | Token::HashCheck | Token::HashEval | Token::ColonEq
+            Token::KwDef
+                | Token::KwExtern
+                | Token::KwInstance
+                | Token::KwTheorem
+                | Token::KwPub
+                | Token::KwUse
+                | Token::KwMod
+                | Token::HashGlobalAllocator
+                | Token::HashCheck
+                | Token::HashEval
+                | Token::ColonEq
         ) {
             return true;
         }

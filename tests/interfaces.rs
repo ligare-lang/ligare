@@ -82,7 +82,8 @@ def render {s : ShowInt} (x : int) : str := ShowInt.show s x
     );
     let err = result.expect_err("missing instance should fail");
     assert!(
-        err.message.contains("missing implicit instance for ShowInt"),
+        err.message
+            .contains("missing implicit instance for ShowInt"),
         "{}",
         err.message
     );

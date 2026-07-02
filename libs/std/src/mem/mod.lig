@@ -1,0 +1,5 @@
+pub def Allocator : prop := struct
+  allocate : int -> ptr c_int
+  deallocate : ptr c_int -> int
+  reallocate : ptr c_int -> int -> ptr c_int
+

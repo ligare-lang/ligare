@@ -91,6 +91,7 @@ impl<'bump> Compiler<'bump> {
         let mut state = CodegenState::empty();
         for top in tops {
             if let TopLevel::TLDef(name, params, _m_ret, body, _) = top {
+                let name = self.codegen_attribute_target_name(name);
                 let names: Vec<_> = params.iter().rev().map(|(pn, _)| *pn).collect();
                 if matches!(body, Term::UnionDef(..)) {
                     let body = self.checker.desugar_with_names_context(body, &names)?;
@@ -99,7 +100,9 @@ impl<'bump> Compiler<'bump> {
                 } else if matches!(body, Term::StructDef(..)) {
                     let body = self.checker.desugar_with_names_context(body, &names)?;
                     let body = self.normalize_codegen_type_def(body);
-                    state.struct_types.push((name, body));
+                    if !Self::is_erased_interface_struct(body) {
+                        state.struct_types.push((name, body));
+                    }
                 }
             }
         }
@@ -136,7 +139,8 @@ impl<'bump> Compiler<'bump> {
                 if matches!(body_term, Term::UnionDef(..) | Term::StructDef(..)) {
                     continue;
                 }
-                let term = self.env.get(name).copied().unwrap_or(*body_term);
+                let actual_name = self.codegen_attribute_target_name(name);
+                let term = self.env.get(actual_name).copied().unwrap_or(*body_term);
                 let desugared = self.checker.desugar_with_context(term)?;
                 let resolved = self.subst_top_level(desugared);
                 let names: Vec<_> = params.iter().rev().map(|(pn, _)| *pn).collect();
@@ -187,6 +191,9 @@ impl<'bump> Compiler<'bump> {
                     _,
                 ) => Ok(None),
                 TopLevel::TLDef(name, params, m_ret, body_term, span) => {
+                    if name.starts_with(crate::config::GLOBAL_ALLOCATOR_NAME_PREFIX) {
+                        return Ok(None);
+                    }
                     let semantics = SemanticQueries::new(self.checker.builtins());
                     if params.iter().any(|(_, c)| {
                         c.is_some_and(|t| semantics.is_erased_parameter_constraint(t))
@@ -268,6 +275,28 @@ impl<'bump> Compiler<'bump> {
                 self.arena.struct_def(name, self.arena.alloc_slice(&fields))
             }
             _ => term,
+        }
+    }
+
+    fn is_erased_interface_struct(term: &Term<'_>) -> bool {
+        let Term::StructDef(_, fields) = term else {
+            return false;
+        };
+        fields
+            .iter()
+            .any(|(_, constraint)| Self::contains_pi_constraint(constraint))
+    }
+
+    fn contains_pi_constraint(term: &Term<'_>) -> bool {
+        match term {
+            Term::Pi(..) => true,
+            Term::Annot(inner, constraint) | Term::App(inner, constraint) => {
+                Self::contains_pi_constraint(inner) || Self::contains_pi_constraint(constraint)
+            }
+            Term::Implicit(inner) | Term::Unsafe(inner) | Term::Pure(inner) => {
+                Self::contains_pi_constraint(inner)
+            }
+            _ => false,
         }
     }
 

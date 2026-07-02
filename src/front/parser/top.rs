@@ -1,4 +1,5 @@
 use super::{ParseError, ParsedDef, Parser, TopLevel, UseTree, Visibility};
+use crate::config::{GLOBAL_ALLOCATOR_ATTR, GLOBAL_ALLOCATOR_NAME_PREFIX};
 use crate::core::syntax::Term;
 use crate::front::lexer::Token;
 
@@ -31,6 +32,12 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             self.advance();
         }
         let start_span = self.current_span();
+        let global_allocator_attr = if self.peek_token() == Some(Token::HashGlobalAllocator) {
+            self.advance();
+            true
+        } else {
+            false
+        };
 
         let visibility = if self.peek_token() == Some(Token::KwPub) {
             self.advance();
@@ -80,8 +87,21 @@ impl<'a, 'bump> Parser<'a, 'bump> {
 
         if self.peek_token() == Some(Token::KwDef) {
             let (name, params, m_ret, body) = self.parse_def()?;
+            let name = if global_allocator_attr {
+                let encoded = format!("{GLOBAL_ALLOCATOR_NAME_PREFIX}{name}");
+                self.pool.intern(&encoded)
+            } else {
+                name
+            };
             let top = TopLevel::TLDef(name, params, m_ret, body, start_span);
             return Ok(self.with_visibility(top, visibility));
+        }
+
+        if global_allocator_attr {
+            return Err(ParseError {
+                message: format!("#[{GLOBAL_ALLOCATOR_ATTR}] may only prefix `def`"),
+                span: start_span,
+            });
         }
 
         if matches!(visibility, Visibility::Public) {
@@ -141,6 +161,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 | Token::KwMod
                 | Token::KwExtern
                 | Token::KwInstance
+                | Token::HashGlobalAllocator
                     if parens == 0 && braces == 0 =>
                 {
                     break;
