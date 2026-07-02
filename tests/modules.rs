@@ -87,7 +87,7 @@ fn single_level_import_codegen_uses_prefixed_c_name() {
     write(
         &root,
         "main.lig",
-        "mod nat\nuse nat::add\npub def main : IO Unit := let _ := add 2 3 in Unit\n",
+        "mod nat\nuse nat::add\npub def main : IO () := let _ := add 2 3 in ()\n",
     );
     let compiler = collect(&root).unwrap();
     let c = emit_c(
@@ -113,7 +113,7 @@ fn nested_batch_import_and_alias() {
     write(
         &root,
         "main.lig",
-        "mod data\nuse data::nat::{add as plus, one}\npub def main : IO Unit := let _ := plus one 2 in Unit\n",
+        "mod data\nuse data::nat::{add as plus, one}\npub def main : IO () := let _ := plus one 2 in ()\n",
     );
     let compiler = collect(&root).unwrap();
     assert!(compiler.raw_defs().iter().any(|top| {
@@ -128,18 +128,18 @@ fn non_main_file_with_import_uses_module_pipeline() {
         &root,
         "libs/std/lib.lig",
         "extern def puts (s : str) : IO c_int\n\
-         pub def put_str (s : str) : IO Unit := do\n\
+         pub def put_str (s : str) : IO () := do\n\
            let _ = unsafe { puts s }\n\
-           Unit\n",
+           ()\n",
     );
     write(
         &root,
         "test.lig",
         "mod libs\n\
          use libs::std::lib::put_str\n\
-         pub def main : IO Unit := do\n\
+         pub def main : IO () := do\n\
            let _ = put_str \"hello world\"\n\
-           Unit\n",
+           ()\n",
     );
     write(&root, "libs/mod.lig", "pub mod std\n");
     write(&root, "libs/std/mod.lig", "pub mod lib\n");
@@ -173,7 +173,7 @@ fn private_access_is_rejected() {
     write(
         &root,
         "main.lig",
-        "mod data\nuse data::nat::hidden\npub def main : IO Unit := hidden\n",
+        "mod data\nuse data::nat::hidden\npub def main : IO () := hidden\n",
     );
     assert_module_error(&root, "private or unknown symbol");
 }
@@ -191,7 +191,7 @@ fn re_export_allows_import_from_facade() {
     write(
         &root,
         "main.lig",
-        "mod data\nmod prelude\nuse prelude::add\npub def main : IO Unit := let _ := add 1 2 in Unit\n",
+        "mod data\nmod prelude\nuse prelude::add\npub def main : IO () := let _ := add 1 2 in ()\n",
     );
     collect(&root).unwrap();
 }
@@ -204,7 +204,7 @@ fn cycle_dependency_reports_error() {
     write(
         &root,
         "main.lig",
-        "mod a\nuse a::x\npub def main : IO Unit := x\n",
+        "mod a\nuse a::x\npub def main : IO () := x\n",
     );
     assert_module_error(&root, "cyclic module dependency");
 }
@@ -215,7 +215,7 @@ fn missing_module_reports_error() {
     write(
         &root,
         "main.lig",
-        "use nope::x\npub def main : IO Unit := x\n",
+        "use nope::x\npub def main : IO () := x\n",
     );
     assert_module_error(&root, "not declared by parent module");
 }
@@ -223,7 +223,7 @@ fn missing_module_reports_error() {
 #[test]
 fn entry_requires_public_main() {
     let root = temp_project();
-    write(&root, "main.lig", "def main : IO Unit := 0\n");
+    write(&root, "main.lig", "def main : IO () := 0\n");
     assert_module_error(&root, "must define `pub main");
 }
 
@@ -234,7 +234,7 @@ fn folder_module_uses_mod_lig() {
     write(
         &root,
         "main.lig",
-        "mod math\nuse math::one\npub def main : IO Unit := let _ := one in Unit\n",
+        "mod math\nuse math::one\npub def main : IO () := let _ := one in ()\n",
     );
     let compiler = collect(&root).unwrap();
     assert!(compiler.raw_defs().iter().any(|top| {
@@ -249,7 +249,7 @@ fn imported_module_must_be_declared_by_parent() {
     write(
         &root,
         "main.lig",
-        "use math::one\npub def main : IO Unit := let _ := one in Unit\n",
+        "use math::one\npub def main : IO () := let _ := one in ()\n",
     );
     assert_module_error(&root, "not declared by parent module");
 }
@@ -263,7 +263,7 @@ fn std_import_uses_ligare_std_path() {
     write(
         &root,
         "main.lig",
-        "use std::answer::value\npub def main : IO Unit := let _ := value in Unit\n",
+        "use std::answer::value\npub def main : IO () := let _ := value in ()\n",
     );
 
     let compiler = with_ligare_std_path(Some(std_root.to_string_lossy().into_owned()), || {
@@ -282,7 +282,7 @@ fn std_import_reports_default_path_when_env_is_unset() {
     write(
         &root,
         "main.lig",
-        "use std::missing::value\npub def main : IO Unit := value\n",
+        "use std::missing::value\npub def main : IO () := value\n",
     );
 
     let err = match with_ligare_std_path(None, || collect(&root)) {
@@ -313,7 +313,7 @@ fn missing_std_module_lists_all_attempted_search_paths() {
     write(
         &root,
         "main.lig",
-        "use std::missing::value\npub def main : IO Unit := value\n",
+        "use std::missing::value\npub def main : IO () := value\n",
     );
     let joined = std::env::join_paths([first.clone(), second.clone()]).unwrap();
 
@@ -356,7 +356,7 @@ fn std_path_searches_multiple_roots_in_order() {
     write(
         &root,
         "main.lig",
-        "use std::answer::value\npub def main : IO Unit := let _ := value in Unit\n",
+        "use std::answer::value\npub def main : IO () := let _ := value in ()\n",
     );
     let joined = std::env::join_paths([first, second]).unwrap();
 

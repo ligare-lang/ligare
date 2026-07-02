@@ -1,11 +1,11 @@
 extern def ffi_abs (x : int) : int
 extern def ffi_read : IO int
 
-def pure_value (u : Unit) : int := unsafe { ffi_abs (0 - 7) }
+def pure_value (u : ()) : int := unsafe { ffi_abs (0 - 7) }
 
-def io_value (u : Unit) : IO int := do
+def io_value (u : ()) : IO int := do
   x <- unsafe { ffi_read }
   unsafe { ffi_abs (x - 50) }
 
-#eval pure_value Unit
-#eval io_value Unit
+#eval pure_value ()
+#eval io_value ()

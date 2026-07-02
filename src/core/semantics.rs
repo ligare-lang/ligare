@@ -43,6 +43,7 @@ impl<'a> SemanticQueries<'a> {
             | Term::PrimOp(_)
             | Term::RefParam => Some(Universe::UData),
             Term::App(f, _) => self.universe(ctx, f),
+            Term::Implicit(inner) => self.universe(ctx, inner),
             Term::Universe(u) => Some(*u),
             Term::AutoProof => Some(Universe::UProof),
             Term::Pi(_, _, _) | Term::Refine(_, _, _) => Some(Universe::UProp),
@@ -52,6 +53,7 @@ impl<'a> SemanticQueries<'a> {
                 .or(Some(Universe::UData)),
             Term::Annot(t, _) => self.universe(ctx, t),
             Term::Unsafe(inner) => self.universe(ctx, inner),
+            Term::Pure(inner) => self.universe(ctx, inner),
             Term::ByProof(Some(t), _) => self.universe(ctx, t),
             Term::ByProof(None, _) => Some(Universe::UProof),
             Term::Let(_, _, body, _) => self.universe(ctx, body),
@@ -76,6 +78,7 @@ impl<'a> SemanticQueries<'a> {
     pub fn constraint_kind(&self, term: &Term<'_>) -> ConstraintKind {
         match term {
             Term::Builtin(name) | Term::Global(name) if *name == "data" => ConstraintKind::DataTop,
+            Term::Implicit(_) => ConstraintKind::MetaConstraint,
             Term::Builtin(name) | Term::Global(name)
                 if matches!(*name, "prop" | "theorem" | "proof") =>
             {
@@ -111,6 +114,7 @@ impl<'a> SemanticQueries<'a> {
     pub fn erase_policy(&self, term: &Term<'_>) -> ErasePolicy {
         match term {
             Term::Refine(..) => ErasePolicy::EraseToParent,
+            Term::Implicit(inner) => self.erase_policy(inner),
             Term::Annot(inner, _) | Term::ByProof(Some(inner), _) => self.erase_policy(inner),
             Term::App(f, _) => self.data_policy(f),
             Term::Builtin(_) | Term::Global(_) => self.data_policy(term),

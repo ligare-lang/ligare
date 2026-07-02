@@ -48,11 +48,13 @@ impl<'bump> WhnfEvaluator<'bump> {
     pub fn whnf(&self, t: &'bump Term<'bump>) -> Result<&'bump Term<'bump>, String> {
         match t {
             Term::App(f, a) => self.whnf_app(f, a),
+            Term::Implicit(inner) => self.whnf(inner),
             Term::Lam(_) => Ok(t),
             Term::Let(_name, val, body, _mconstr) => self.whnf(self.sub.beta(body, val)),
             Term::IfThenElse(cond, tbranch, fbranch) => self.whnf_if(cond, tbranch, fbranch),
             Term::Annot(inner, _) => self.whnf(inner),
             Term::Unsafe(inner) => self.whnf(inner),
+            Term::Pure(inner) => self.whnf(inner),
             Term::ByProof(inner, tactics) => {
                 if let Some(inner) = inner {
                     self.whnf(inner)

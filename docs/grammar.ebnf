@@ -22,6 +22,8 @@
      Line comments:     "--" to end of line.
      Block comments:    "{-" ... "-}"  (non-nestable).
      Block comments:    "/-" ... "-/"  (nestable, Lean 4 style).
+     Definition docs:    "{-" ... "-}" immediately before a definition.
+     Top-level docs:     "{-!" ... "-}" at the top level.
 
    ────────────────────────────────────────────────────────────────── *)
 
@@ -29,9 +31,10 @@
 
 Program     ::= { TopLevel }
 
-Entry       ::= "main.lig" must contain "pub" "def" "main" ":" "IO" "Unit" ":=" Expr
+Entry       ::= "main.lig" must contain "pub" "def" "main" ":" "IO" "()" ":=" Expr
 
 TopLevel    ::= Def
+              | Instance
               | Use
               | Mod
               | Check
@@ -40,6 +43,8 @@ TopLevel    ::= Def
 
 Def         ::= [ "pub" ] "def" Ident Params [ ":" Expr ] ":=" Expr
               | [ "pub" ] "def" Ident                   ":=" Expr
+
+Instance    ::= [ "pub" ] "instance" Ident ":" Expr ":=" Expr
 
 Use         ::= [ "pub" ] "use" UseItem { "," UseItem }
 
@@ -61,6 +66,7 @@ Eval        ::= "#eval" Expr
 Params      ::= { Param }
 
 Param       ::= "(" Ident [ ":" Expr ] ")"
+              | "{" Ident ":" Expr "}"       (* implicit compile-time parameter *)
 
 (* ── Expressions ────────────────────────────────────────────────── *)
 
@@ -82,6 +88,8 @@ BinOp       ::= "*" | "/" | "%"          (* precedence 4, left-assoc  *)
 TermApp     ::= LetExpr
               | FuncExpr
               | DoExpr
+              | UnsafeExpr
+              | PureExpr
               | DepArrow
               | Term { Term }
 
@@ -134,6 +142,12 @@ previous statement.
 
 FuncExpr    ::= "func" Ident Params [ ":" Expr ] ":=" Expr
 
+(* ── Unsafe / IO elimination ───────────────────────────────────── *)
+
+UnsafeExpr  ::= "unsafe" "{" Expr "}"
+
+PureExpr    ::= "pure" Expr
+
 (* ── Dependent arrow ────────────────────────────────────────────── *)
 
 DepArrow    ::= "(" Ident ":" Expr ")" "->" Expr
@@ -160,8 +174,8 @@ Tactic terminators (tokens that end the tactic block):
 Ident       ::= [a-zA-Z_][a-zA-Z0-9_]*
 
 (* Reserved words (cannot be used as identifiers):
-     let  in  if  then  else  true  false  by  func  where  def  auto
-     pub  use  mod *)
+     let  in  if  then  else  true  false  by  fun  func  do  where  def
+     extern  instance  unsafe  pure  auto  theorem  pub  use  mod  as *)
 
 (* ── Types (subset of expressions used as type constraints) ─────── *)
 

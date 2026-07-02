@@ -34,6 +34,12 @@ impl<'bump> Compiler<'bump> {
                 self.replace_type_param_vars_at(f, type_args, type_param_indices, depth),
                 self.replace_type_param_vars_at(a, type_args, type_param_indices, depth),
             ),
+            Term::Implicit(inner) => self.arena.implicit(self.replace_type_param_vars_at(
+                inner,
+                type_args,
+                type_param_indices,
+                depth,
+            )),
             Term::Lam(body) => self.arena.lam(self.replace_type_param_vars_at(
                 body,
                 type_args,
@@ -214,6 +220,12 @@ impl<'bump> Compiler<'bump> {
                 *idx,
             ),
             Term::Unsafe(inner) => self.arena.unsafe_(self.replace_type_param_vars_at(
+                inner,
+                type_args,
+                type_param_indices,
+                depth,
+            )),
+            Term::Pure(inner) => self.arena.pure(self.replace_type_param_vars_at(
                 inner,
                 type_args,
                 type_param_indices,

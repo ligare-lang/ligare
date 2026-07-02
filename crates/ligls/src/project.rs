@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
 use ligare::compiler::modules::{PackageModuleGraph, PackageModuleInfo};
@@ -35,6 +36,19 @@ impl ModuleKey {
         Self {
             package: self.package.clone(),
             path,
+        }
+    }
+
+    pub(crate) fn join_symbol(&self, name: &str) -> String {
+        let mut parts = Vec::new();
+        if let Some(package) = &self.package {
+            parts.push(package.clone());
+        }
+        parts.extend(self.path.clone());
+        if parts.is_empty() {
+            name.to_string()
+        } else {
+            format!("{}::{name}", parts.join("::"))
         }
     }
 }
@@ -343,16 +357,17 @@ fn standard_library_module_roots() -> Vec<PathBuf> {
 }
 
 fn standard_library_search_roots() -> Vec<PathBuf> {
-    match std::env::var_os(STANDARD_LIBRARY_PATH_ENV) {
+    standard_library_search_roots_from(std::env::var_os(STANDARD_LIBRARY_PATH_ENV).as_deref())
+}
+
+fn standard_library_search_roots_from(value: Option<&OsStr>) -> Vec<PathBuf> {
+    match value {
         Some(value) if !value.is_empty() => {
             let roots = std::env::split_paths(&value)
+                .filter(|path| path.is_absolute())
                 .filter(|path| !path.as_os_str().is_empty())
                 .collect::<Vec<_>>();
-            if roots.is_empty() {
-                vec![PathBuf::from(DEFAULT_STANDARD_LIBRARY_PATH)]
-            } else {
-                roots
-            }
+            roots
         }
         _ => vec![PathBuf::from(DEFAULT_STANDARD_LIBRARY_PATH)],
     }
@@ -368,4 +383,27 @@ fn same_path(left: &Path, right: &Path) -> bool {
     let left = normalize_existing_path(left).unwrap_or_else(|| left.to_path_buf());
     let right = normalize_existing_path(right).unwrap_or_else(|| right.to_path_buf());
     left == right
+}
+
+#[cfg(test)]
+mod tests {
+    use super::standard_library_search_roots_from;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    #[test]
+    fn relative_standard_library_path_is_not_used() {
+        let roots =
+            standard_library_search_roots_from(Some(OsString::from("libs/std").as_os_str()));
+
+        assert!(roots.is_empty());
+    }
+
+    #[test]
+    fn absolute_standard_library_path_is_used() {
+        let roots =
+            standard_library_search_roots_from(Some(OsString::from("/repo/libs/std").as_os_str()));
+
+        assert_eq!(roots, vec![PathBuf::from("/repo/libs/std")]);
+    }
 }

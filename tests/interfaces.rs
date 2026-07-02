@@ -1,0 +1,122 @@
+use bumpalo::Bump;
+use ligare::backend::c::emit_c;
+use ligare::compiler::Compiler;
+use ligare::core::pool::TermArena;
+
+fn setup() -> (&'static Bump, TermArena<'static>) {
+    let b = Box::leak(Box::new(Bump::new()));
+    let a = TermArena::new(b);
+    (b, a)
+}
+
+#[test]
+fn interface_definition_instance_and_implicit_resolution() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    let result = compiler.process_file_str(
+        r#"
+def ShowInt : prop := struct
+  show : int -> str
+
+def show_int (x : int) : str := "int"
+instance showInt : ShowInt := ShowInt.mk show_int
+
+def render {s : ShowInt} (x : int) : str := ShowInt.show s x
+#check render 1 : str
+"#,
+    );
+    assert!(result.is_ok(), "Error: {:?}", result.err());
+}
+
+#[test]
+fn generic_interface_infers_type_and_instance_from_argument() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    let result = compiler.process_file_str(
+        r#"
+def Show (A : prop) : prop := struct
+  show : A -> str
+
+def show_int (x : int) : str := "int"
+instance showInt : Show int := Show.mk show_int
+
+def render {A : prop} {s : Show A} (x : A) : str := Show.show s x
+#check render 1 : str
+"#,
+    );
+    assert!(result.is_ok(), "Error: {:?}", result.err());
+}
+
+#[test]
+fn interface_default_method_can_be_composed() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    let result = compiler.process_file_str(
+        r#"
+def EqInt : prop := struct
+  eq : int -> int -> bool
+
+def eq_int (x : int) (y : int) : bool := x == y
+instance eqInt : EqInt := EqInt.mk eq_int
+
+def ne_default {e : EqInt} (x : int) (y : int) : bool := if EqInt.eq e x y then false else true
+def ne_int (x : int) (y : int) : bool := ne_default x y
+#check ne_int 1 2 : bool
+"#,
+    );
+    assert!(result.is_ok(), "Error: {:?}", result.err());
+}
+
+#[test]
+fn missing_instance_reports_clear_error() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    let result = compiler.process_file_str(
+        r#"
+def ShowInt : prop := struct
+  show : int -> str
+
+def render {s : ShowInt} (x : int) : str := ShowInt.show s x
+#check render 1 : str
+"#,
+    );
+    let err = result.expect_err("missing instance should fail");
+    assert!(
+        err.message.contains("missing implicit instance for ShowInt"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn implicit_instance_erases_to_static_function_call_in_c() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    compiler
+        .collect_file_str(
+            r#"
+def ShowInt : prop := struct
+  show : int -> str
+
+def show_int (x : int) : str := "int"
+instance showInt : ShowInt := ShowInt.mk show_int
+
+def render {s : ShowInt} (x : int) : str := ShowInt.show s x
+def main : str := render 5
+"#,
+        )
+        .expect("program should collect");
+    let input = compiler.codegen_input();
+    let c = emit_c(
+        input.tops,
+        input.raw_defs,
+        input.fun_sigs,
+        input.union_types,
+        input.struct_types,
+    )
+    .expect("C generation should succeed");
+    assert!(c.contains("show_int(x)"), "{c}");
+    assert!(c.contains("render__ShowInt__show_int(5)"), "{c}");
+    assert!(!c.contains("struct ShowInt"), "{c}");
+    assert!(!c.contains(".show"), "{c}");
+}

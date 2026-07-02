@@ -161,6 +161,7 @@ fn infer_ret_ctype(
         Term::Annot(inner, c) => constraint_to_ctype(c, union_names, struct_names)
             .or_else(|_| infer_ret_ctype(inner, param_types, union_names, struct_names)),
         Term::Unsafe(inner) => infer_ret_ctype(inner, param_types, union_names, struct_names),
+        Term::Pure(inner) => infer_ret_ctype(inner, param_types, union_names, struct_names),
         Term::App(f, _) if is_primop_app(f) => Ok(CType::Int64),
         Term::IfThenElse(_, then_term, else_term) => {
             let then_ty = infer_ret_ctype(then_term, param_types, union_names, struct_names)?;

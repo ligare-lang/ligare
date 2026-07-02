@@ -1,0 +1,4 @@
+pub extern def puts (s : str) : IO c_int
+pub extern def malloc (sz : c_int) : IO c_int
+pub extern def free (ptr : c_int) : IO ()
+

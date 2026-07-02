@@ -167,6 +167,11 @@ where
     }
 
     async fn update_document(&self, uri: lsp::Url, version: Option<i32>, text: String) {
+        {
+            let mut cache = self.cache.lock().await;
+            cache.update_fast(uri.clone(), version, text.clone())
+        };
+        self.load_dependency_files(std::slice::from_ref(&uri)).await;
         let update = {
             let mut cache = self.cache.lock().await;
             cache.update_fast(uri.clone(), version, text.clone())
@@ -183,7 +188,6 @@ where
                 version,
             })
             .await;
-        self.load_dependency_files(&[uri]).await;
     }
 
     async fn document_snapshots(&self) -> Vec<SourceDocument> {

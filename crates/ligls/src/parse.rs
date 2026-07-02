@@ -44,6 +44,7 @@ enum TokKind {
     KwDef,
     KwExtern,
     KwUnsafe,
+    KwPure,
     KwAuto,
     KwExact,
     KwApply,
@@ -168,7 +169,9 @@ fn kind(token: &Token) -> TokKind {
         Token::KwWhere => TokKind::KwWhere,
         Token::KwDef => TokKind::KwDef,
         Token::KwExtern => TokKind::KwExtern,
+        Token::KwInstance => TokKind::KwDef,
         Token::KwUnsafe => TokKind::KwUnsafe,
+        Token::KwPure => TokKind::KwPure,
         Token::KwAuto => TokKind::KwAuto,
         Token::KwExact => TokKind::KwExact,
         Token::KwApply => TokKind::KwApply,
@@ -232,6 +235,7 @@ fn tokenize(source: &str) -> (Vec<SpannedToken>, Vec<ParseError>) {
     let mut errors = Vec::new();
     for (result, span) in Token::lexer(source).spanned() {
         match result {
+            Ok(Token::BlockComment) => {}
             Ok(token) => tokens.push((token, span)),
             Err(()) => errors.push(ParseError {
                 span: span.clone(),
@@ -395,6 +399,9 @@ fn offset_top_level<'bump>(
         }
         TopLevel::TLExternDef(name, params, ret, span) => {
             TopLevel::TLExternDef(name, params, ret, offset_span(span, offset))
+        }
+        TopLevel::TLInstance(name, constraint, value, span) => {
+            TopLevel::TLInstance(name, constraint, value, offset_span(span, offset))
         }
         TopLevel::TLTheorem(name, prop, body, span) => {
             TopLevel::TLTheorem(name, prop, body, offset_span(span, offset))

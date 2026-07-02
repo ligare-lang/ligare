@@ -80,7 +80,7 @@ fn resolves_multi_package_local_dependencies_and_cross_package_use() {
     write(
         &root,
         "src/main.lig",
-        "use util::math::inc\npub def main : IO Unit := let _ := inc 1 in Unit\n",
+        "use util::math::inc\npub def main : IO () := let _ := inc 1 in ()\n",
     );
 
     let compiler = collect_project(&root).unwrap();
@@ -101,13 +101,13 @@ fn lib_dependency_without_entry_defaults_to_lib_lig() {
     write(
         &std,
         "src/io.lig",
-        "pub def put_str (s : str) : IO Unit := Unit\n",
+        "pub def put_str (s : str) : IO () := ()\n",
     );
     manifest(&root, "app", "\n[dependencies]\nstd = { path = \"std\" }\n");
     write(
         &root,
         "src/main.lig",
-        "use std::io::put_str\npub def main : IO Unit := put_str \"ok\"\n",
+        "use std::io::put_str\npub def main : IO () := put_str \"ok\"\n",
     );
 
     let project = resolve_project(&root, UpdateMode::Locked).unwrap();
@@ -138,7 +138,7 @@ fn package_without_type_defaults_to_lib_when_only_lib_entry_exists() {
 fn package_without_type_defaults_to_binary_when_main_entry_exists() {
     let root = temp_project();
     manifest(&root, "app", "");
-    write(&root, "src/main.lig", "pub def main : IO Unit := Unit\n");
+    write(&root, "src/main.lig", "pub def main : IO () := ()\n");
 
     let project = resolve_project(&root, UpdateMode::Locked).unwrap();
     assert_eq!(project.manifest.entry, PathBuf::from("src/main.lig"));
@@ -170,7 +170,7 @@ fn package_cycle_is_rejected() {
     write(
         &root,
         "src/main.lig",
-        "use a::main::a_value\npub def main : IO Unit := a_value\n",
+        "use a::main::a_value\npub def main : IO () := a_value\n",
     );
 
     let err = resolve_project(&root, UpdateMode::Locked).unwrap_err();
@@ -198,7 +198,7 @@ fn lock_file_pins_git_version_until_update() {
     write(
         &root,
         "src/main.lig",
-        "use lib::api::value\npub def main : IO Unit := value\n",
+        "use lib::api::value\npub def main : IO () := value\n",
     );
 
     let first = resolve_project(&root, UpdateMode::Locked).unwrap();
@@ -240,7 +240,7 @@ fn non_exported_dependency_module_is_rejected() {
     write(
         &root,
         "src/main.lig",
-        "use util::private::hidden\npub def main : IO Unit := hidden\n",
+        "use util::private::hidden\npub def main : IO () := hidden\n",
     );
 
     let err = match collect_project(&root) {
@@ -254,11 +254,11 @@ fn non_exported_dependency_module_is_rejected() {
 fn cli_test_scans_lig_test_files() {
     let root = temp_project();
     manifest(&root, "app", "");
-    write(&root, "src/main.lig", "pub def main : IO Unit := Unit\n");
+    write(&root, "src/main.lig", "pub def main : IO () := ()\n");
     write(
         &root,
         "src/math_test.lig",
-        "pub def main : IO Unit := Unit\n#check 1 : int\n",
+        "pub def main : IO () := ()\n#check 1 : int\n",
     );
     let bin = env!("CARGO_BIN_EXE_ligare");
     let status = Command::new(bin)
@@ -272,7 +272,7 @@ fn cli_test_scans_lig_test_files() {
 fn cli_build_writes_binary_to_package_target_dir() {
     let root = temp_project();
     manifest(&root, "app", "type = \"binary\"\n");
-    write(&root, "src/main.lig", "pub def main : IO Unit := Unit\n");
+    write(&root, "src/main.lig", "pub def main : IO () := ()\n");
 
     let bin = env!("CARGO_BIN_EXE_ligare");
     let status = Command::new(bin)

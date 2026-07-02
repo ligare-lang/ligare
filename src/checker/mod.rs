@@ -6,6 +6,7 @@ pub mod prove;
 
 use crate::checker::builtin::BuiltinRegistry;
 use crate::checker::context::{ConstraintTable, Context, add_refine, empty_table, lookup_refine};
+use crate::config::BUILTIN_IO;
 use crate::core::debruijn::Desugarer;
 use crate::core::pool::TermArena;
 use crate::core::syntax::{Name, Tactic, Term};
@@ -41,6 +42,8 @@ pub struct TypeChecker<'bump> {
     pub(crate) struct_table: Vec<(Name<'bump>, &'bump Term<'bump>, &'bump [Name<'bump>])>,
     /// External C function signatures.
     pub(crate) extern_table: Vec<(Name<'bump>, &'bump Term<'bump>)>,
+    /// Compile-time implicit instances: name, constraint, value.
+    pub(crate) instance_table: Vec<(Name<'bump>, &'bump Term<'bump>, &'bump Term<'bump>)>,
     /// Whether the current check is inside an explicit unsafe expression.
     pub(crate) unsafe_depth: usize,
     mode: CheckMode,
@@ -56,6 +59,7 @@ impl<'bump> TypeChecker<'bump> {
             union_table: Vec::new(),
             struct_table: Vec::new(),
             extern_table: Vec::new(),
+            instance_table: Vec::new(),
             unsafe_depth: 0,
             mode: CheckMode::Full,
         }
@@ -110,6 +114,40 @@ impl<'bump> TypeChecker<'bump> {
     /// Add an external C function signature.
     pub fn add_extern(&mut self, name: Name<'bump>, signature: &'bump Term<'bump>) {
         self.extern_table.insert(0, (name, signature));
+    }
+
+    pub fn add_instance(
+        &mut self,
+        name: Name<'bump>,
+        constraint: &'bump Term<'bump>,
+        value: &'bump Term<'bump>,
+    ) {
+        self.instance_table.insert(0, (name, constraint, value));
+    }
+
+    pub fn lookup_instance(
+        &self,
+        constraint: &'bump Term<'bump>,
+    ) -> Result<Option<(Name<'bump>, &'bump Term<'bump>)>, Diagnostic> {
+        let wanted = self.evaluator.whnf(Self::implicit_inner(constraint))?;
+        for (name, have, value) in &self.instance_table {
+            let have = self.evaluator.whnf(Self::implicit_inner(have))?;
+            if self.constraint_equiv(have, wanted) {
+                return Ok(Some((*name, *value)));
+            }
+        }
+        Ok(None)
+    }
+
+    pub(crate) fn implicit_inner(t: &'bump Term<'bump>) -> &'bump Term<'bump> {
+        match t {
+            Term::Implicit(inner) => inner,
+            _ => t,
+        }
+    }
+
+    pub(crate) fn is_implicit_constraint(t: &Term<'_>) -> bool {
+        matches!(t, Term::Implicit(_))
     }
 
     pub(crate) fn lookup_extern(&self, name: &str) -> Option<&'bump Term<'bump>> {
@@ -225,8 +263,12 @@ impl<'bump> TypeChecker<'bump> {
                 checker.unsafe_depth += 1;
                 checker.check(ctx, inner, constraint)
             }
+            Term::Pure(inner) => self.check_pure(ctx, inner, constraint),
             Term::Var(i) => self.check_var(ctx, *i, constraint),
             Term::Annot(t, c) => {
+                if matches!(t, Term::Builtin(_) | Term::Global(_)) && matches!(c, Term::Pi(..)) {
+                    return self.check_domain_match(c, constraint);
+                }
                 if let (Term::Pi(..), Term::Pi(..)) = (c, constraint) {
                     self.check_pi_match(c, constraint)?;
                     return self.check(ctx, t, constraint);
@@ -372,6 +414,38 @@ impl<'bump> TypeChecker<'bump> {
         self.lookup_extern(name).is_some() && self.unsafe_depth == 0
     }
 
+    fn check_pure(
+        &self,
+        ctx: &Context<'bump>,
+        inner: &'bump Term<'bump>,
+        constraint: &'bump Term<'bump>,
+    ) -> Result<(), Diagnostic> {
+        if self.unsafe_depth == 0 {
+            return Err(Diagnostic::new(
+                "`pure` can only appear in an unsafe context",
+            ));
+        }
+        let inferred = self.infer_binding_constraint(ctx, inner)?;
+        let effect_constraint = self.evaluator.whnf(inferred)?;
+        let Some(inner_constraint) = self.io_inner(effect_constraint) else {
+            return Err(Diagnostic::new(format!(
+                "`pure` expects an IO constraint, got {}",
+                crate::pretty::PrettyPrinter::pretty(effect_constraint)
+            )));
+        };
+        self.check(ctx, inner, effect_constraint)?;
+        self.check_domain_match(inner_constraint, constraint)
+    }
+
+    pub(crate) fn io_inner(&self, t: &'bump Term<'bump>) -> Option<&'bump Term<'bump>> {
+        if let Term::App(head, inner) = t
+            && matches!(head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_IO)
+        {
+            return Some(inner);
+        }
+        None
+    }
+
     /// Create a temporary checker with a different table (for sub-checks).
     pub(crate) fn with_table(
         arena: &'bump TermArena<'bump>,
@@ -385,6 +459,7 @@ impl<'bump> TypeChecker<'bump> {
             union_table: Vec::new(),
             struct_table: Vec::new(),
             extern_table: Vec::new(),
+            instance_table: Vec::new(),
             unsafe_depth: 0,
             mode: CheckMode::Full,
         }
@@ -399,6 +474,7 @@ impl<'bump> TypeChecker<'bump> {
             union_table: self.union_table.clone(),
             struct_table: self.struct_table.clone(),
             extern_table: self.extern_table.clone(),
+            instance_table: self.instance_table.clone(),
             unsafe_depth: self.unsafe_depth,
             mode: self.mode,
         }
@@ -442,6 +518,7 @@ pub fn check<'bump>(
         union_table: Vec::new(),
         struct_table: Vec::new(),
         extern_table: Vec::new(),
+        instance_table: Vec::new(),
         unsafe_depth: 0,
         mode: CheckMode::Full,
     };

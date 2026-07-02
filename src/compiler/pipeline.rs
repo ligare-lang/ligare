@@ -193,8 +193,14 @@ impl<'bump> Compiler<'bump> {
                     }) {
                         return Ok(None);
                     }
-                    let term = self.env.get(name).copied().unwrap_or(body_term);
-                    let resolved = self.subst_top_level(term);
+                    let desugared = self
+                        .checker
+                        .desugar_with_context(body_term)
+                        .or_else(|_| {
+                            let term = self.env.get(name).copied().unwrap_or(body_term);
+                            self.checker.desugar_with_context(term)
+                        })?;
+                    let resolved = self.subst_top_level(desugared);
                     let desugared = self.checker.desugar_with_context(resolved)?;
                     let erased = eraser.erase(desugared);
                     Ok(Some(TopLevel::TLDef(name, params, m_ret, erased, span)))
@@ -215,6 +221,7 @@ impl<'bump> Compiler<'bump> {
                     Ok(Some(TopLevel::TLDef(name, &[], None, erased, span)))
                 }
                 TopLevel::TLExternDef(..) => Ok(None),
+                TopLevel::TLInstance(..) => Ok(None),
                 TopLevel::TLUse(..) | TopLevel::TLMod(..) | TopLevel::TLPublic(_) => Ok(None),
                 TopLevel::TLCheck(_, _, _) => Ok(None),
             })
@@ -277,6 +284,7 @@ impl<'bump> Compiler<'bump> {
                 .arena
                 .annot(inner, self.normalize_codegen_constraint(constraint)),
             Term::Unsafe(inner) => self.arena.unsafe_(self.normalize_codegen_constraint(inner)),
+            Term::Pure(inner) => self.arena.pure(self.normalize_codegen_constraint(inner)),
             _ => term,
         }
     }

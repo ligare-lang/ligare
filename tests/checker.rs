@@ -48,8 +48,8 @@ fn unit_value_checks_as_unit() {
     assert_eq!(
         check_empty(
             &arena,
-            parse("Unit", b, &arena),
-            parse_constraint("Unit", b, &arena)
+            parse("()", b, &arena),
+            parse_constraint("()", b, &arena)
         ),
         Ok(())
     );
@@ -62,7 +62,7 @@ fn int_does_not_check_as_unit() {
         check_empty(
             &arena,
             parse("0", b, &arena),
-            parse_constraint("Unit", b, &arena)
+            parse_constraint("()", b, &arena)
         )
         .is_err()
     );
@@ -74,8 +74,8 @@ fn io_unit_requires_unit_body() {
     assert_eq!(
         check_empty(
             &arena,
-            parse("Unit", b, &arena),
-            parse_constraint("IO Unit", b, &arena)
+            parse("()", b, &arena),
+            parse_constraint("IO ()", b, &arena)
         ),
         Ok(())
     );
@@ -83,7 +83,7 @@ fn io_unit_requires_unit_body() {
         check_empty(
             &arena,
             parse("0", b, &arena),
-            parse_constraint("IO Unit", b, &arena)
+            parse_constraint("IO ()", b, &arena)
         )
         .is_err()
     );
@@ -96,8 +96,8 @@ fn do_block_checks_in_effect_function() {
     assert_eq!(
         compiler.process_file_str(
             "def read_int : IO int := 1\n\
-             def write_int (x : int) : IO Unit := Unit\n\
-             def main : IO Unit := do\n  x <- read_int\n  let y = x + 1\n  write_int y\n  Unit\n"
+             def write_int (x : int) : IO () := ()\n\
+             def main : IO () := do\n  x <- read_int\n  let y = x + 1\n  write_int y\n  ()\n"
         ),
         Ok(())
     );
@@ -125,7 +125,7 @@ fn do_bind_rhs_must_have_effect_constraint() {
     let (b, arena) = a();
     let mut compiler = Compiler::new(b, &arena);
     let err = compiler
-        .process_file_str("def bad : IO Unit := do\n  x <- 1\n  Unit\n")
+        .process_file_str("def bad : IO () := do\n  x <- 1\n  ()\n")
         .unwrap_err()
         .to_string();
     assert!(
@@ -177,6 +177,53 @@ fn io_extern_propagates_effect() {
         .to_string();
     assert!(
         err.contains("constraint mismatch") || err.contains("failed"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn io_extern_can_be_purified_inside_unsafe() {
+    let (b, arena) = a();
+    let mut compiler = Compiler::new(b, &arena);
+    assert_eq!(
+        compiler.process_file_str(
+            "extern def c_read : IO int\n\
+             def ok : int := unsafe { pure c_read }\n",
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn pure_requires_unsafe_context() {
+    let (b, arena) = a();
+    let mut compiler = Compiler::new(b, &arena);
+    let err = compiler
+        .process_file_str(
+            "extern def c_read : IO int\n\
+             def bad : int := pure c_read\n",
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("pure") && err.contains("unsafe"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn pure_requires_io_constraint() {
+    let (b, arena) = a();
+    let mut compiler = Compiler::new(b, &arena);
+    let err = compiler
+        .process_file_str(
+            "extern def c_abs (x : int) : int\n\
+             def bad : int := unsafe { pure (c_abs 1) }\n",
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("pure") && err.contains("IO"),
         "unexpected error: {err}"
     );
 }

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use bumpalo::Bump;
+use ligare::checker::builtin::BUILTIN_CONSTRAINT_NAMES;
 use ligare::core::pool::TermArena;
 use ligare::core::syntax::Term;
 use ligare::front::parser::{TopLevel, Visibility};
@@ -273,7 +274,7 @@ fn cache_marks_cross_module_direct_dependents_dirty() {
     let main = r#"
 mod math
 use math::one
-pub def main : IO Unit := let _ := one in Unit
+pub def main : IO () := let _ := one in ()
 "#;
 
     cache.update_fast(main_uri.clone(), Some(1), main.to_string());
@@ -287,6 +288,91 @@ pub def main : IO Unit := let _ := one in Unit
     let update = cache.update_fast(math_uri, Some(2), "pub def one : int := 2\n".to_string());
 
     assert_eq!(update.dirty_dependents, vec![main_uri]);
+}
+
+#[test]
+fn cache_reports_unknown_use_module() {
+    let mut cache = LspCache::new();
+    let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+    let source = "use missing::thing\n#check 1 : int\n";
+
+    let update = cache.update_fast(uri, Some(1), source.to_string());
+
+    assert!(
+        update
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("module not found: missing")),
+        "{:#?}",
+        update.diagnostics
+    );
+}
+
+#[test]
+fn cache_reports_unknown_declared_module() {
+    let mut cache = LspCache::new();
+    let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+    let source = "mod missing\n#check 1 : int\n";
+
+    let update = cache.update_fast(uri, Some(1), source.to_string());
+
+    assert!(
+        update
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("module not found: missing")),
+        "{:#?}",
+        update.diagnostics
+    );
+}
+
+#[test]
+fn cache_reports_duplicate_imports() {
+    let mut cache = LspCache::new();
+    let math_uri = lsp::Url::parse("file:///workspace/math.lig").unwrap();
+    let main_uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+    let math = "pub def one : int := 1\n";
+    let main = "mod math\nuse math::one\nuse math::one\n#check one : int\n";
+
+    cache.update_fast(math_uri, Some(1), math.to_string());
+    let update = cache.update_fast(main_uri, Some(1), main.to_string());
+
+    assert!(
+        update
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("duplicate import `one`")),
+        "{:#?}",
+        update.diagnostics
+    );
+}
+
+#[tokio::test]
+async fn service_publishes_module_import_diagnostics() {
+    let publisher = RecordingPublisher::default();
+    let service = DiagnosticService::new(publisher.clone());
+    let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+    let source = "mod missing\nuse missing::thing\nuse missing::thing\n#check 1 : int\n";
+
+    service
+        .did_open(uri.clone(), Some(1), source.to_string())
+        .await;
+
+    let notifications = publisher.wait_for_notifications(1).await;
+    let (_, diagnostics, version) = notifications.last().unwrap();
+    assert_eq!(*version, Some(1));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("module not found: missing")),
+        "{diagnostics:#?}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("duplicate import `thing`")),
+        "{diagnostics:#?}"
+    );
 }
 
 #[test]
@@ -349,6 +435,44 @@ def opt : Option := Some 1
 }
 
 #[test]
+fn semantic_tokens_classify_builtin_constraints() {
+    let mut cache = LspCache::new();
+    let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+    let source = format!(
+        "#check 0 : {}\n",
+        BUILTIN_CONSTRAINT_NAMES.join("\n#check 0 : ")
+    );
+
+    cache.update_fast(uri.clone(), Some(1), source.clone());
+    let tokens = cache.semantic_tokens(&uri).expect("semantic tokens");
+    let decoded = decode_semantic_tokens(&source, &tokens);
+
+    for builtin in BUILTIN_CONSTRAINT_NAMES {
+        assert_token(&decoded, builtin, "constraint");
+    }
+}
+
+#[test]
+fn semantic_tokens_classify_interface_instances() {
+    let mut cache = LspCache::new();
+    let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+    let source = r#"
+def ShowInt : prop := struct
+  show : int -> str
+def show_int (x : int) : str := "int"
+instance showInt : ShowInt := ShowInt.mk show_int
+"#;
+
+    cache.update_fast(uri.clone(), Some(1), source.to_string());
+    let tokens = cache.semantic_tokens(&uri).expect("semantic tokens");
+    let decoded = decode_semantic_tokens(source, &tokens);
+
+    assert_token(&decoded, "instance", "keyword");
+    assert_token(&decoded, "showInt", "variable");
+    assert_token(&decoded, "ShowInt", "constraint");
+}
+
+#[test]
 fn semantic_tokens_update_after_file_change() {
     let mut cache = LspCache::new();
     let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
@@ -365,6 +489,54 @@ fn semantic_tokens_update_after_file_change() {
     let second_decoded = decode_semantic_tokens(second, &second_tokens);
     assert_token(&second_decoded, "value", "function");
     assert_token(&second_decoded, "x", "parameter");
+}
+
+#[test]
+fn semantic_tokens_highlight_comments_without_classifying_comment_text() {
+    let mut cache = LspCache::new();
+    let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+    let source = r#"
+-- def hidden : int := value
+{- pub def also_hidden : int := 0 -}
+def value : int := /- inline int value -/ 1
+/-
+def fake : int := value
+-/
+#check value : int
+"#;
+
+    cache.update_fast(uri.clone(), Some(1), source.to_string());
+    let tokens = cache.semantic_tokens(&uri).expect("semantic tokens");
+    let decoded = decode_semantic_tokens(source, &tokens);
+
+    assert_token(&decoded, "-- def hidden : int := value", "comment");
+    assert_token(&decoded, "{- pub def also_hidden : int := 0 -}", "comment");
+    assert_token(&decoded, "/- inline int value -/", "comment");
+    assert_token(&decoded, "def fake : int := value", "comment");
+    assert_token(&decoded, "value", "variable");
+    assert_eq!(
+        decoded
+            .iter()
+            .filter(|token| token.text == "value" && token.kind == "variable")
+            .count(),
+        2,
+        "{decoded:#?}"
+    );
+}
+
+#[test]
+fn semantic_tokens_keep_classification_after_block_comment_in_declaration() {
+    let mut cache = LspCache::new();
+    let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+    let source = "def value : int := /- comment -/ 1\n#check value : int\n";
+
+    cache.update_fast(uri.clone(), Some(1), source.to_string());
+    let tokens = cache.semantic_tokens(&uri).expect("semantic tokens");
+    let decoded = decode_semantic_tokens(source, &tokens);
+
+    assert_token(&decoded, "/- comment -/", "comment");
+    assert_token(&decoded, "value", "variable");
+    assert_token(&decoded, "int", "constraint");
 }
 
 fn diagnostic_keys(
@@ -619,12 +791,12 @@ async fn goto_definition_resolves_open_cross_module_import() {
     let service = DiagnosticService::new(publisher);
     let main_uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
     let math_uri = lsp::Url::parse("file:///workspace/math.lig").unwrap();
-    let math = "-- | The answer.\npub def one : int := 1\n".to_string();
+    let math = "{- The answer. -}\npub def one : int := 1\n".to_string();
     let (main, position) = source_and_position(
         r#"
 mod math
 use math::one
-pub def main : IO Unit := let _ := <|>one in Unit
+pub def main : IO () := let _ := <|>one in ()
 "#,
     );
 
@@ -711,7 +883,7 @@ async fn service_loads_package_dependency_file_from_manifest() {
     )
     .unwrap();
     std::fs::write(util.join("src/main.lig"), "pub mod math\n").unwrap();
-    let math = "-- | Increment.\npub def inc (x : int) : int := x + 1\n".to_string();
+    let math = "{- Increment. -}\npub def inc (x : int) : int := x + 1\n".to_string();
     let math_path = util.join("src/math.lig");
     std::fs::write(&math_path, &math).unwrap();
     let main_path = root.join("src/main.lig");
@@ -720,7 +892,7 @@ async fn service_loads_package_dependency_file_from_manifest() {
     let (main, position) = source_and_position(
         r#"
 use util::math::inc
-pub def main : IO Unit := let _ := <|>inc 1 in Unit
+pub def main : IO () := let _ := <|>inc 1 in ()
 "#,
     );
 
@@ -735,6 +907,53 @@ pub def main : IO Unit := let _ := <|>inc 1 in Unit
 
     assert_eq!(location.uri, math_uri);
     assert_eq!(range_text(&math, location.range), "inc");
+}
+
+#[tokio::test]
+async fn service_diagnostics_resolve_package_imports_from_manifest() {
+    let publisher = RecordingPublisher::default();
+    let service = DiagnosticService::new(publisher.clone());
+    let root = std::env::temp_dir().join(format!(
+        "ligare_lsp_pkg_diag_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let util = root.join("util");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(util.join("src")).unwrap();
+    std::fs::write(
+        root.join("ligare.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nutil = { path = \"util\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        util.join("ligare.toml"),
+        "[package]\nname = \"util\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(util.join("src/main.lig"), "pub mod math\n").unwrap();
+    std::fs::write(
+        util.join("src/math.lig"),
+        "pub def inc (x : int) : int := x + 1\n",
+    )
+    .unwrap();
+    let main_uri = lsp::Url::from_file_path(root.join("src/main.lig")).unwrap();
+    let source = "use util::math::inc\n#check inc 1 : int\n".to_string();
+
+    service.did_open(main_uri, Some(1), source).await;
+    let notifications = publisher.wait_for_notifications(1).await;
+    let diagnostics = &notifications.last().unwrap().1;
+
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message.contains("unbound: inc")),
+        "{diagnostics:#?}"
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
 }
 
 #[tokio::test]
@@ -791,12 +1010,12 @@ async fn hover_contains_constraint_and_doc_comment() {
     let service = DiagnosticService::new(publisher);
     let main_uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
     let math_uri = lsp::Url::parse("file:///workspace/math.lig").unwrap();
-    let math = "-- | The answer.\npub def one : int := 1\n".to_string();
+    let math = "{- The answer. -}\npub def one : int := 1\n".to_string();
     let (main, position) = source_and_position(
         r#"
 mod math
 use math::one
-pub def main : IO Unit := let _ := <|>one in Unit
+pub def main : IO () := let _ := <|>one in ()
 "#,
     );
 
@@ -807,6 +1026,27 @@ pub def main : IO Unit := let _ := <|>one in Unit
 
     assert!(markdown.contains("one : int"), "{markdown}");
     assert!(markdown.contains("The answer."), "{markdown}");
+}
+
+#[tokio::test]
+async fn hover_ignores_top_level_doc_comment_for_definition() {
+    let publisher = RecordingPublisher::default();
+    let service = DiagnosticService::new(publisher);
+    let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+    let (source, position) = source_and_position(
+        r#"
+{-! Module docs. -}
+pub def one : int := 1
+pub def main : int := <|>one
+"#,
+    );
+
+    service.did_open(uri.clone(), Some(1), source).await;
+    let hover = service.hover(&uri, position).await.expect("hover");
+    let markdown = hover_markdown(hover);
+
+    assert!(markdown.contains("one : int"), "{markdown}");
+    assert!(!markdown.contains("Module docs."), "{markdown}");
 }
 
 #[tokio::test]

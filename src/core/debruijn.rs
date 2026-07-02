@@ -157,6 +157,9 @@ impl<'arena, 'bump> Desugarer<'arena, 'bump> {
                 self.try_desugar_with_env(f, env, resolver, effect)?,
                 self.try_desugar_with_env(a, env, resolver, effect)?,
             ),
+            Term::Implicit(inner) => self
+                .arena
+                .implicit(self.try_desugar_with_env(inner, env, resolver, effect)?),
             Term::Lam(_) => {
                 // Already-desugared Lam (from `def`): recurse into body with
                 // a dummy binder since we don't know the name.
@@ -349,6 +352,9 @@ impl<'arena, 'bump> Desugarer<'arena, 'bump> {
             Term::Unsafe(inner) => self
                 .arena
                 .unsafe_(self.try_desugar_with_env(inner, env, resolver, effect)?),
+            Term::Pure(inner) => self
+                .arena
+                .pure(self.try_desugar_with_env(inner, env, resolver, effect)?),
 
             // ── Leaf / no-name-binding nodes ──
             Term::Var(_)
@@ -524,6 +530,7 @@ impl<'bump> SubstitutionContext<'bump> {
             Term::Lam(body) => self.arena.lam(recurse(body, cutoff + 1)),
             Term::NamedLam(n, body) => self.arena.named_lam(n, recurse(body, cutoff + 1)),
             Term::App(f, a) => self.arena.app(recurse(f, cutoff), recurse(a, cutoff)),
+            Term::Implicit(inner) => self.arena.implicit(recurse(inner, cutoff)),
             Term::Pi(n, a, b) => self.arena.pi(n, recurse(a, cutoff), recurse(b, cutoff + 1)),
             Term::Let(n, v, b, mc) => {
                 let mc2 = mc.map(|c| recurse(c, cutoff));
@@ -609,6 +616,7 @@ impl<'bump> SubstitutionContext<'bump> {
                 self.arena.struct_proj(recurse(subject, cutoff), *idx)
             }
             Term::Unsafe(inner) => self.arena.unsafe_(recurse(inner, cutoff)),
+            Term::Pure(inner) => self.arena.pure(recurse(inner, cutoff)),
             // Leaf nodes — returned unchanged (Var handled by callers)
             _ => t,
         }
@@ -718,6 +726,7 @@ fn shift_term<'bump>(
             shift_term(arena, d, cutoff, f),
             shift_term(arena, d, cutoff, a),
         ),
+        Term::Implicit(inner) => arena.implicit(shift_term(arena, d, cutoff, inner)),
         Term::Pi(n, a, b) => arena.pi(
             n,
             shift_term(arena, d, cutoff, a),
@@ -742,6 +751,7 @@ fn shift_term<'bump>(
             shift_term(arena, d, cutoff, ct),
         ),
         Term::Unsafe(inner) => arena.unsafe_(shift_term(arena, d, cutoff, inner)),
+        Term::Pure(inner) => arena.pure(shift_term(arena, d, cutoff, inner)),
         // All other nodes: return unchanged (no Var children that need shifting
         // beyond what's already covered by recursive cases, or leaf nodes).
         _ => t,

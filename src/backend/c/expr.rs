@@ -148,6 +148,7 @@ impl<'a> ExpressionEmitter<'a> {
 
             Term::Annot(inner, _) => self.emit_expr(inner, ctx, union_map, struct_map),
             Term::Unsafe(inner) => self.emit_expr(inner, ctx, union_map, struct_map),
+            Term::Pure(inner) => self.emit_expr(inner, ctx, union_map, struct_map),
 
             Term::Builtin(name) | Term::Global(name) => {
                 if *name == BUILTIN_UNIT {

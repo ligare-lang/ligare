@@ -209,6 +209,9 @@ impl NameResolver {
                 self.collect_names_in_term(f, def_names, called);
                 self.collect_names_in_term(a, def_names, called);
             }
+            Term::Implicit(inner) => {
+                self.collect_names_in_term(inner, def_names, called);
+            }
             Term::Lam(body) => {
                 self.collect_names_in_term(body, def_names, called);
             }
@@ -244,7 +247,9 @@ impl NameResolver {
             Term::Named(_) | Term::NamedLam(..) | Term::NamedMatch(..) | Term::Do(_) => {
                 panic!("parser-level term reached C name collection before desugaring")
             }
-            Term::Unsafe(inner) => self.collect_names_in_term(inner, def_names, called),
+            Term::Unsafe(inner) | Term::Pure(inner) => {
+                self.collect_names_in_term(inner, def_names, called)
+            }
             Term::StructCons(_, field_values) => {
                 for v in *field_values {
                     self.collect_names_in_term(v, def_names, called);

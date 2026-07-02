@@ -3,7 +3,7 @@ use super::{
 };
 use crate::config::{
     AND_ELIM_LEFT, AND_INTRO, BUILTIN_AND, BUILTIN_DATA, BUILTIN_IMPLIES, BUILTIN_NOT, BUILTIN_OR,
-    BUILTIN_PROOF, BUILTIN_PROP, BUILTIN_THEOREM,
+    BUILTIN_PROOF, BUILTIN_PROP, BUILTIN_THEOREM, BUILTIN_UNIT,
 };
 use crate::core::syntax::{DoStmt, Name, PrimOp, Term};
 use crate::front::lexer::Token;
@@ -35,6 +35,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             Some(Token::KwLet) => self.parse_let_expr(),
             Some(Token::KwDo) => self.parse_do_expr(),
             Some(Token::KwUnsafe) => self.parse_unsafe_expr(),
+            Some(Token::KwPure) => self.parse_pure_expr(),
             Some(Token::KwFunc) => self.parse_func_expr(),
             Some(Token::LParen) => {
                 let saved = self.pos;
@@ -474,6 +475,12 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         Ok(self.arena.unsafe_(inner))
     }
 
+    fn parse_pure_expr(&mut self) -> Result<&'bump Term<'bump>, ParseError> {
+        self.expect(&Token::KwPure)?;
+        let inner = self.parse_expr()?;
+        Ok(self.arena.pure(inner))
+    }
+
     fn parse_dep_arrow_expr(&mut self) -> Result<&'bump Term<'bump>, ParseError> {
         self.expect(&Token::LParen)?;
         let x = self.parse_ident()?;
@@ -518,6 +525,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 | Token::Minus
                 | Token::KwAuto
                 | Token::KwDo
+                | Token::KwPure
                 | Token::KwUnsafe
                 | Token::AndIntro
                 | Token::AndElimLeft
@@ -773,6 +781,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             Some(Token::KwFun) => self.parse_fun_lam(),
             Some(Token::KwDo) => self.parse_do_expr(),
             Some(Token::KwUnsafe) => self.parse_unsafe_expr(),
+            Some(Token::KwPure) => self.parse_pure_expr(),
             Some(Token::Minus) => {
                 self.advance();
                 let t = self.parse_atom()?;
@@ -926,6 +935,15 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                     self.expect(&Token::RParen)?;
                     params.push((pname, mconstr));
                 }
+                Some(Token::LBrace) => {
+                    self.advance();
+                    let pname = self.parse_ident()?;
+                    let mconstr = self
+                        .parse_constraint_annotation()
+                        .map(|c| self.arena.implicit(c));
+                    self.expect(&Token::RBrace)?;
+                    params.push((pname, mconstr));
+                }
                 Some(Token::Ident(_)) => {
                     let pname = self.parse_ident()?;
                     params.push((pname, None));
@@ -944,6 +962,9 @@ impl<'a, 'bump> Parser<'a, 'bump> {
 
     fn parse_parens(&mut self) -> Result<&'bump Term<'bump>, ParseError> {
         self.expect(&Token::LParen)?;
+        if self.try_expect(&Token::RParen) {
+            return Ok(self.builtin(BUILTIN_UNIT));
+        }
         let t = self.parse_expr()?;
         self.expect(&Token::RParen)?;
         Ok(t)

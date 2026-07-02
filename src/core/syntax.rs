@@ -122,6 +122,9 @@ pub enum Tactic<'bump> {
 pub enum Term<'bump> {
     Var(usize),
     App(&'bump Term<'bump>, &'bump Term<'bump>),
+    /// Marker for an implicit parameter constraint. This wrapper lives only in
+    /// signatures; the wrapped constraint is used for checking and instance lookup.
+    Implicit(&'bump Term<'bump>),
     Lam(&'bump Term<'bump>),
     /// Named lambda (parser artifact): stores param name, resolved to Lam+Var by desugar.
     NamedLam(Name<'bump>, &'bump Term<'bump>),
@@ -164,6 +167,8 @@ pub enum Term<'bump> {
     Do(&'bump [DoStmt<'bump>]),
     /// Explicit unsafe boundary. It does not change the term's constraint or effect.
     Unsafe(&'bump Term<'bump>),
+    /// Explicit IO elimination, valid only inside an unsafe boundary.
+    Pure(&'bump Term<'bump>),
     /// Struct type definition (in `prop`): (name, [(field_name, constraint)])
     StructDef(Name<'bump>, &'bump [(Name<'bump>, &'bump Term<'bump>)]),
     /// Struct value construction (in `data`): (struct_name, field_values in order)

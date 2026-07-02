@@ -199,7 +199,12 @@ impl<'bump> Compiler<'bump> {
                 }
                 let params = self.rewrite_params(p, state);
                 let ret = r.map(|t| self.rewrite_type_constraint(t, state));
-                let body = self.rewrite_term(b, state);
+                let body = self
+                    .checker
+                    .desugar_with_context(b)
+                    .map(|b| self.subst_top_level(b))
+                    .unwrap_or(b);
+                let body = self.rewrite_term(body, state);
                 TopLevel::TLDef(n, params, ret, body, s)
             }
             TopLevel::TLExternDef(n, p, r, s) => {
@@ -207,6 +212,7 @@ impl<'bump> Compiler<'bump> {
                 let ret = self.rewrite_type_constraint(r, state);
                 TopLevel::TLExternDef(n, params, ret, s)
             }
+            TopLevel::TLInstance(..) => top,
             TopLevel::TLCheck(t, c, s) => TopLevel::TLCheck(t, c, s),
             TopLevel::TLTheorem(n, p, b, s) => {
                 let p = self.rewrite_type_constraint(p, state);
@@ -356,11 +362,8 @@ impl<'bump> Compiler<'bump> {
                 )
             })
             .collect::<Vec<_>>();
-        let body = self.replace_type_param_vars(
-            self.peel_lams(def.body, n_type_params),
-            type_args,
-            def.params.len(),
-        );
+        let body = self.apply_erased_args(def.body, type_args);
+        let body = self.replace_type_param_vars(body, type_args, def.params.len());
         let body = self.rewrite_term(body, state);
         (
             self.arena.alloc_slice(&data_params),
@@ -700,28 +703,20 @@ impl<'bump> Compiler<'bump> {
         (cur, args)
     }
 
-    fn peel_lams(&self, term: &'bump Term<'bump>, count: usize) -> &'bump Term<'bump> {
-        let mut t = term;
-        let mut remaining = count;
-        while remaining > 0 {
-            match t {
-                Term::Annot(inner, _) => t = inner,
-                Term::Lam(body) => {
-                    t = body;
-                    remaining -= 1;
-                }
-                _ => break,
-            }
-        }
-        t
-    }
-
     fn is_erased_param_constraint(&self, term: &Term<'_>) -> bool {
         SemanticQueries::new(self.checker.builtins()).is_erased_parameter_constraint(term)
     }
 
     fn type_arg_is_supported(&self, term: &Term<'_>) -> bool {
-        matches!(term, Term::Builtin(_) | Term::Global(_) | Term::App(_, _))
+        matches!(
+            term,
+            Term::Builtin(_)
+                | Term::Global(_)
+                | Term::App(_, _)
+                | Term::StructCons(..)
+                | Term::Variant(..)
+                | Term::Annot(_, _)
+        )
     }
 
     fn mono_name(&self, base: Name<'bump>, type_args: &[&Term<'_>]) -> Name<'bump> {
@@ -739,7 +734,42 @@ impl<'bump> Compiler<'bump> {
                 n.replace(|c: char| !c.is_ascii_alphanumeric(), "_")
             }
             Term::App(f, a) => format!("{}__{}", self.type_arg_slug(f), self.type_arg_slug(a)),
+            Term::StructCons(name, values) => format!(
+                "{}__{}",
+                name.replace(|c: char| !c.is_ascii_alphanumeric(), "_"),
+                values
+                    .iter()
+                    .map(|v| self.type_arg_slug(v))
+                    .collect::<Vec<_>>()
+                    .join("__")
+            ),
+            Term::Variant(name, idx, _) => format!(
+                "{}__v{}",
+                name.replace(|c: char| !c.is_ascii_alphanumeric(), "_"),
+                idx
+            ),
+            Term::Annot(inner, _) => self.type_arg_slug(inner),
             _ => "unknown".to_string(),
         }
+    }
+
+    fn apply_erased_args(
+        &self,
+        term: &'bump Term<'bump>,
+        args: &[&'bump Term<'bump>],
+    ) -> &'bump Term<'bump> {
+        let sub = crate::core::debruijn::SubstitutionContext::new(self.arena);
+        let mut body = term;
+        for arg in args {
+            body = match body {
+                Term::Annot(inner, _) => inner,
+                _ => body,
+            };
+            match body {
+                Term::Lam(lam_body) => body = sub.beta(lam_body, arg),
+                _ => break,
+            }
+        }
+        body
     }
 }

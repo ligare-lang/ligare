@@ -1,6 +1,7 @@
 use std::ops::Range;
 
 use bumpalo::Bump;
+use ligare::checker::builtin::BUILTIN_CONSTRAINT_NAMES;
 use ligare::core::pool::TermArena;
 use ligare::core::syntax::Term;
 use ligare::front::lexer::Token;
@@ -235,7 +236,7 @@ impl NavIndex {
     }
 
     fn builtin_symbol<'a>(&'a self, doc: &IndexedDocument, name: &str) -> Option<&'a NavSymbol> {
-        if !BUILTIN_CONSTRAINTS.contains(&name) {
+        if !BUILTIN_CONSTRAINT_NAMES.contains(&name) {
             return None;
         }
         self.symbols
@@ -408,6 +409,24 @@ impl IndexedDocument {
                         constraint: Some(signature.whole.clone()),
                         signature: Some(signature),
                         kind: SymbolKind::Function,
+                        uri: self.uri.clone(),
+                        range: self.span_to_range(span.clone()),
+                        byte_start: span.start,
+                        module_key: self.module_key.clone(),
+                        imported_path: None,
+                        doc: doc_comment_before(&self.text, start),
+                        scope: None,
+                    });
+                }
+            }
+            TopLevel::TLInstance(name, constraint, _, _) => {
+                if let Some(span) = self.find_decl_name_span(start, end, name) {
+                    self.push_symbol(NavSymbol {
+                        name: (*name).to_string(),
+                        detail: ligare::pretty::PrettyPrinter::pretty(constraint),
+                        constraint: Some(Constraint::from_term(constraint)),
+                        signature: None,
+                        kind: SymbolKind::Value,
                         uri: self.uri.clone(),
                         range: self.span_to_range(span.clone()),
                         byte_start: span.start,
@@ -670,7 +689,7 @@ impl IndexedDocument {
     }
 
     fn collect_builtin_symbols(&mut self) {
-        for name in BUILTIN_CONSTRAINTS {
+        for name in BUILTIN_CONSTRAINT_NAMES {
             self.push_symbol(NavSymbol {
                 name: (*name).to_string(),
                 detail: "builtin constraint".to_string(),
@@ -897,6 +916,10 @@ fn unwrap_public<'a, 'bump>(top: &'a TopLevel<'bump>) -> &'a TopLevel<'bump> {
 }
 
 fn doc_comment_before(source: &str, start: usize) -> Option<String> {
+    if let Some(doc) = block_doc_comment_before(source, start) {
+        return Some(doc);
+    }
+
     let mut docs = Vec::new();
     for line in source[..start].lines().rev() {
         let trimmed = line.trim_start();
@@ -914,7 +937,66 @@ fn doc_comment_before(source: &str, start: usize) -> Option<String> {
     }
 }
 
-const BUILTIN_CONSTRAINTS: &[&str] = &[
-    "int", "bool", "str", "IO", "Unit", "data", "prop", "theorem", "proof", "and", "or", "not",
-    "implies", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "c_int", "c_uint",
-];
+fn block_doc_comment_before(source: &str, start: usize) -> Option<String> {
+    let end = doc_comment_end_before(source, start)?;
+    let before_close = end.checked_sub(2)?;
+    let open = source[..before_close].rfind("{-")?;
+    let raw = &source[open..end];
+    if raw.starts_with("{-!") || !raw.ends_with("-}") {
+        return None;
+    }
+    let doc = clean_block_doc(&raw[2..raw.len() - 2]);
+    (!doc.trim().is_empty()).then_some(doc)
+}
+
+fn doc_comment_end_before(source: &str, start: usize) -> Option<usize> {
+    let mut index = start;
+    index = skip_horizontal_space_back(source, index);
+    if source[..index].ends_with('\n') {
+        index -= 1;
+        if source[..index].ends_with('\r') {
+            index -= 1;
+        }
+        index = skip_horizontal_space_back(source, index);
+    }
+    source[..index].ends_with("-}").then_some(index)
+}
+
+fn skip_horizontal_space_back(source: &str, mut index: usize) -> usize {
+    while index > 0 {
+        match source.as_bytes()[index - 1] {
+            b' ' | b'\t' | b'\r' | b'\x0c' => index -= 1,
+            _ => break,
+        }
+    }
+    index
+}
+
+fn clean_block_doc(raw: &str) -> String {
+    let mut lines: Vec<&str> = raw.lines().collect();
+    while lines.first().is_some_and(|line| line.trim().is_empty()) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+
+    let indent = lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            line.bytes()
+                .take_while(|b| matches!(b, b' ' | b'\t'))
+                .count()
+        })
+        .min()
+        .unwrap_or(0);
+
+    lines
+        .into_iter()
+        .map(|line| line.get(indent..).unwrap_or(line).trim_end())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}

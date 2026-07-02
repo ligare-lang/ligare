@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::ops::Range;
 
 use bumpalo::Bump;
+use ligare::checker::builtin::BUILTIN_CONSTRAINT_NAMES;
 use ligare::core::pool::TermArena;
 use ligare::core::syntax::{Name, Term};
 use ligare::front::lexer::Token;
@@ -124,13 +125,8 @@ struct CompletionContext {
 
 const KEYWORDS: &[&str] = &[
     "let", "in", "if", "then", "else", "true", "false", "by", "fun", "func", "do", "where", "def",
-    "extern", "unsafe", "auto", "exact", "apply", "intro", "have", "theorem", "pub", "use", "mod",
-    "as", "struct", "union", "match", "with", "of",
-];
-
-const BUILTIN_CONSTRAINTS: &[&str] = &[
-    "int", "bool", "str", "IO", "Unit", "data", "prop", "theorem", "proof", "and", "or", "not",
-    "implies", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "c_int", "c_uint",
+    "extern", "unsafe", "pure", "auto", "exact", "apply", "intro", "have", "theorem", "pub", "use",
+    "mod", "as", "struct", "union", "match", "with", "of",
 ];
 
 pub fn completion_items_for_source(
@@ -187,9 +183,11 @@ pub(crate) fn tokenize(source: &str) -> Vec<TokenSpan> {
     Token::lexer(source)
         .spanned()
         .filter_map(|(result, span)| {
-            result.ok().map(|token| TokenSpan {
-                token,
-                span: span.clone(),
+            result.ok().and_then(|token| {
+                (token != Token::BlockComment).then_some(TokenSpan {
+                    token,
+                    span: span.clone(),
+                })
             })
         })
         .collect()
@@ -253,6 +251,14 @@ pub(crate) fn collect_top_level_symbols(top: &TopLevel<'_>, symbols: &mut Vec<Sy
                 imported_path: None,
             });
         }
+        TopLevel::TLInstance(name, constraint, _, _) => symbols.push(Symbol {
+            name: (*name).to_string(),
+            detail: Constraint::from_term(constraint).display,
+            constraint: Some(Constraint::from_term(constraint)),
+            signature: None,
+            kind: SymbolKind::Value,
+            imported_path: None,
+        }),
         TopLevel::TLTheorem(name, prop, _, _) => symbols.push(Symbol {
             name: (*name).to_string(),
             detail: PrettyPrinter::pretty(prop),
@@ -586,7 +592,7 @@ fn keyword_symbols() -> Vec<Symbol> {
 }
 
 fn builtin_symbols() -> Vec<Symbol> {
-    BUILTIN_CONSTRAINTS
+    BUILTIN_CONSTRAINT_NAMES
         .iter()
         .map(|name| Symbol {
             name: (*name).to_string(),
@@ -1150,6 +1156,7 @@ pub(crate) fn top_start(top: &TopLevel<'_>) -> usize {
     match top {
         TopLevel::TLDef(_, _, _, _, span)
         | TopLevel::TLExternDef(_, _, _, span)
+        | TopLevel::TLInstance(_, _, _, span)
         | TopLevel::TLTheorem(_, _, _, span)
         | TopLevel::TLUse(_, _, span)
         | TopLevel::TLMod(_, span)

@@ -45,6 +45,22 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         Ok((name, self.arena.alloc_slice(&params), ret))
     }
 
+    pub(super) fn parse_instance(
+        &mut self,
+    ) -> Result<(Name<'bump>, &'bump Term<'bump>, &'bump Term<'bump>), ParseError> {
+        self.expect(&Token::KwInstance)?;
+        let name = self.parse_decl_ident()?;
+        let constraint = self
+            .parse_constraint_until(|tokens, i| matches!(tokens[i].0, Token::ColonEq))
+            .ok_or_else(|| ParseError {
+                message: "instance requires an explicit constraint".into(),
+                span: self.current_span(),
+            })?;
+        self.expect(&Token::ColonEq)?;
+        let value = self.parse_expr()?;
+        Ok((name, constraint, value))
+    }
+
     pub(super) fn desugar_def(
         &self,
         _name: Name<'bump>,
@@ -82,15 +98,22 @@ impl<'a, 'bump> Parser<'a, 'bump> {
     }
 
     fn parse_curried_param(&mut self) -> Option<(Name<'bump>, Option<&'bump Term<'bump>>)> {
-        if !self.try_expect(&Token::LParen) {
+        let implicit = if self.try_expect(&Token::LBrace) {
+            true
+        } else if self.try_expect(&Token::LParen) {
+            false
+        } else {
             return None;
-        }
+        };
         let pname = match self.parse_decl_ident() {
             Ok(n) => n,
             Err(_) => return None,
         };
-        let mconstr = self.parse_constraint_annotation();
-        if !self.try_expect(&Token::RParen) {
+        let mconstr = self
+            .parse_constraint_annotation()
+            .map(|c| if implicit { self.arena.implicit(c) } else { c });
+        let close = if implicit { Token::RBrace } else { Token::RParen };
+        if !self.try_expect(&close) {
             return None;
         }
         Some((pname, mconstr))
@@ -106,7 +129,10 @@ impl<'a, 'bump> Parser<'a, 'bump> {
 
     pub(super) fn parse_constraint_annotation(&mut self) -> Option<&'bump Term<'bump>> {
         self.parse_constraint_until(|tokens, i| {
-            matches!(tokens[i].0, Token::KwBy | Token::ColonEq | Token::RParen)
+            matches!(
+                tokens[i].0,
+                Token::KwBy | Token::ColonEq | Token::RParen | Token::RBrace
+            )
         })
     }
 

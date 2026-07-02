@@ -118,14 +118,14 @@ fn func_no_constraint() {
 fn do_block_desugars_to_manual_let_chain() {
     let (b, arena) = a();
     let raw = parse_expr_top(
-        "do\n  x <- read_int\n  let y = x + 1\n  write_int y\n  Unit",
+        "do\n  x <- read_int\n  let y = x + 1\n  write_int y\n  ()",
         b,
         &arena,
     )
     .unwrap();
     let io_unit = arena.app(
         arena.builtin(s(&arena, "IO")),
-        arena.builtin(s(&arena, "Unit")),
+        arena.builtin(s(&arena, "()")),
     );
     let desugared = Desugarer::new(&arena)
         .try_desugar_with_names_and_effect(raw, &[], io_unit)
@@ -143,7 +143,7 @@ fn do_block_desugars_to_manual_let_chain() {
             arena.let_(
                 s(&arena, "_"),
                 arena.app(arena.global(s(&arena, "write_int")), arena.var(0)),
-                arena.builtin(s(&arena, "Unit")),
+                arena.builtin(s(&arena, "()")),
                 Some(io_data),
             ),
             None,

@@ -18,6 +18,32 @@ use crate::pretty::PrettyPrinter;
 
 pub type BuiltinChecker = fn(&Term<'_>) -> Result<(), Diagnostic>;
 
+pub const BUILTIN_CONSTRAINT_NAMES: &[&str] = &[
+    BUILTIN_INT,
+    BUILTIN_BOOL,
+    BUILTIN_STR,
+    BUILTIN_IO,
+    BUILTIN_UNIT,
+    BUILTIN_DATA,
+    BUILTIN_PROP,
+    BUILTIN_THEOREM,
+    BUILTIN_PROOF,
+    BUILTIN_AND,
+    BUILTIN_OR,
+    BUILTIN_NOT,
+    BUILTIN_IMPLIES,
+    BUILTIN_I8,
+    BUILTIN_I16,
+    BUILTIN_I32,
+    BUILTIN_I64,
+    BUILTIN_U8,
+    BUILTIN_U16,
+    BUILTIN_U32,
+    BUILTIN_U64,
+    BUILTIN_C_INT,
+    BUILTIN_C_UINT,
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogicKind {
     Conj,
@@ -68,7 +94,7 @@ fn check_unit(t: &Term<'_>) -> Result<(), Diagnostic> {
     match t {
         Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_UNIT => Ok(()),
         _ => Err(Diagnostic::new(format!(
-            "expected Unit, got {}",
+            "expected (), got {}",
             PrettyPrinter::pretty(t)
         ))),
     }

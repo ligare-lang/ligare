@@ -8,16 +8,20 @@ use crate::core::syntax::Term;
 use crate::front::lexer::Token;
 
 fn tokenize(input: &str) -> Result<Vec<SpannedToken>, ParseError> {
-    Token::lexer(input)
-        .spanned()
-        .map(|(r, span)| match r {
-            Ok(t) => Ok((t, span)),
-            Err(()) => Err(ParseError {
-                message: format!("invalid token `{}`", &input[span.clone()]),
-                span,
-            }),
-        })
-        .collect()
+    let mut tokens = Vec::new();
+    for (result, span) in Token::lexer(input).spanned() {
+        match result {
+            Ok(Token::BlockComment) => {}
+            Ok(token) => tokens.push((token, span)),
+            Err(()) => {
+                return Err(ParseError {
+                    message: format!("invalid token `{}`", &input[span.clone()]),
+                    span,
+                });
+            }
+        }
+    }
+    Ok(tokens)
 }
 
 pub fn parse_expr_top<'bump>(

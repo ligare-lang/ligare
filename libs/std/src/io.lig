@@ -1,4 +1,7 @@
 extern def puts (s : str) : IO c_int
-pub def put_str (s : str) : IO Unit := do
+
+{- this function is used to output some str. -}
+pub def put_str (s : str) : IO () := do
     let _ = unsafe { puts s }
-    Unit
+    ()
+

@@ -104,6 +104,24 @@ impl<'bump> TypeChecker<'bump> {
             Some(ty) => {
                 let pi_constraint = self.evaluator.whnf(ty)?;
                 if let Term::Pi(_, a_dom, b_cod) = pi_constraint {
+                    if Self::is_implicit_constraint(a_dom) {
+                        if self.is_implicit_meta_constraint(a_dom) {
+                            let inferred = self.infer_binding_constraint(ctx, a)?;
+                            let f_with_inferred = self.arena.app(f, inferred);
+                            return self.check_app(ctx, f_with_inferred, a, constraint);
+                        }
+                        let Some((instance_name, instance)) = self.lookup_instance(a_dom)? else {
+                            return Err(diag!(
+                                "missing implicit instance for {}",
+                                PrettyPrinter::pretty(Self::implicit_inner(a_dom))
+                            ));
+                        };
+                        let f_with_instance = self.arena.app(f, instance);
+                        let result = self.check_app(ctx, f_with_instance, a, constraint);
+                        return result.map_err(|err| {
+                            diag!("while applying implicit instance `{}`: {}", instance_name, err)
+                        });
+                    }
                     self.check(ctx, a, a_dom)?;
                     // Substitute the argument into the codomain to get the
                     // actual result constraint. This matters when the
@@ -248,8 +266,8 @@ impl<'bump> TypeChecker<'bump> {
         let expected = ctx
             .lookup(i)
             .ok_or_else(|| diag!("unbound term index {}", i))?;
-        let expected_val = self.evaluator.whnf(expected)?;
-        let constraint_val = self.evaluator.whnf(constraint)?;
+        let expected_val = self.evaluator.whnf(Self::implicit_inner(expected))?;
+        let constraint_val = self.evaluator.whnf(Self::implicit_inner(constraint))?;
         if expected_val == constraint_val
             || self.is_refinement_of(expected_val, constraint_val)
             || Self::effect_inner(expected_val).is_some_and(|inner| {
@@ -372,7 +390,7 @@ impl<'bump> TypeChecker<'bump> {
         self.check(&new_ctx, body, constraint)
     }
 
-    fn infer_binding_constraint(
+    pub(crate) fn infer_binding_constraint(
         &self,
         ctx: &Context<'bump>,
         term: &'bump Term<'bump>,
@@ -387,6 +405,7 @@ impl<'bump> TypeChecker<'bump> {
                 Ok(self.arena.builtin(sname))
             }
             Term::Unsafe(inner) => self.infer_binding_constraint(ctx, inner),
+            Term::Pure(inner) => self.infer_pure_constraint(ctx, inner),
             Term::Builtin(name) | Term::Global(name) if self.lookup_extern(name).is_some() => self
                 .lookup_extern(name)
                 .ok_or_else(|| diag!("missing external function signature: {}", name)),
@@ -450,6 +469,24 @@ impl<'bump> TypeChecker<'bump> {
         }
     }
 
+    fn infer_pure_constraint(
+        &self,
+        ctx: &Context<'bump>,
+        inner: &'bump Term<'bump>,
+    ) -> Result<&'bump Term<'bump>, Diagnostic> {
+        if self.unsafe_depth == 0 {
+            return Err(diag!("`pure` can only appear in an unsafe context"));
+        }
+        let inferred = self.infer_binding_constraint(ctx, inner)?;
+        let effect_constraint = self.evaluator.whnf(inferred)?;
+        self.io_inner(effect_constraint).ok_or_else(|| {
+            diag!(
+                "`pure` expects an IO constraint, got {}",
+                PrettyPrinter::pretty(effect_constraint)
+            )
+        })
+    }
+
     fn infer_struct_projection_constraint(
         &self,
         ctx: &Context<'bump>,
@@ -501,6 +538,9 @@ impl<'bump> TypeChecker<'bump> {
         term: &'bump Term<'bump>,
         constraint: &'bump Term<'bump>,
     ) -> Result<(), Diagnostic> {
+        if let Term::Implicit(inner) = constraint {
+            return self.check_by_constraint(ctx, term, inner);
+        }
         if let Term::Refine(name, parent, p) = constraint {
             let new_table = add_refine(name, parent, p, &self.table);
             let checker = Self::with_table(self.arena, &new_table);
@@ -845,8 +885,8 @@ impl<'bump> TypeChecker<'bump> {
         annot: &'bump Term<'bump>,
         constraint: &'bump Term<'bump>,
     ) -> Result<(), Diagnostic> {
-        let a_val = self.evaluator.whnf(annot)?;
-        let c_val = self.evaluator.whnf(constraint)?;
+        let a_val = self.evaluator.whnf(Self::implicit_inner(annot))?;
+        let c_val = self.evaluator.whnf(Self::implicit_inner(constraint))?;
         // Compare Pi constraints ignoring parameter names (e.g. `Pi("x",A,B)` ≡ `Pi("",A,B)`)
         let ok = a_val == c_val
             || Self::pi_equiv(a_val, c_val)
@@ -868,6 +908,23 @@ impl<'bump> TypeChecker<'bump> {
                 PrettyPrinter::pretty(c_val)
             ))
         }
+    }
+
+    pub(crate) fn constraint_equiv(
+        &self,
+        a: &'bump Term<'bump>,
+        b: &'bump Term<'bump>,
+    ) -> bool {
+        let Ok(a_val) = self.evaluator.whnf(Self::implicit_inner(a)) else {
+            return false;
+        };
+        let Ok(b_val) = self.evaluator.whnf(Self::implicit_inner(b)) else {
+            return false;
+        };
+        a_val == b_val
+            || Self::pi_equiv(a_val, b_val)
+            || self.named_constraint_equiv(a_val, b_val)
+            || self.named_app_equiv(a_val, b_val)
     }
 
     /// Check if two terms represent the same union/struct constraint application,
@@ -895,6 +952,42 @@ impl<'bump> TypeChecker<'bump> {
         }
     }
 
+    fn named_app_equiv(&self, a: &'bump Term<'bump>, b: &'bump Term<'bump>) -> bool {
+        fn collect<'a>(t: &'a Term<'a>, out: &mut Vec<&'a Term<'a>>) -> &'a Term<'a> {
+            match t {
+                Term::App(f, arg) => {
+                    let head = collect(f, out);
+                    out.push(arg);
+                    head
+                }
+                _ => t,
+            }
+        }
+        let mut aa = Vec::new();
+        let mut bb = Vec::new();
+        let ah = collect(a, &mut aa);
+        let bh = collect(b, &mut bb);
+        matches!((ah, bh), (Term::Builtin(x) | Term::Global(x), Term::Builtin(y) | Term::Global(y)) if x == y)
+            && aa.len() == bb.len()
+            && aa.iter().zip(bb.iter()).all(|(x, y)| self.constraint_equiv(x, y))
+    }
+
+    fn is_implicit_meta_constraint(&self, term: &'bump Term<'bump>) -> bool {
+        let Ok(inner) = self.evaluator.whnf(Self::implicit_inner(term)) else {
+            return false;
+        };
+        matches!(
+            inner,
+            Term::Builtin(name) | Term::Global(name)
+                if matches!(*name, "prop" | "theorem" | "proof" | "data")
+        ) || matches!(
+            inner,
+            Term::Universe(
+                Universe::UProp | Universe::UTheorem | Universe::UProof | Universe::UData
+            )
+        )
+    }
+
     fn effect_inner(t: &'bump Term<'bump>) -> Option<&'bump Term<'bump>> {
         match t {
             Term::App(_, inner) => Some(inner),
@@ -915,7 +1008,7 @@ impl<'bump> TypeChecker<'bump> {
     fn pi_equiv(a: &'bump Term<'bump>, b: &'bump Term<'bump>) -> bool {
         match (a, b) {
             (Term::Pi(_, a_dom, a_cod), Term::Pi(_, b_dom, b_cod)) => {
-                a_dom == b_dom && a_cod == b_cod
+                a_dom == b_dom && (a_cod == b_cod || Self::pi_equiv(a_cod, b_cod))
             }
             _ => false,
         }
@@ -982,8 +1075,14 @@ impl<'bump> TypeChecker<'bump> {
         let (_, type_params) = self
             .lookup_struct(sname)
             .ok_or_else(|| diag!("unknown struct: {}", sname))?;
+        let type_args = self.constraint_type_args_for(sname, constraint);
         for (i, (fname, fconstraint)) in fields.iter().enumerate() {
-            if self.is_generic_param(type_params, fconstraint) {
+            let fconstraint = if let Some(type_args) = type_args.as_deref() {
+                self.replace_generic_constraint_vars(fconstraint, type_args)
+            } else {
+                *fconstraint
+            };
+            if type_args.is_none() && self.is_generic_param(type_params, fconstraint) {
                 continue;
             }
             self.check(ctx, field_values[i], fconstraint).map_err(|e| {
@@ -1036,6 +1135,51 @@ impl<'bump> TypeChecker<'bump> {
             Term::Var(i) => *i < type_params.len(),
             Term::Builtin(name) | Term::Global(name) => type_params.iter().any(|p| **p == **name),
             _ => false,
+        }
+    }
+
+    fn constraint_type_args_for(
+        &self,
+        expected_name: Name<'bump>,
+        constraint: &'bump Term<'bump>,
+    ) -> Option<Vec<&'bump Term<'bump>>> {
+        let mut args = Vec::new();
+        let mut current = Self::implicit_inner(constraint);
+        while let Term::App(f, a) = current {
+            args.push(*a);
+            current = f;
+        }
+        args.reverse();
+        match current {
+            Term::Builtin(name) | Term::Global(name) if *name == expected_name => Some(args),
+            _ => None,
+        }
+    }
+
+    fn replace_generic_constraint_vars(
+        &self,
+        term: &'bump Term<'bump>,
+        type_args: &[&'bump Term<'bump>],
+    ) -> &'bump Term<'bump> {
+        match term {
+            Term::Var(i) if *i < type_args.len() => type_args[type_args.len() - 1 - *i],
+            Term::App(f, a) => self.arena.app(
+                self.replace_generic_constraint_vars(f, type_args),
+                self.replace_generic_constraint_vars(a, type_args),
+            ),
+            Term::Implicit(inner) => self
+                .arena
+                .implicit(self.replace_generic_constraint_vars(inner, type_args)),
+            Term::Pi(name, a, b) => self.arena.pi(
+                name,
+                self.replace_generic_constraint_vars(a, type_args),
+                self.replace_generic_constraint_vars(b, type_args),
+            ),
+            Term::Annot(inner, c) => self.arena.annot(
+                self.replace_generic_constraint_vars(inner, type_args),
+                self.replace_generic_constraint_vars(c, type_args),
+            ),
+            _ => term,
         }
     }
 

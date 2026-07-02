@@ -21,6 +21,7 @@ use crate::project::{
     fallback_module_key, project_context_for_uri, workspace_root_for_uris,
 };
 use crate::semantic::semantic_tokens_for_source;
+use crate::text::offset_to_position;
 use crate::{ParseError, parse_program_lsp};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -256,6 +257,11 @@ impl LspCache {
         let arena = TermArena::new(&bump);
         let parsed = parse_file(&uri, &text, &bump, &arena);
         let semantic_tokens = semantic_tokens_for_source(&text, &parsed.ast, &parsed.top_ranges);
+        let project = self.project_context_for_cached_uri(&uri);
+        let module_key = project
+            .as_ref()
+            .map(|project| project.module_key_for_uri(&uri))
+            .unwrap_or_else(|| fallback_module_key(&uri));
         let changed_names = changed_names(previous.as_ref(), &parsed.item_infos);
         let dirty_indices = dirty_indices(previous.as_ref(), &parsed.item_infos, &changed_names);
         self.stats.item_hits += parsed.item_infos.len().saturating_sub(dirty_indices.len());
@@ -271,10 +277,14 @@ impl LspCache {
         let item_diagnostics = check_dirty_items(
             &bump,
             &arena,
+            &uri,
             &text,
             &parsed.top_ranges,
             &dirty_indices,
             check,
+            &self.files,
+            project.as_ref(),
+            &module_key,
         );
         for (idx, diagnostics) in item_diagnostics {
             if let Some(item) = items.get_mut(idx) {
@@ -298,11 +308,6 @@ impl LspCache {
         }));
         let diagnostics = dedup_diagnostics(diagnostics);
 
-        let project = self.project_context_for_cached_uri(&uri);
-        let module_key = project
-            .as_ref()
-            .map(|project| project.module_key_for_uri(&uri))
-            .unwrap_or_else(|| fallback_module_key(&uri));
         let dependencies = resolve_module_imports(
             &parsed.module_imports,
             &module_key,
@@ -589,29 +594,818 @@ fn merge_item_cache(
 fn check_dirty_items<'bump>(
     bump: &'bump Bump,
     arena: &'bump TermArena<'bump>,
+    uri: &lsp::Url,
     text: &str,
     top_ranges: &[(usize, usize, TopLevel<'bump>)],
     dirty: &HashSet<usize>,
     check: DiagnosticCheck,
+    files: &HashMap<lsp::Url, FileCache>,
+    project: Option<&ProjectContext>,
+    module_key: &ModuleKey,
 ) -> HashMap<usize, Vec<lsp::Diagnostic>> {
     let mut compiler = Compiler::new(bump, arena);
-    let diagnostics = compiler.check_top_levels_incremental_for_diagnostics(
+    let module_index = files
+        .iter()
+        .map(|(uri, file)| (file.module_key.clone(), uri.clone()))
+        .collect::<Vec<_>>();
+    let mut work = Vec::new();
+
+    for dep_uri in dependency_check_order(
+        &module_imports_from_ranges(top_ranges),
+        module_key,
+        files,
+        &module_index,
+        uri,
+        project,
+    ) {
+        let Some(file) = files.get(&dep_uri) else {
+            continue;
+        };
+        let (dep_ast, _) = parse_program_lsp(&file.text, bump, arena);
+        let dep_ranges = top_level_ranges(&file.text, &dep_ast);
+        let dep_imports = imported_symbol_aliases(
+            &file.module_key,
+            &dep_ranges,
+            files,
+            &module_index,
+            &dep_uri,
+            project,
+        );
+        let dep_own =
+            declared_symbol_aliases(dep_ranges.iter().map(|(_, _, top)| top), &file.module_key);
+        for (_, _, top) in &dep_ranges {
+            if let Some(top) = rewrite_top_for_module(arena, top, &dep_imports, &dep_own) {
+                work.push((usize::MAX, top, false));
+            }
+        }
+    }
+
+    let imports =
+        imported_symbol_aliases(module_key, top_ranges, files, &module_index, uri, project);
+    let own = declared_symbol_aliases(top_ranges.iter().map(|(_, _, top)| top), module_key);
+    work.extend(
         top_ranges
             .iter()
             .enumerate()
-            .map(|(idx, (_, _, top))| (idx, top.clone(), dirty.contains(&idx))),
+            .filter_map(|(idx, (_, _, top))| {
+                rewrite_top_for_module(arena, top, &imports, &own)
+                    .map(|top| (idx, top, dirty.contains(&idx)))
+            }),
+    );
+
+    let diagnostics = compiler.check_top_levels_incremental_for_diagnostics(
+        work,
         "<lsp>",
         text,
         CheckMode::from(check),
     );
     let mut by_item = HashMap::<usize, Vec<lsp::Diagnostic>>::new();
     for (idx, diagnostic) in diagnostics {
+        if idx == usize::MAX {
+            continue;
+        }
         by_item
             .entry(idx)
             .or_default()
             .push(compiler_diagnostic_to_lsp(text, diagnostic));
     }
+    for (idx, diagnostic) in use_module_diagnostics(
+        text,
+        top_ranges,
+        dirty,
+        module_key,
+        files,
+        &module_index,
+        uri,
+        project,
+    ) {
+        by_item.entry(idx).or_default().push(diagnostic);
+    }
     by_item
+}
+
+fn dependency_check_order(
+    imports: &[Vec<String>],
+    current_module: &ModuleKey,
+    files: &HashMap<lsp::Url, FileCache>,
+    module_index: &[(ModuleKey, lsp::Url)],
+    source_uri: &lsp::Url,
+    project: Option<&ProjectContext>,
+) -> Vec<lsp::Url> {
+    fn visit(
+        imports: &[Vec<String>],
+        current_module: &ModuleKey,
+        files: &HashMap<lsp::Url, FileCache>,
+        module_index: &[(ModuleKey, lsp::Url)],
+        source_uri: &lsp::Url,
+        project: Option<&ProjectContext>,
+        seen: &mut HashSet<lsp::Url>,
+        out: &mut Vec<lsp::Url>,
+    ) {
+        for module in imports.iter().flat_map(|path| {
+            project
+                .map(|project| project.imported_module_keys(current_module, path))
+                .unwrap_or_else(|| fallback_imported_module_keys(current_module, path))
+        }) {
+            let Some(dep_uri) = module_index
+                .iter()
+                .find(|(module_key, uri)| module_key == &module && uri != source_uri)
+                .map(|(_, uri)| uri.clone())
+            else {
+                continue;
+            };
+            if !seen.insert(dep_uri.clone()) {
+                continue;
+            }
+            if let Some(file) = files.get(&dep_uri) {
+                visit(
+                    &file.module_imports,
+                    &file.module_key,
+                    files,
+                    module_index,
+                    source_uri,
+                    project,
+                    seen,
+                    out,
+                );
+            }
+            out.push(dep_uri);
+        }
+    }
+
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    visit(
+        imports,
+        current_module,
+        files,
+        module_index,
+        source_uri,
+        project,
+        &mut seen,
+        &mut out,
+    );
+    out
+}
+
+fn module_imports_from_ranges<'bump>(
+    top_ranges: &[(usize, usize, TopLevel<'bump>)],
+) -> Vec<Vec<String>> {
+    top_ranges
+        .iter()
+        .flat_map(|(_, _, top)| module_imports_for_top(top))
+        .collect()
+}
+
+fn imported_symbol_aliases<'bump>(
+    current_module: &ModuleKey,
+    top_ranges: &[(usize, usize, TopLevel<'bump>)],
+    files: &HashMap<lsp::Url, FileCache>,
+    module_index: &[(ModuleKey, lsp::Url)],
+    source_uri: &lsp::Url,
+    project: Option<&ProjectContext>,
+) -> HashMap<String, String> {
+    let mut aliases = HashMap::new();
+    for (_, _, top) in top_ranges {
+        let TopLevel::TLUse(uses, _, _) = unwrap_public(top) else {
+            continue;
+        };
+        for tree in *uses {
+            if tree.path.len() < 2 {
+                continue;
+            }
+            let module_path = tree.path[..tree.path.len() - 1]
+                .iter()
+                .map(|part| (*part).to_string())
+                .collect::<Vec<_>>();
+            let item = tree.path[tree.path.len() - 1].to_string();
+            let local = tree
+                .alias
+                .unwrap_or(tree.path[tree.path.len() - 1])
+                .to_string();
+            let modules = project
+                .map(|project| project.imported_module_keys(current_module, &module_path))
+                .unwrap_or_else(|| fallback_imported_module_keys(current_module, &module_path));
+            let Some(module) = modules.into_iter().find(|module| {
+                module_index
+                    .iter()
+                    .any(|(module_key, uri)| module_key == module && uri != source_uri)
+            }) else {
+                continue;
+            };
+            let exported = module_index
+                .iter()
+                .find(|(module_key, _)| module_key == &module)
+                .and_then(|(_, uri)| files.get(uri))
+                .is_some_and(|file| file.exports.contains(&item));
+            if exported {
+                aliases.insert(local, module.join_symbol(&item));
+            }
+        }
+    }
+    aliases
+}
+
+fn declared_symbol_aliases<'a, 'bump>(
+    tops: impl Iterator<Item = &'a TopLevel<'bump>>,
+    module: &ModuleKey,
+) -> HashMap<String, String>
+where
+    'bump: 'a,
+{
+    tops.filter_map(|top| match unwrap_public(top) {
+        TopLevel::TLDef(name, ..) | TopLevel::TLTheorem(name, ..) => {
+            Some(((*name).to_string(), module.join_symbol(name)))
+        }
+        TopLevel::TLExternDef(name, ..) => Some(((*name).to_string(), (*name).to_string())),
+        _ => None,
+    })
+    .collect()
+}
+
+fn use_module_diagnostics<'bump>(
+    source: &str,
+    top_ranges: &[(usize, usize, TopLevel<'bump>)],
+    dirty: &HashSet<usize>,
+    current_module: &ModuleKey,
+    files: &HashMap<lsp::Url, FileCache>,
+    module_index: &[(ModuleKey, lsp::Url)],
+    uri: &lsp::Url,
+    project: Option<&ProjectContext>,
+) -> Vec<(usize, lsp::Diagnostic)> {
+    let root = workspace_root_for_uris(std::iter::once(uri));
+    let mut diagnostics = Vec::new();
+    let mut imports = Vec::<ImportDiagnosticInfo>::new();
+    for (idx, (_, _, top)) in top_ranges.iter().enumerate() {
+        match unwrap_public(top) {
+            TopLevel::TLUse(uses, _, span) => {
+                for tree in *uses {
+                    if tree.path.len() < 2 {
+                        continue;
+                    }
+                    let local = tree
+                        .alias
+                        .or_else(|| tree.path.last().copied())
+                        .unwrap_or_default()
+                        .to_string();
+                    let range = lsp_range_for_span(source, span);
+                    let module_path = tree.path[..tree.path.len() - 1]
+                        .iter()
+                        .map(|part| (*part).to_string())
+                        .collect::<Vec<_>>();
+                    imports.push(ImportDiagnosticInfo {
+                        idx,
+                        local,
+                        module_path,
+                        range,
+                    });
+                }
+            }
+            TopLevel::TLMod(name, span) if dirty.contains(&idx) => {
+                let module = current_module.child((*name).to_string());
+                if module_file_exists(&module, files, module_index, uri, project, root.as_deref()) {
+                    continue;
+                }
+                diagnostics.push((
+                    idx,
+                    lsp::Diagnostic {
+                        range: lsp_range_for_span(source, span),
+                        severity: Some(lsp::DiagnosticSeverity::ERROR),
+                        source: Some("ligare".to_string()),
+                        message: format!("module not found: {}", display_module_key(&module)),
+                        ..Default::default()
+                    },
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    let mut imports_by_name = HashMap::<String, Vec<ImportDiagnosticInfo>>::new();
+    for import in &imports {
+        imports_by_name
+            .entry(import.local.clone())
+            .or_default()
+            .push(import.clone());
+        if !dirty.contains(&import.idx) {
+            continue;
+        }
+        if module_exists(
+            current_module,
+            &import.module_path,
+            files,
+            module_index,
+            uri,
+            project,
+            root.as_deref(),
+        ) {
+            continue;
+        }
+        diagnostics.push((
+            import.idx,
+            lsp::Diagnostic {
+                range: import.range,
+                severity: Some(lsp::DiagnosticSeverity::ERROR),
+                source: Some("ligare".to_string()),
+                message: format!("module not found: {}", import.module_path.join("::")),
+                ..Default::default()
+            },
+        ));
+    }
+    for (local, imports) in imports_by_name {
+        if imports.len() < 2 {
+            continue;
+        }
+        for import in imports {
+            if !dirty.contains(&import.idx) {
+                continue;
+            }
+            diagnostics.push((
+                import.idx,
+                lsp::Diagnostic {
+                    range: import.range,
+                    severity: Some(lsp::DiagnosticSeverity::ERROR),
+                    source: Some("ligare".to_string()),
+                    message: format!("duplicate import `{local}`"),
+                    ..Default::default()
+                },
+            ));
+        }
+    }
+    diagnostics
+}
+
+#[derive(Debug, Clone)]
+struct ImportDiagnosticInfo {
+    idx: usize,
+    local: String,
+    module_path: Vec<String>,
+    range: lsp::Range,
+}
+
+fn module_exists(
+    current_module: &ModuleKey,
+    module_path: &[String],
+    files: &HashMap<lsp::Url, FileCache>,
+    module_index: &[(ModuleKey, lsp::Url)],
+    source_uri: &lsp::Url,
+    project: Option<&ProjectContext>,
+    root: Option<&std::path::Path>,
+) -> bool {
+    let modules = project
+        .map(|project| project.imported_module_keys(current_module, module_path))
+        .unwrap_or_else(|| fallback_imported_module_keys(current_module, module_path));
+    modules
+        .into_iter()
+        .any(|module| module_file_exists(&module, files, module_index, source_uri, project, root))
+}
+
+fn module_file_exists(
+    module: &ModuleKey,
+    files: &HashMap<lsp::Url, FileCache>,
+    module_index: &[(ModuleKey, lsp::Url)],
+    source_uri: &lsp::Url,
+    project: Option<&ProjectContext>,
+    root: Option<&std::path::Path>,
+) -> bool {
+    module_index
+        .iter()
+        .any(|(module_key, uri)| module_key == module && uri != source_uri)
+        || project
+            .map(|project| project.file_candidates(module))
+            .or_else(|| root.map(|root| fallback_file_candidates(root, module)))
+            .unwrap_or_default()
+            .into_iter()
+            .any(|path| path.exists())
+        || files.values().any(|file| file.module_key == *module)
+}
+
+fn lsp_range_for_span(source: &str, span: &std::ops::Range<usize>) -> lsp::Range {
+    lsp::Range {
+        start: offset_to_position(source, span.start),
+        end: offset_to_position(source, span.end.max(span.start)),
+    }
+}
+
+fn display_module_key(module: &ModuleKey) -> String {
+    let mut parts = Vec::new();
+    if let Some(package) = &module.package {
+        parts.push(package.clone());
+    }
+    parts.extend(module.path.clone());
+    if parts.is_empty() {
+        "<root>".to_string()
+    } else {
+        parts.join("::")
+    }
+}
+
+#[derive(Default)]
+struct RewriteScope {
+    locals: Vec<String>,
+}
+
+impl RewriteScope {
+    fn contains(&self, name: &str) -> bool {
+        self.locals.iter().rev().any(|local| local == name)
+    }
+
+    fn push(&mut self, name: &str) {
+        self.locals.push(name.to_string());
+    }
+
+    fn pop(&mut self) {
+        self.locals.pop();
+    }
+}
+
+fn rewrite_top_for_module<'bump>(
+    arena: &'bump TermArena<'bump>,
+    top: &TopLevel<'bump>,
+    imports: &HashMap<String, String>,
+    own_names: &HashMap<String, String>,
+) -> Option<TopLevel<'bump>> {
+    match unwrap_public(top) {
+        TopLevel::TLDef(name, params, ret, body, span) => {
+            let qname = own_names.get(*name).map(String::as_str).unwrap_or(name);
+            let qname = arena.alloc_str(qname);
+            let mut scope = RewriteScope::default();
+            for (param, _) in params.iter().rev() {
+                scope.push(param);
+            }
+            let params = rewrite_params_for_module(
+                arena,
+                params,
+                imports,
+                own_names,
+                &mut RewriteScope::default(),
+            );
+            let ret = ret
+                .map(|term| rewrite_term_for_module(arena, term, imports, own_names, &mut scope));
+            let body = rewrite_term_for_module(arena, body, imports, own_names, &mut scope);
+            Some(TopLevel::TLDef(qname, params, ret, body, span.clone()))
+        }
+        TopLevel::TLExternDef(name, params, ret, span) => {
+            let mut scope = RewriteScope::default();
+            for (param, _) in params.iter().rev() {
+                scope.push(param);
+            }
+            let params = rewrite_params_for_module(
+                arena,
+                params,
+                imports,
+                own_names,
+                &mut RewriteScope::default(),
+            );
+            let ret = rewrite_term_for_module(arena, ret, imports, own_names, &mut scope);
+            Some(TopLevel::TLExternDef(name, params, ret, span.clone()))
+        }
+        TopLevel::TLInstance(name, constraint, value, span) => {
+            let qname = own_names.get(*name).map(String::as_str).unwrap_or(name);
+            let qname = arena.alloc_str(qname);
+            Some(TopLevel::TLInstance(
+                qname,
+                rewrite_term_for_module(
+                    arena,
+                    constraint,
+                    imports,
+                    own_names,
+                    &mut RewriteScope::default(),
+                ),
+                rewrite_term_for_module(
+                    arena,
+                    value,
+                    imports,
+                    own_names,
+                    &mut RewriteScope::default(),
+                ),
+                span.clone(),
+            ))
+        }
+        TopLevel::TLTheorem(name, prop, body, span) => {
+            let qname = own_names.get(*name).map(String::as_str).unwrap_or(name);
+            let qname = arena.alloc_str(qname);
+            let prop = rewrite_term_for_module(
+                arena,
+                prop,
+                imports,
+                own_names,
+                &mut RewriteScope::default(),
+            );
+            let body = rewrite_term_for_module(
+                arena,
+                body,
+                imports,
+                own_names,
+                &mut RewriteScope::default(),
+            );
+            Some(TopLevel::TLTheorem(qname, prop, body, span.clone()))
+        }
+        TopLevel::TLCheck(term, constraint, span) => Some(TopLevel::TLCheck(
+            rewrite_term_for_module(
+                arena,
+                term,
+                imports,
+                own_names,
+                &mut RewriteScope::default(),
+            ),
+            rewrite_term_for_module(
+                arena,
+                constraint,
+                imports,
+                own_names,
+                &mut RewriteScope::default(),
+            ),
+            span.clone(),
+        )),
+        TopLevel::TLEval(term, span) => Some(TopLevel::TLEval(
+            rewrite_term_for_module(
+                arena,
+                term,
+                imports,
+                own_names,
+                &mut RewriteScope::default(),
+            ),
+            span.clone(),
+        )),
+        TopLevel::TLExpr(term, span) => Some(TopLevel::TLExpr(
+            rewrite_term_for_module(
+                arena,
+                term,
+                imports,
+                own_names,
+                &mut RewriteScope::default(),
+            ),
+            span.clone(),
+        )),
+        TopLevel::TLUse(..) | TopLevel::TLMod(..) | TopLevel::TLPublic(_) => None,
+    }
+}
+
+fn rewrite_params_for_module<'bump>(
+    arena: &'bump TermArena<'bump>,
+    params: &'bump [(&'bump str, Option<&'bump Term<'bump>>)],
+    imports: &HashMap<String, String>,
+    own_names: &HashMap<String, String>,
+    scope: &mut RewriteScope,
+) -> &'bump [(&'bump str, Option<&'bump Term<'bump>>)] {
+    let mut rewritten = Vec::new();
+    for (name, constraint) in params {
+        let constraint =
+            constraint.map(|term| rewrite_term_for_module(arena, term, imports, own_names, scope));
+        rewritten.push((*name, constraint));
+        scope.push(name);
+    }
+    arena.alloc_slice(&rewritten)
+}
+
+fn rewrite_term_for_module<'bump>(
+    arena: &'bump TermArena<'bump>,
+    term: &'bump Term<'bump>,
+    imports: &HashMap<String, String>,
+    own_names: &HashMap<String, String>,
+    scope: &mut RewriteScope,
+) -> &'bump Term<'bump> {
+    match term {
+        Term::Named(name) => {
+            if scope.contains(name) {
+                return term;
+            }
+            if let Some(full) = imports.get(*name).or_else(|| own_names.get(*name)) {
+                return arena.named(arena.alloc_str(full));
+            }
+            term
+        }
+        Term::Builtin(_) | Term::Global(_) => term,
+        Term::App(f, a) => arena.app(
+            rewrite_term_for_module(arena, f, imports, own_names, scope),
+            rewrite_term_for_module(arena, a, imports, own_names, scope),
+        ),
+        Term::Implicit(inner) => arena.implicit(rewrite_term_for_module(
+            arena, inner, imports, own_names, scope,
+        )),
+        Term::NamedLam(name, body) => {
+            scope.push(name);
+            let body = rewrite_term_for_module(arena, body, imports, own_names, scope);
+            scope.pop();
+            arena.named_lam(name, body)
+        }
+        Term::Lam(body) => arena.lam(rewrite_term_for_module(
+            arena, body, imports, own_names, scope,
+        )),
+        Term::Pi(name, a, b) => {
+            let a = rewrite_term_for_module(arena, a, imports, own_names, scope);
+            scope.push(name);
+            let b = rewrite_term_for_module(arena, b, imports, own_names, scope);
+            scope.pop();
+            arena.pi(name, a, b)
+        }
+        Term::Let(name, value, body, constraint) => {
+            let value = rewrite_term_for_module(arena, value, imports, own_names, scope);
+            let constraint = constraint
+                .map(|term| rewrite_term_for_module(arena, term, imports, own_names, scope));
+            scope.push(name);
+            let body = rewrite_term_for_module(arena, body, imports, own_names, scope);
+            scope.pop();
+            arena.let_(name, value, body, constraint)
+        }
+        Term::IfThenElse(cond, then_branch, else_branch) => arena.if_then_else(
+            rewrite_term_for_module(arena, cond, imports, own_names, scope),
+            rewrite_term_for_module(arena, then_branch, imports, own_names, scope),
+            rewrite_term_for_module(arena, else_branch, imports, own_names, scope),
+        ),
+        Term::Refine(name, parent, predicate) => {
+            let parent = rewrite_term_for_module(arena, parent, imports, own_names, scope);
+            scope.push(name);
+            let predicate = rewrite_term_for_module(arena, predicate, imports, own_names, scope);
+            scope.pop();
+            arena.refine(name, parent, predicate)
+        }
+        Term::Annot(inner, constraint) => arena.annot(
+            rewrite_term_for_module(arena, inner, imports, own_names, scope),
+            rewrite_term_for_module(arena, constraint, imports, own_names, scope),
+        ),
+        Term::ByProof(inner, tactics) => {
+            let inner =
+                inner.map(|term| rewrite_term_for_module(arena, term, imports, own_names, scope));
+            let tactics = tactics
+                .iter()
+                .map(|tactic| match tactic {
+                    Tactic::Exact(term) => Tactic::Exact(rewrite_term_for_module(
+                        arena, term, imports, own_names, scope,
+                    )),
+                    Tactic::Apply(term) => Tactic::Apply(rewrite_term_for_module(
+                        arena, term, imports, own_names, scope,
+                    )),
+                    Tactic::Intro(name) => Tactic::Intro(*name),
+                    Tactic::Have(name, term) => Tactic::Have(
+                        name,
+                        rewrite_term_for_module(arena, term, imports, own_names, scope),
+                    ),
+                })
+                .collect::<Vec<_>>();
+            arena.by_proof(inner, arena.alloc_slice(&tactics))
+        }
+        Term::UnionDef(name, variants) => {
+            let qname = qualify_type_name(arena, name, own_names);
+            let variants = variants
+                .iter()
+                .map(|(variant, fields)| {
+                    let qvariant = qualify_type_name(arena, variant, own_names);
+                    let fields = fields
+                        .iter()
+                        .map(|(field, constraint)| {
+                            (
+                                *field,
+                                rewrite_term_for_module(
+                                    arena, constraint, imports, own_names, scope,
+                                ),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    (qvariant, arena.alloc_slice(&fields))
+                })
+                .collect::<Vec<_>>();
+            arena.union_def(qname, arena.alloc_slice(&variants))
+        }
+        Term::StructDef(name, fields) => {
+            let qname = qualify_type_name(arena, name, own_names);
+            let fields = fields
+                .iter()
+                .map(|(field, constraint)| {
+                    (
+                        *field,
+                        rewrite_term_for_module(arena, constraint, imports, own_names, scope),
+                    )
+                })
+                .collect::<Vec<_>>();
+            arena.struct_def(qname, arena.alloc_slice(&fields))
+        }
+        Term::Variant(name, index, payloads) => {
+            let qname = qualify_type_name(arena, name, own_names);
+            let payloads = payloads
+                .iter()
+                .map(|payload| rewrite_term_for_module(arena, payload, imports, own_names, scope))
+                .collect::<Vec<_>>();
+            arena.variant(qname, *index, arena.alloc_slice(&payloads))
+        }
+        Term::StructCons(name, payloads) => {
+            let qname = qualify_type_name(arena, name, own_names);
+            let payloads = payloads
+                .iter()
+                .map(|payload| rewrite_term_for_module(arena, payload, imports, own_names, scope))
+                .collect::<Vec<_>>();
+            arena.struct_cons(qname, arena.alloc_slice(&payloads))
+        }
+        Term::Match(scrutinee, branches) => {
+            let scrutinee = rewrite_term_for_module(arena, scrutinee, imports, own_names, scope);
+            let branches = branches
+                .iter()
+                .map(|(variant, binds, body)| {
+                    for (name, _) in binds.iter().rev() {
+                        scope.push(name);
+                    }
+                    let body = rewrite_term_for_module(arena, body, imports, own_names, scope);
+                    for _ in *binds {
+                        scope.pop();
+                    }
+                    let binds = binds
+                        .iter()
+                        .map(|(name, constraint)| {
+                            (
+                                *name,
+                                rewrite_term_for_module(
+                                    arena, constraint, imports, own_names, scope,
+                                ),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    (*variant, arena.alloc_slice(&binds), body)
+                })
+                .collect::<Vec<_>>();
+            arena.match_(scrutinee, arena.alloc_slice(&branches))
+        }
+        Term::NamedMatch(scrutinee, branches) => {
+            let scrutinee = rewrite_term_for_module(arena, scrutinee, imports, own_names, scope);
+            let branches = branches
+                .iter()
+                .map(|(variant, binds, body)| {
+                    let qvariant = qualify_type_name(arena, variant, own_names);
+                    for (name, _) in binds.iter().rev() {
+                        scope.push(name);
+                    }
+                    let body = rewrite_term_for_module(arena, body, imports, own_names, scope);
+                    for _ in *binds {
+                        scope.pop();
+                    }
+                    let binds = binds
+                        .iter()
+                        .map(|(name, constraint)| {
+                            (
+                                *name,
+                                rewrite_term_for_module(
+                                    arena, constraint, imports, own_names, scope,
+                                ),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    (qvariant, arena.alloc_slice(&binds), body)
+                })
+                .collect::<Vec<_>>();
+            arena.named_match(scrutinee, arena.alloc_slice(&branches))
+        }
+        Term::Do(stmts) => {
+            let stmts = stmts
+                .iter()
+                .map(|stmt| match stmt {
+                    DoStmt::Bind(name, rhs) => DoStmt::Bind(
+                        name,
+                        rewrite_term_for_module(arena, rhs, imports, own_names, scope),
+                    ),
+                    DoStmt::Let(name, rhs, constraint) => {
+                        let rhs = rewrite_term_for_module(arena, rhs, imports, own_names, scope);
+                        let constraint = constraint.map(|constraint| {
+                            rewrite_term_for_module(arena, constraint, imports, own_names, scope)
+                        });
+                        DoStmt::Let(name, rhs, constraint)
+                    }
+                    DoStmt::Expr(expr) => DoStmt::Expr(rewrite_term_for_module(
+                        arena, expr, imports, own_names, scope,
+                    )),
+                })
+                .collect::<Vec<_>>();
+            arena.do_(arena.alloc_slice(&stmts))
+        }
+        Term::StructProj(inner, index) => arena.struct_proj(
+            rewrite_term_for_module(arena, inner, imports, own_names, scope),
+            *index,
+        ),
+        Term::Unsafe(inner) => arena.unsafe_(rewrite_term_for_module(
+            arena, inner, imports, own_names, scope,
+        )),
+        Term::Pure(inner) => arena.pure(rewrite_term_for_module(
+            arena, inner, imports, own_names, scope,
+        )),
+        Term::Var(_)
+        | Term::LitInt(_)
+        | Term::LitBool(_)
+        | Term::LitStr(_)
+        | Term::PrimOp(_)
+        | Term::Universe(_)
+        | Term::AutoProof
+        | Term::RefParam => term,
+    }
+}
+
+fn qualify_type_name<'bump>(
+    arena: &'bump TermArena<'bump>,
+    name: &'bump str,
+    own_names: &HashMap<String, String>,
+) -> &'bump str {
+    own_names
+        .get(name)
+        .map(|name| arena.alloc_str(name))
+        .unwrap_or(name)
 }
 
 fn item_id(idx: usize, top: &TopLevel<'_>) -> String {
@@ -622,6 +1416,7 @@ fn item_name(top: &TopLevel<'_>) -> Option<String> {
     match unwrap_public(top) {
         TopLevel::TLDef(name, ..)
         | TopLevel::TLExternDef(name, ..)
+        | TopLevel::TLInstance(name, ..)
         | TopLevel::TLTheorem(name, ..)
         | TopLevel::TLMod(name, _) => Some((*name).to_string()),
         TopLevel::TLUse(uses, _, _) => uses
@@ -637,6 +1432,7 @@ fn item_kind(top: &TopLevel<'_>) -> &'static str {
     match unwrap_public(top) {
         TopLevel::TLDef(..) => "def",
         TopLevel::TLExternDef(..) => "extern",
+        TopLevel::TLInstance(..) => "instance",
         TopLevel::TLTheorem(..) => "theorem",
         TopLevel::TLUse(..) => "use",
         TopLevel::TLMod(..) => "mod",
@@ -659,6 +1455,7 @@ fn item_constraint(top: &TopLevel<'_>) -> Option<String> {
             }
         }
         TopLevel::TLExternDef(_, _, ret, _) => Some(Constraint::from_term(ret).display),
+        TopLevel::TLInstance(_, constraint, _, _) => Some(Constraint::from_term(constraint).display),
         TopLevel::TLTheorem(_, prop, _, _) | TopLevel::TLCheck(_, prop, _) => {
             Some(Constraint::from_term(prop).display)
         }
@@ -691,6 +1488,10 @@ fn item_dependencies(top: &TopLevel<'_>) -> HashSet<String> {
             }
             collect_term_names(ret, &mut names);
         }
+        TopLevel::TLInstance(_, constraint, value, _) => {
+            collect_term_names(constraint, &mut names);
+            collect_term_names(value, &mut names);
+        }
         TopLevel::TLTheorem(_, prop, body, _) => {
             collect_term_names(prop, &mut names);
             collect_term_names(body, &mut names);
@@ -716,6 +1517,7 @@ fn collect_term_names(term: &Term<'_>, names: &mut HashSet<String>) {
         Term::Named(name) | Term::Global(name) => {
             names.insert((*name).to_string());
         }
+        Term::Implicit(inner) => collect_term_names(inner, names),
         Term::App(f, a) => {
             collect_term_names(f, names);
             collect_term_names(a, names);
@@ -723,6 +1525,7 @@ fn collect_term_names(term: &Term<'_>, names: &mut HashSet<String>) {
         Term::Lam(body)
         | Term::NamedLam(_, body)
         | Term::Unsafe(body)
+        | Term::Pure(body)
         | Term::StructProj(body, _) => {
             collect_term_names(body, names);
         }

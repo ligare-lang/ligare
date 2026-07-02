@@ -58,6 +58,12 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             return Ok(self.with_visibility(top, visibility));
         }
 
+        if self.peek_token() == Some(Token::KwInstance) {
+            let (name, constraint, value) = self.parse_instance()?;
+            let top = TopLevel::TLInstance(name, constraint, value, start_span);
+            return Ok(self.with_visibility(top, visibility));
+        }
+
         if self.peek_token() == Some(Token::KwTheorem) {
             self.advance();
             let name = self.parse_ident()?;
@@ -80,7 +86,8 @@ impl<'a, 'bump> Parser<'a, 'bump> {
 
         if matches!(visibility, Visibility::Public) {
             return Err(ParseError {
-                message: "`pub` may only prefix `def`, `theorem`, `use`, or `mod`".into(),
+                message: "`pub` may only prefix `def`, `instance`, `theorem`, `use`, or `mod`"
+                    .into(),
                 span: start_span,
             });
         }
@@ -133,6 +140,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 | Token::KwUse
                 | Token::KwMod
                 | Token::KwExtern
+                | Token::KwInstance
                     if parens == 0 && braces == 0 =>
                 {
                     break;

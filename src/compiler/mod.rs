@@ -307,6 +307,9 @@ impl<'bump> Compiler<'bump> {
             TopLevel::TLExternDef(name, params, ret, span) => {
                 self.process_extern_def(name, params, ret, span)?;
             }
+            TopLevel::TLInstance(name, constraint, value, span) => {
+                self.process_instance(name, constraint, value, span)?;
+            }
             TopLevel::TLCheck(term, constraint, span) => {
                 self.process_check(term, constraint, span)?;
             }
@@ -411,12 +414,51 @@ impl<'bump> Compiler<'bump> {
         Ok(())
     }
 
+    fn process_instance(
+        &mut self,
+        name: Name<'bump>,
+        constraint: &'bump Term<'bump>,
+        value: &'bump Term<'bump>,
+        span: std::ops::Range<usize>,
+    ) -> Result<(), Diagnostic> {
+        let resolved_constraint = self.checker.desugar_with_context(constraint)?;
+        let resolved_value = self.try_resolve_all(value)?;
+        self.checker
+            .check(&empty_ctx(), resolved_value, resolved_constraint)
+            .map_err(|err| {
+                Diagnostic::with_span(format!("instance {} failed: {}", name, err), span.clone())
+            })?;
+        let registered_value = self.checker.desugar_with_context(value)?;
+        let registered_value = self.resolve_variant_apps(registered_value);
+        let registered_value = self.resolve_struct_ctors(registered_value);
+        let registered_value = self.resolve_struct_projs(registered_value);
+        let registered_value = self.fold_struct_projections(registered_value);
+        let registered_value = self.attach_global_signatures(registered_value);
+        self.checker
+            .add_instance(name, resolved_constraint, registered_value);
+        if !self.quiet {
+            println!("[instance] {}", name);
+        }
+        Ok(())
+    }
+
     fn restore_env_binding(&mut self, name: Name<'bump>, previous: Option<&'bump Term<'bump>>) {
         if let Some(prev) = previous {
             self.env.insert(name, prev);
         } else {
             self.env.remove(name);
         }
+    }
+
+    fn attach_global_signatures(&self, term: &'bump Term<'bump>) -> &'bump Term<'bump> {
+        self.arena.map(term, &|node| {
+            if let Term::Builtin(name) | Term::Global(name) = node
+                && let Some(Term::Annot(_, signature)) = self.env.get(name).copied()
+            {
+                return Some(self.arena.annot(self.arena.global(name), signature));
+            }
+            None
+        })
     }
 
     fn process_check(
@@ -594,7 +636,7 @@ impl<'bump> Compiler<'bump> {
     fn contains_do(term: &Term<'_>) -> bool {
         match term {
             Term::Do(_) => true,
-            Term::Unsafe(inner) => Self::contains_do(inner),
+            Term::Unsafe(inner) | Term::Pure(inner) => Self::contains_do(inner),
             Term::App(f, a) => Self::contains_do(f) || Self::contains_do(a),
             Term::NamedLam(_, body) | Term::Lam(body) => Self::contains_do(body),
             Term::Pi(_, a, b) => Self::contains_do(a) || Self::contains_do(b),

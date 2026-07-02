@@ -1,5 +1,6 @@
 use std::io::put_str
 
-pub def main : IO Unit := do
+pub def main : IO () := do
     let _ = put_str "hello world"
-    Unit
+    ()
+

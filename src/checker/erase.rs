@@ -43,6 +43,7 @@ impl<'bump> Eraser<'bump> {
             }
             Term::Annot(inner, _) => self.erase(inner),
             Term::Unsafe(inner) => self.erase(inner),
+            Term::Pure(inner) => self.erase(inner),
             Term::ByProof(Some(inner), _) => self.erase(inner),
             Term::ByProof(None, _) | Term::AutoProof => self.unit(),
             Term::App(f, a) => {
@@ -52,6 +53,7 @@ impl<'bump> Eraser<'bump> {
                     self.unit()
                 }
             }
+            Term::Implicit(inner) => self.erase(inner),
             Term::Pi(..) => self.unit(),
             Term::Refine(_, parent, _pred) => parent,
             Term::Universe(Universe::UData) => t,

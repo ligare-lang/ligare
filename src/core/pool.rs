@@ -119,6 +119,7 @@ impl<'bump> TermArena<'bump> {
         }
         match t {
             Term::App(fun, arg) => self.app(self.map_mut(fun, f), self.map_mut(arg, f)),
+            Term::Implicit(inner) => self.implicit(self.map_mut(inner, f)),
             Term::Lam(body) => self.lam(self.map_mut(body, f)),
             Term::NamedLam(n, body) => self.named_lam(n, self.map_mut(body, f)),
             Term::Pi(n, a, b) => self.pi(n, self.map_mut(a, f), self.map_mut(b, f)),
@@ -203,6 +204,7 @@ impl<'bump> TermArena<'bump> {
                 self.do_(self.alloc_slice(&mapped))
             }
             Term::Unsafe(inner) => self.unsafe_(self.map_mut(inner, f)),
+            Term::Pure(inner) => self.pure(self.map_mut(inner, f)),
             Term::StructDef(name, fields) => {
                 let mf: Vec<_> = fields
                     .iter()
@@ -269,6 +271,10 @@ impl<'bump> TermArena<'bump> {
 
     pub fn app(&self, f: &'bump Term<'bump>, a: &'bump Term<'bump>) -> &'bump Term<'bump> {
         self.alloc(Term::App(f, a))
+    }
+
+    pub fn implicit(&self, c: &'bump Term<'bump>) -> &'bump Term<'bump> {
+        self.alloc(Term::Implicit(c))
     }
 
     pub fn lam(&self, body: &'bump Term<'bump>) -> &'bump Term<'bump> {
@@ -400,6 +406,10 @@ impl<'bump> TermArena<'bump> {
 
     pub fn unsafe_(&self, inner: &'bump Term<'bump>) -> &'bump Term<'bump> {
         self.alloc(Term::Unsafe(inner))
+    }
+
+    pub fn pure(&self, inner: &'bump Term<'bump>) -> &'bump Term<'bump> {
+        self.alloc(Term::Pure(inner))
     }
 
     pub fn struct_def(

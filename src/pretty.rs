@@ -11,6 +11,7 @@ impl PrettyPrinter {
                 format!("fun {} => {}", name, Self::pretty(body))
             }
             Term::App(f, a) => Self::pretty_app(f, a),
+            Term::Implicit(inner) => format!("{{implicit {}}}", Self::pretty(inner)),
             Term::LitInt(n) => n.to_string(),
             Term::Universe(u) => u.to_string(),
             Term::Pi("", a, b) => format!("({} -> {})", Self::pretty(a), Self::pretty(b)),
@@ -126,6 +127,7 @@ impl PrettyPrinter {
                 format!("do\n  {}", ss.join("\n  "))
             }
             Term::Unsafe(inner) => format!("unsafe {{ {} }}", Self::pretty(inner)),
+            Term::Pure(inner) => format!("pure {}", Self::pretty(inner)),
             Term::StructDef(name, fields) => {
                 let fs: Vec<String> = fields
                     .iter()
@@ -166,11 +168,13 @@ impl PrettyPrinter {
             Term::LitInt(_)
             | Term::LitBool(_)
             | Term::Builtin(_)
+            | Term::Implicit(_)
             | Term::Named(_)
             | Term::Global(_)
             | Term::NamedLam(_, _)
             | Term::Var(_)
             | Term::Unsafe(_)
+            | Term::Pure(_)
             | Term::RefParam
             | Term::AutoProof => format!("-{}", inner),
             _ => format!("-({})", inner),

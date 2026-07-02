@@ -56,6 +56,7 @@ impl<'bump> Evaluator<'bump> {
     pub fn eval(&self, t: &'bump Term<'bump>) -> Result<&'bump Term<'bump>, String> {
         match t {
             Term::App(f, a) => self.eval_app(f, a),
+            Term::Implicit(inner) => self.eval(inner),
             Term::Lam(_) => Ok(t),
             Term::Let(_name, val, body, _mconstr) => {
                 let b = self.sub.beta(body, val);
@@ -64,6 +65,7 @@ impl<'bump> Evaluator<'bump> {
             Term::IfThenElse(cond, tbranch, fbranch) => self.eval_if(cond, tbranch, fbranch),
             Term::Annot(inner, _) => self.eval(inner),
             Term::Unsafe(inner) => self.eval(inner),
+            Term::Pure(inner) => self.eval(inner),
             Term::ByProof(inner, tactics) => {
                 if let Some(inner) = inner {
                     self.eval(inner)

@@ -43,6 +43,13 @@ pub enum TopLevel<'bump> {
         &'bump Term<'bump>,
         Span,
     ),
+    /// Compile-time implicit instance: name, constraint, value, span.
+    TLInstance(
+        Name<'bump>,
+        &'bump Term<'bump>,
+        &'bump Term<'bump>,
+        Span,
+    ),
     TLTheorem(Name<'bump>, &'bump Term<'bump>, &'bump Term<'bump>, Span),
     TLUse(&'bump [UseTree<'bump>], Visibility, Span),
     TLMod(Name<'bump>, Span),
@@ -54,12 +61,12 @@ pub enum TopLevel<'bump> {
 
 pub(super) const KEYWORDS: &[&str] = &[
     "let", "in", "if", "then", "else", "true", "false", "by", "fun", "func", "where", "def", "do",
-    "extern", "unsafe", "auto", "theorem", "pub", "use", "mod", "as",
+    "extern", "instance", "unsafe", "pure", "auto", "theorem", "pub", "use", "mod", "as",
 ];
 
 /// Names that represent language builtins (not user-defined).
 pub(super) const BUILTIN_NAMES: &[&str] = &[
-    "int", "bool", "str", "IO", "Unit", "data", "prop", "theorem", "proof", "and", "or", "not",
+    "int", "bool", "str", "IO", "()", "data", "prop", "theorem", "proof", "and", "or", "not",
     "implies", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "c_int", "c_uint",
 ];
 

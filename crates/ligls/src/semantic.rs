@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
+use ligare::checker::builtin::BUILTIN_CONSTRAINT_NAMES;
+use ligare::config::BUILTIN_UNIT;
 use ligare::core::syntax::{Term, Universe};
 use ligare::front::lexer::Token;
 use ligare::front::parser::{TopLevel, Visibility};
@@ -19,6 +21,7 @@ pub(crate) enum SemanticKind {
     Namespace,
     Keyword,
     Parameter,
+    Comment,
 }
 
 impl SemanticKind {
@@ -32,6 +35,7 @@ impl SemanticKind {
             SemanticKind::Namespace => "namespace",
             SemanticKind::Keyword => "keyword",
             SemanticKind::Parameter => "parameter",
+            SemanticKind::Comment => "comment",
         }
     }
 
@@ -44,17 +48,13 @@ impl SemanticKind {
             SemanticKind::Namespace => 4,
             SemanticKind::Keyword => 5,
             SemanticKind::Parameter => 6,
+            SemanticKind::Comment => 7,
         }
     }
 }
 
 const MOD_DEFINITION: u32 = 1 << 0;
 const MOD_PUBLIC: u32 = 1 << 1;
-
-const BUILTIN_CONSTRAINTS: &[&str] = &[
-    "int", "bool", "str", "IO", "Unit", "data", "prop", "theorem", "proof", "and", "or", "not",
-    "implies", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "c_int", "c_uint",
-];
 
 pub fn semantic_tokens_legend() -> lsp::SemanticTokensLegend {
     lsp::SemanticTokensLegend {
@@ -66,6 +66,7 @@ pub fn semantic_tokens_legend() -> lsp::SemanticTokensLegend {
             lsp::SemanticTokenType::NAMESPACE,
             lsp::SemanticTokenType::KEYWORD,
             lsp::SemanticTokenType::PARAMETER,
+            lsp::SemanticTokenType::COMMENT,
         ],
         token_modifiers: vec![
             lsp::SemanticTokenModifier::DEFINITION,
@@ -127,9 +128,11 @@ struct LocalScope {
 impl SemanticModel {
     fn build(top_ranges: &[(usize, usize, TopLevel<'_>)], tokens: &[TokenSpan]) -> Self {
         let mut model = Self::default();
-        model
-            .constraints
-            .extend(BUILTIN_CONSTRAINTS.iter().map(|name| (*name).to_string()));
+        model.constraints.extend(
+            BUILTIN_CONSTRAINT_NAMES
+                .iter()
+                .map(|name| (*name).to_string()),
+        );
 
         for (start, end, top) in top_ranges {
             let (is_public, top) = unwrap_public(top);
@@ -153,6 +156,11 @@ impl SemanticModel {
                     model.functions.insert((*name).to_string());
                     model.mark_declaration(tokens, &range, name, SemanticKind::Function, modifiers);
                     model.collect_params(tokens, &range, params, &mut scope);
+                }
+                TopLevel::TLInstance(name, constraint, _, _) => {
+                    model.variables.insert((*name).to_string());
+                    model.mark_declaration(tokens, &range, name, SemanticKind::Variable, modifiers);
+                    collect_constraint_names(constraint, &mut model.constraints);
                 }
                 TopLevel::TLTheorem(name, _, _, _) => {
                     model.variables.insert((*name).to_string());
@@ -221,7 +229,8 @@ impl SemanticModel {
             SemanticKind::Constructor
             | SemanticKind::Namespace
             | SemanticKind::Keyword
-            | SemanticKind::Parameter => {}
+            | SemanticKind::Parameter
+            | SemanticKind::Comment => {}
         }
     }
 
@@ -373,8 +382,28 @@ fn collect_raw_tokens(
     tokens: &[TokenSpan],
     model: &SemanticModel,
 ) -> Vec<RawSemanticToken> {
-    let mut raw = Vec::new();
+    let mut raw = comment_tokens(source);
     for (idx, token) in tokens.iter().enumerate() {
+        if is_unit_builtin_token(tokens, idx) {
+            raw.push(RawSemanticToken {
+                span: token.span.start..tokens[idx + 1].span.end,
+                kind: SemanticKind::Constraint,
+                modifiers: 0,
+                priority: 5,
+            });
+            continue;
+        }
+
+        if is_builtin_constraint_keyword(source, tokens, idx) {
+            raw.push(RawSemanticToken {
+                span: token.span.clone(),
+                kind: SemanticKind::Constraint,
+                modifiers: 0,
+                priority: 5,
+            });
+            continue;
+        }
+
         if is_keyword(&token.token) {
             raw.push(RawSemanticToken {
                 span: token.span.clone(),
@@ -420,6 +449,152 @@ fn collect_raw_tokens(
         }
     }
     raw
+}
+
+fn is_unit_builtin_token(tokens: &[TokenSpan], idx: usize) -> bool {
+    tokens
+        .get(idx)
+        .is_some_and(|token| token.token == Token::LParen)
+        && tokens
+            .get(idx + 1)
+            .is_some_and(|token| token.token == Token::RParen)
+        && BUILTIN_CONSTRAINT_NAMES.contains(&BUILTIN_UNIT)
+}
+
+fn is_builtin_constraint_keyword(source: &str, tokens: &[TokenSpan], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    token.token == Token::KwTheorem && !is_theorem_declaration_token(source, tokens, idx)
+}
+
+fn is_theorem_declaration_token(source: &str, tokens: &[TokenSpan], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    if is_line_start(source, token.span.start) {
+        return true;
+    }
+    previous_non_newline(tokens, idx)
+        .is_some_and(|prev| prev.token == Token::KwPub && is_line_start(source, prev.span.start))
+}
+
+fn previous_non_newline(tokens: &[TokenSpan], idx: usize) -> Option<&TokenSpan> {
+    tokens[..idx]
+        .iter()
+        .rev()
+        .find(|token| token.token != Token::Newline)
+}
+
+fn is_line_start(source: &str, offset: usize) -> bool {
+    source[..offset]
+        .rsplit_once('\n')
+        .map_or(offset == 0, |(_, line)| line.trim().is_empty())
+}
+
+fn comment_tokens(source: &str) -> Vec<RawSemanticToken> {
+    let mut raw = Vec::new();
+    let bytes = source.as_bytes();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if starts_with(bytes, index, b"--") {
+            let start = index;
+            index += 2;
+            while index < bytes.len() && bytes[index] != b'\n' {
+                index += 1;
+            }
+            push_comment_span(source, start..index, &mut raw);
+        } else if starts_with(bytes, index, b"{-") {
+            let start = index;
+            index = scan_block_comment(bytes, index + 2, b'-', b'}');
+            push_comment_span(source, start..index, &mut raw);
+        } else if starts_with(bytes, index, b"/-") {
+            let start = index;
+            index = scan_nestable_block_comment(bytes, index + 2);
+            push_comment_span(source, start..index, &mut raw);
+        } else if bytes[index] == b'"' {
+            index = scan_string(bytes, index + 1);
+        } else {
+            index += 1;
+        }
+    }
+
+    raw
+}
+
+fn starts_with(bytes: &[u8], index: usize, needle: &[u8]) -> bool {
+    bytes
+        .get(index..index + needle.len())
+        .is_some_and(|slice| slice == needle)
+}
+
+fn scan_block_comment(bytes: &[u8], mut index: usize, close_first: u8, close_second: u8) -> usize {
+    while index + 1 < bytes.len() {
+        if bytes[index] == close_first && bytes[index + 1] == close_second {
+            return index + 2;
+        }
+        index += 1;
+    }
+    bytes.len()
+}
+
+fn scan_nestable_block_comment(bytes: &[u8], mut index: usize) -> usize {
+    let mut depth = 1u32;
+    while index + 1 < bytes.len() {
+        if bytes[index] == b'/' && bytes[index + 1] == b'-' {
+            depth += 1;
+            index += 2;
+        } else if bytes[index] == b'-' && bytes[index + 1] == b'/' {
+            depth -= 1;
+            index += 2;
+            if depth == 0 {
+                return index;
+            }
+        } else {
+            index += 1;
+        }
+    }
+    bytes.len()
+}
+
+fn scan_string(bytes: &[u8], mut index: usize) -> usize {
+    while index < bytes.len() {
+        if bytes[index] == b'\\' {
+            index = (index + 2).min(bytes.len());
+        } else if bytes[index] == b'"' {
+            return index + 1;
+        } else {
+            index += 1;
+        }
+    }
+    bytes.len()
+}
+
+fn push_comment_span(source: &str, span: Range<usize>, raw: &mut Vec<RawSemanticToken>) {
+    let mut start = span.start;
+    while start < span.end {
+        let line_end = source[start..span.end]
+            .find('\n')
+            .map_or(span.end, |relative| start + relative);
+        let token_end = if line_end > start && source.as_bytes()[line_end - 1] == b'\r' {
+            line_end - 1
+        } else {
+            line_end
+        };
+        if start < token_end {
+            raw.push(RawSemanticToken {
+                span: start..token_end,
+                kind: SemanticKind::Comment,
+                modifiers: 0,
+                priority: 20,
+            });
+        }
+        if line_end == span.end {
+            break;
+        }
+        start = line_end + 1;
+    }
 }
 
 fn encode_tokens(source: &str, raw: Vec<RawSemanticToken>) -> Vec<lsp::SemanticToken> {
@@ -503,6 +678,20 @@ fn is_function_value(term: &Term<'_>) -> bool {
 
 fn is_function_constraint(term: &Term<'_>) -> bool {
     matches!(term, Term::Pi(..))
+}
+
+fn collect_constraint_names(term: &Term<'_>, constraints: &mut HashSet<String>) {
+    match term {
+        Term::Named(name) | Term::Global(name) | Term::Builtin(name) => {
+            constraints.insert((*name).to_string());
+        }
+        Term::Implicit(inner) => collect_constraint_names(inner, constraints),
+        Term::App(f, a) | Term::Annot(f, a) | Term::Pi(_, f, a) | Term::Refine(_, f, a) => {
+            collect_constraint_names(f, constraints);
+            collect_constraint_names(a, constraints);
+        }
+        _ => {}
+    }
 }
 
 fn is_constraint_definition(term: &Term<'_>) -> bool {
@@ -627,7 +816,9 @@ fn is_keyword(token: &Token) -> bool {
             | Token::KwWhere
             | Token::KwDef
             | Token::KwExtern
+            | Token::KwInstance
             | Token::KwUnsafe
+            | Token::KwPure
             | Token::KwAuto
             | Token::KwExact
             | Token::KwApply
@@ -706,6 +897,7 @@ fn token_kind_name(idx: u32) -> &'static str {
         4 => SemanticKind::Namespace.as_str(),
         5 => SemanticKind::Keyword.as_str(),
         6 => SemanticKind::Parameter.as_str(),
+        7 => SemanticKind::Comment.as_str(),
         _ => "unknown",
     }
 }

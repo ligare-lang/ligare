@@ -361,7 +361,7 @@ impl<'bump> Compiler<'bump> {
             .ok_or_else(|| Diagnostic::new("entry module was not loaded"))?;
         if require_main && entry_id == ModuleId::root() && !has_public_main(&root_module.tops) {
             return Err(Diagnostic::new(format!(
-                "entry module `{}` must define `pub main : IO Unit`",
+                "entry module `{}` must define `pub main : IO ()`",
                 entry_path.display()
             )));
         }
@@ -636,6 +636,25 @@ impl<'bump> Compiler<'bump> {
                     let ret = self.rewrite_module_term(ret, &imports, &own_names, &mut scope);
                     out.push(TopLevel::TLExternDef(name, params, ret, span.clone()));
                 }
+                TopLevel::TLInstance(name, constraint, value, span) => {
+                    let qname = self.arena.alloc_str(&module.id.join_symbol(name));
+                    out.push(TopLevel::TLInstance(
+                        qname,
+                        self.rewrite_module_term(
+                            constraint,
+                            &imports,
+                            &own_names,
+                            &mut RewriteScope::default(),
+                        ),
+                        self.rewrite_module_term(
+                            value,
+                            &imports,
+                            &own_names,
+                            &mut RewriteScope::default(),
+                        ),
+                        span.clone(),
+                    ));
+                }
                 TopLevel::TLTheorem(name, prop, body, span) => {
                     let qname = self.arena.alloc_str(&module.id.join_symbol(name));
                     let prop = self.rewrite_module_term(
@@ -736,6 +755,9 @@ impl<'bump> Compiler<'bump> {
                 self.rewrite_module_term(f, imports, own_names, scope),
                 self.rewrite_module_term(a, imports, own_names, scope),
             ),
+            Term::Implicit(inner) => self
+                .arena
+                .implicit(self.rewrite_module_term(inner, imports, own_names, scope)),
             Term::NamedLam(name, body) => {
                 scope.push(name);
                 let body = self.rewrite_module_term(body, imports, own_names, scope);
@@ -884,6 +906,9 @@ impl<'bump> Compiler<'bump> {
             Term::Unsafe(inner) => self
                 .arena
                 .unsafe_(self.rewrite_module_term(inner, imports, own_names, scope)),
+            Term::Pure(inner) => self
+                .arena
+                .pure(self.rewrite_module_term(inner, imports, own_names, scope)),
             _ => term,
         }
     }
@@ -901,7 +926,7 @@ impl<'bump> Compiler<'bump> {
 
     fn validate_module_main(&self) -> Result<(), Diagnostic> {
         if !self.env.contains_key("main") {
-            return Err(Diagnostic::new("entry module must define `main : IO Unit`"));
+            return Err(Diagnostic::new("entry module must define `main : IO ()`"));
         }
         Ok(())
     }
@@ -1099,7 +1124,7 @@ fn is_standard_library_module(module: &ModuleId, graph: &PackageModuleGraph) -> 
 }
 
 fn standard_library_module_file(module: &ModuleId) -> Result<(PathBuf, PathBuf), Diagnostic> {
-    let configured_roots = standard_library_search_roots();
+    let configured_roots = standard_library_search_roots()?;
     let mut tried = Vec::new();
     for configured_root in &configured_roots {
         let module_root = standard_library_module_root(configured_root);
@@ -1117,12 +1142,12 @@ fn standard_library_module_file(module: &ModuleId) -> Result<(PathBuf, PathBuf),
     ))
 }
 
-fn standard_library_search_roots() -> Vec<PathBuf> {
+fn standard_library_search_roots() -> Result<Vec<PathBuf>, Diagnostic> {
     standard_library_search_roots_from(std::env::var_os(STANDARD_LIBRARY_PATH_ENV).as_deref())
 }
 
-fn standard_library_search_roots_from(value: Option<&OsStr>) -> Vec<PathBuf> {
-    match value {
+fn standard_library_search_roots_from(value: Option<&OsStr>) -> Result<Vec<PathBuf>, Diagnostic> {
+    let roots = match value {
         Some(value) if !value.is_empty() => {
             let roots = std::env::split_paths(value)
                 .filter(|path| !path.as_os_str().is_empty())
@@ -1134,7 +1159,16 @@ fn standard_library_search_roots_from(value: Option<&OsStr>) -> Vec<PathBuf> {
             }
         }
         _ => vec![PathBuf::from(DEFAULT_STANDARD_LIBRARY_PATH)],
+    };
+    for root in &roots {
+        if root.is_relative() {
+            return Err(Diagnostic::new(format!(
+                "{STANDARD_LIBRARY_PATH_ENV} entries must be absolute paths: {}",
+                root.display()
+            )));
+        }
     }
+    Ok(roots)
 }
 
 fn standard_library_module_root(configured_root: &Path) -> PathBuf {
@@ -1246,7 +1280,7 @@ mod tests {
     #[test]
     fn unset_standard_library_path_uses_default_root() {
         assert_eq!(
-            standard_library_search_roots_from(None),
+            standard_library_search_roots_from(None).unwrap(),
             vec![PathBuf::from(DEFAULT_STANDARD_LIBRARY_PATH)]
         );
     }
@@ -1256,8 +1290,21 @@ mod tests {
         let joined = std::env::join_paths([PathBuf::from("/first"), PathBuf::from("/second")])
             .unwrap_or_else(|_| OsString::from("/first:/second"));
         assert_eq!(
-            standard_library_search_roots_from(Some(&joined)),
+            standard_library_search_roots_from(Some(&joined)).unwrap(),
             vec![PathBuf::from("/first"), PathBuf::from("/second")]
+        );
+    }
+
+    #[test]
+    fn relative_standard_library_path_is_rejected() {
+        let err = standard_library_search_roots_from(Some(OsString::from("libs/std").as_os_str()))
+            .unwrap_err();
+
+        assert!(
+            err.message
+                .contains("LIGARE_STD_PATH entries must be absolute paths"),
+            "{}",
+            err.message
         );
     }
 }
