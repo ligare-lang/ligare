@@ -8,5 +8,5 @@ bumpalo = "3"
 chumsky = "0.9.3"
 ligare = { path = "../.." }
 logos = "0.15"
-tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
+tokio = { version = "1", features = ["io-std", "macros", "rt", "sync", "time"] }
 tower-lsp = "0.20"
