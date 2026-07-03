@@ -65,8 +65,8 @@ Eval        ::= "#eval" Expr
 
 Params      ::= { Param }
 
-Param       ::= "(" Ident [ ":" Expr ] ")"
-              | "{" Ident ":" Expr "}"       (* implicit compile-time parameter *)
+Param       ::= "(" Ident { Ident } [ ":" Expr ] ")"
+              | "{" Ident { Ident } ":" Expr "}"       (* implicit compile-time parameter *)
 
 (* ── Expressions ────────────────────────────────────────────────── *)
 

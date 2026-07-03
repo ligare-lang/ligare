@@ -197,6 +197,41 @@ fn re_export_allows_import_from_facade() {
 }
 
 #[test]
+fn wildcard_imports_public_symbols_from_module() {
+    let root = temp_project();
+    write(
+        &root,
+        "math.lig",
+        "pub def one : int := 1\npub def inc (x : int) : int := x + 1\ndef hidden : int := 0\n",
+    );
+    write(
+        &root,
+        "main.lig",
+        "mod math\nuse math::*\npub def main : IO () := let _ := inc one in ()\n",
+    );
+
+    collect(&root).unwrap();
+}
+
+#[test]
+fn wildcard_import_resolves_relative_child_module() {
+    let root = temp_project();
+    write(&root, "ops/mod.lig", "pub use convert::*\nmod convert\n");
+    write(
+        &root,
+        "ops/convert.lig",
+        "pub def eq (x : int) : bool := true\n",
+    );
+    write(
+        &root,
+        "main.lig",
+        "mod ops\nuse ops::*\npub def main : IO () := let _ := eq 1 in ()\n",
+    );
+
+    collect(&root).unwrap();
+}
+
+#[test]
 fn cycle_dependency_reports_error() {
     let root = temp_project();
     write(&root, "a.lig", "mod b\nuse a::b::y\npub def x : int := y\n");

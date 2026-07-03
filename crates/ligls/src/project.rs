@@ -55,6 +55,8 @@ impl ModuleKey {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProjectContext {
+    root: PathBuf,
+    package_name: String,
     entry: PathBuf,
     module_root: PathBuf,
     graph: PackageModuleGraph,
@@ -72,6 +74,8 @@ impl ProjectContext {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| root.clone());
         Some(Self {
+            root,
+            package_name: project.manifest.name,
             entry,
             module_root,
             graph: project.graph,
@@ -108,6 +112,17 @@ impl ProjectContext {
             }
         }
         fallback_module_key(uri)
+    }
+
+    pub(crate) fn cache_target_root(&self) -> &Path {
+        &self.root
+    }
+
+    pub(crate) fn cache_package_name(&self, module: &ModuleKey) -> String {
+        module
+            .package
+            .clone()
+            .unwrap_or_else(|| self.package_name.clone())
     }
 
     pub(crate) fn imported_module_keys(

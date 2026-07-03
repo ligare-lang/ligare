@@ -3,6 +3,7 @@
 //! Resolution logic lives in `resolve.rs`; this module holds the `Compiler`
 //! struct and its lifecycle methods.
 
+pub mod cache;
 pub mod modules;
 mod pipeline;
 mod resolve;

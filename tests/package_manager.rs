@@ -1,5 +1,6 @@
 use bumpalo::Bump;
 use ligare::compiler::Compiler;
+use ligare::compiler::cache::{PackageCompilerCache, cache_file_path, source_hash};
 use ligare::core::pool::TermArena;
 use ligare::package::{PackageType, UpdateMode, resolve_project, write_lock};
 use std::fs;
@@ -90,6 +91,34 @@ fn resolves_multi_package_local_dependencies_and_cross_package_use() {
     let lock = fs::read_to_string(root.join("ligare.lock")).unwrap();
     assert!(lock.contains("name = \"util\""), "{lock}");
     assert!(lock.contains("version = \"local\""), "{lock}");
+}
+
+#[test]
+fn collect_project_writes_file_cache_to_each_package_target_dir() {
+    let root = temp_project();
+    let util = root.join("util");
+    manifest(&util, "util", "");
+    let util_main = "pub mod math\npub def ignored : int := 0\n";
+    let util_math = "pub def inc (x : int) : int := x + 1\n";
+    write(&util, "src/main.lig", util_main);
+    write(&util, "src/math.lig", util_math);
+    manifest(
+        &root,
+        "app",
+        "\n[dependencies]\nutil = { path = \"util\" }\n",
+    );
+    let app_main = "use util::math::inc\npub def main : IO () := let _ := inc 1 in ()\n";
+    write(&root, "src/main.lig", app_main);
+
+    collect_project(&root).unwrap();
+
+    let app_cache = PackageCompilerCache::load(&root, &root, "app");
+    let util_cache = PackageCompilerCache::load(&root, &util, "util");
+    assert!(app_cache.is_fresh(&root.join("src/main.lig"), source_hash(app_main)));
+    assert!(util_cache.is_fresh(&util.join("src/math.lig"), source_hash(util_math)));
+    assert!(cache_file_path(&root, "app").exists());
+    assert!(cache_file_path(&root, "util").exists());
+    assert!(!cache_file_path(&util, "util").exists());
 }
 
 #[test]

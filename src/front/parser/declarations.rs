@@ -23,7 +23,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
     > {
         self.expect(&Token::KwDef)?;
         let name = self.parse_decl_ident()?;
-        let params = self.parse_many_curried_params();
+        let params = self.parse_many_curried_params()?;
         let ret = self
             .parse_constraint_until(|tokens, i| {
                 matches!(
@@ -86,7 +86,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         &mut self,
         name: Name<'bump>,
     ) -> Result<ParsedFuncBody<'bump>, ParseError> {
-        let params = self.parse_many_curried_params();
+        let params = self.parse_many_curried_params()?;
         let m_ret = self.parse_constraint_until(|tokens, i| matches!(tokens[i].0, Token::ColonEq));
         self.expect(&Token::ColonEq)?;
         let body_expr = if self.peek_token() == Some(Token::KwEnum) {
@@ -99,38 +99,63 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         Ok((params, m_ret, body_expr))
     }
 
-    fn parse_curried_param(&mut self) -> Option<(Name<'bump>, Option<&'bump Term<'bump>>)> {
+    pub(super) fn parse_param_group(
+        &mut self,
+    ) -> Result<Option<Vec<(Name<'bump>, Option<&'bump Term<'bump>>)>>, ParseError> {
         let implicit = if self.try_expect(&Token::LBrace) {
             true
         } else if self.try_expect(&Token::LParen) {
             false
         } else {
-            return None;
+            return Ok(None);
         };
-        let pname = match self.parse_decl_ident() {
-            Ok(n) => n,
-            Err(_) => return None,
-        };
-        let mconstr = self
-            .parse_constraint_annotation()
-            .map(|c| if implicit { self.arena.implicit(c) } else { c });
+
         let close = if implicit {
             Token::RBrace
         } else {
             Token::RParen
         };
-        if !self.try_expect(&close) {
-            return None;
+
+        let mut names = Vec::new();
+        loop {
+            match self.peek_token() {
+                Some(Token::Colon) => break,
+                Some(tok) if tok == close => break,
+                Some(_) => names.push(self.parse_decl_ident()?),
+                None => {
+                    return Err(ParseError {
+                        message: format!("expected {:?}, found EOF", close),
+                        span: self.current_span(),
+                    });
+                }
+            }
         }
-        Some((pname, mconstr))
+
+        if names.is_empty() {
+            return Err(ParseError {
+                message: "parameter group must have at least one parameter".into(),
+                span: self.current_span(),
+            });
+        }
+
+        let mconstr = self
+            .parse_constraint_annotation()
+            .map(|c| if implicit { self.arena.implicit(c) } else { c });
+        self.expect(&close)?;
+
+        Ok(Some(
+            names.into_iter().map(|pname| (pname, mconstr)).collect(),
+        ))
     }
 
-    fn parse_many_curried_params(&mut self) -> Vec<(Name<'bump>, Option<&'bump Term<'bump>>)> {
+    fn parse_many_curried_params(
+        &mut self,
+    ) -> Result<Vec<(Name<'bump>, Option<&'bump Term<'bump>>)>, ParseError> {
         let mut params = Vec::new();
-        while let Some(p) = self.parse_curried_param() {
-            params.push(p);
+        while let Some(group) = self.parse_param_group()? {
+            params.extend(group);
         }
-        params
+        Ok(params)
     }
 
     pub(super) fn parse_constraint_annotation(&mut self) -> Option<&'bump Term<'bump>> {

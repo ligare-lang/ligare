@@ -83,6 +83,37 @@ fn parse_generic_two_type_params() {
 }
 
 #[test]
+fn parse_grouped_generic_type_params() {
+    let (b, arena) = a();
+    let result = parse_def_top("def konst (A B : prop) (x : A) (y : B) : A := x", b, &arena);
+    assert!(result.is_ok(), "Parse error: {:?}", result.err());
+    let (name, params, _m_ret, _body) = result.unwrap();
+    assert_eq!(name, s(&arena, "konst"));
+    assert_eq!(params.len(), 4);
+    assert_eq!(params[0].0, s(&arena, "A"));
+    assert_eq!(params[1].0, s(&arena, "B"));
+    assert!(matches!(params[0].1, Some(Term::Builtin(name)) if *name == "prop"));
+    assert!(matches!(params[1].1, Some(Term::Builtin(name)) if *name == "prop"));
+}
+
+#[test]
+fn parse_grouped_implicit_type_params() {
+    let (b, arena) = a();
+    let result = parse_def_top(
+        "def choose {A B : prop} (x : A) (y : B) : A := x",
+        b,
+        &arena,
+    );
+    assert!(result.is_ok(), "Parse error: {:?}", result.err());
+    let (_name, params, _m_ret, _body) = result.unwrap();
+    assert_eq!(params.len(), 4);
+    assert_eq!(params[0].0, s(&arena, "A"));
+    assert_eq!(params[1].0, s(&arena, "B"));
+    assert!(matches!(params[0].1, Some(Term::Implicit(Term::Builtin(name))) if *name == "prop"));
+    assert!(matches!(params[1].1, Some(Term::Implicit(Term::Builtin(name))) if *name == "prop"));
+}
+
+#[test]
 fn parse_generic_with_prop_param() {
     let (b, arena) = a();
     let result = parse_def_top("def wrap (A : prop) (x : A) : A := x", b, &arena);

@@ -970,21 +970,10 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         loop {
             match self.peek_token() {
                 Some(Token::FatArrow) | None => break,
-                Some(Token::LParen) => {
-                    self.advance();
-                    let pname = self.parse_ident()?;
-                    let mconstr = self.parse_constraint_annotation();
-                    self.expect(&Token::RParen)?;
-                    params.push((pname, mconstr));
-                }
-                Some(Token::LBrace) => {
-                    self.advance();
-                    let pname = self.parse_ident()?;
-                    let mconstr = self
-                        .parse_constraint_annotation()
-                        .map(|c| self.arena.implicit(c));
-                    self.expect(&Token::RBrace)?;
-                    params.push((pname, mconstr));
+                Some(Token::LParen | Token::LBrace) => {
+                    if let Some(group) = self.parse_param_group()? {
+                        params.extend(group);
+                    }
                 }
                 Some(Token::Ident(_)) => {
                     let pname = self.parse_ident()?;

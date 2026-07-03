@@ -259,6 +259,12 @@ fn fun_lam_mixed_params() {
 }
 
 #[test]
+fn fun_lam_shared_constraint_param_group() {
+    let (b, arena) = a();
+    assert!(parse_expr_top("fun (x y : int) => x + y", b, &arena).is_ok());
+}
+
+#[test]
 fn annot_expression() {
     let (b, arena) = a();
     assert_eq!(
@@ -317,6 +323,21 @@ fn parse_use_batch_alias_and_pub() {
             assert_eq!(imports[1].alias, None);
             assert_eq!(imports[2].path, ["prelude", "id"]);
             assert_eq!(imports[2].alias, None);
+        }
+        other => panic!("unexpected top-level: {other:?}"),
+    }
+}
+
+#[test]
+fn parse_use_wildcard() {
+    let (b, arena) = a();
+    let tops = parse_program("use data::nat::*\n", b, &arena).unwrap();
+    match &tops[0] {
+        TopLevel::TLUse(imports, ligare::front::parser::Visibility::Private, _) => {
+            assert_eq!(imports.len(), 1);
+            assert_eq!(imports[0].path, ["data", "nat"]);
+            assert_eq!(imports[0].alias, None);
+            assert!(imports[0].wildcard);
         }
         other => panic!("unexpected top-level: {other:?}"),
     }
@@ -505,6 +526,12 @@ fn func_three_params() {
 }
 
 #[test]
+fn func_shared_constraint_param_group() {
+    let (b, arena) = a();
+    assert!(parse_expr_top("func f (a b c : int) : int := a", b, &arena).is_ok());
+}
+
+#[test]
 fn and_prop_parses() {
     let (b, arena) = a();
     let and_term = arena.builtin(s(&arena, "and"));
@@ -688,6 +715,27 @@ fn def_with_params() {
         arena.alloc_slice(&[(s(&arena, "a"), pt), (s(&arena, "b"), pt)]);
     assert_eq!(params, expected_params);
     assert_eq!(m_ret, pt);
+    assert_eq!(body, expected_body);
+}
+
+#[test]
+fn def_shared_constraint_param_group() {
+    let (b, arena) = a();
+    let result = parse_def_top("def add (a b : int) : int := a + b", b, &arena);
+    assert!(result.is_ok());
+    let (name, params, m_ret, body) = result.unwrap();
+    assert_eq!(name, "add");
+    let expected_body = bin(
+        &arena,
+        PrimOp::Add,
+        arena.named(s(&arena, "a")),
+        arena.named(s(&arena, "b")),
+    );
+    let int = arena.builtin(s(&arena, "int"));
+    let expected_params: &[(&str, Option<&Term>)] =
+        arena.alloc_slice(&[(s(&arena, "a"), Some(int)), (s(&arena, "b"), Some(int))]);
+    assert_eq!(params, expected_params);
+    assert_eq!(m_ret, Some(int));
     assert_eq!(body, expected_body);
 }
 

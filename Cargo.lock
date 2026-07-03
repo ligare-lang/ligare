@@ -514,6 +514,8 @@ dependencies = [
  "bumpalo",
  "clap",
  "logos",
+ "serde",
+ "serde_json",
  "toml",
 ]
 

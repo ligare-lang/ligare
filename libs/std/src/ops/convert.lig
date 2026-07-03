@@ -1,0 +1,3 @@
+pub def From {A : prop} {B : prop} := struct
+    from: A -> B
+

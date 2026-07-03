@@ -9,6 +9,10 @@ use crate::core::syntax::{Name, Tactic, Term};
 use crate::diagnostic::Diagnostic;
 use crate::front::parser::{TopLevel, UseTree, Visibility, parse_program};
 
+use super::cache::{
+    CachedFile, FALLBACK_ROOT_PACKAGE, PackageCompilerCache, now_ms, package_root_for_file,
+    source_hash,
+};
 use super::{Compiler, read_source_file};
 
 const STANDARD_LIBRARY_PACKAGE: &str = "std";
@@ -107,6 +111,15 @@ impl ModuleId {
         }
     }
 
+    fn local_module_path_parts(&self, path: &[&str]) -> Self {
+        let mut module_path = self.path.clone();
+        module_path.extend(path.iter().map(|p| (*p).to_string()));
+        Self {
+            package: self.package.clone(),
+            path: module_path,
+        }
+    }
+
     fn symbol_from_import_path(
         &self,
         path: &[Name<'_>],
@@ -160,6 +173,15 @@ impl ModuleId {
             .last()
             .ok_or_else(|| Diagnostic::new("namespace use path cannot be empty"))?;
         Ok((dep.clone(), dep.join_symbol(namespace)))
+    }
+
+    fn wildcard_module_import(
+        &self,
+        path: &[Name<'_>],
+        graph: &PackageModuleGraph,
+    ) -> Result<Self, Diagnostic> {
+        let parts = path.iter().map(|p| *p).collect::<Vec<_>>();
+        self.resolve_import_module_path_parts(&parts, graph)
     }
 
     fn try_namespace_import(
@@ -261,12 +283,75 @@ impl ModuleId {
         }
         Ok(self.local_import_path_parts(path))
     }
+
+    fn resolve_import_module_path_parts(
+        &self,
+        path: &[&str],
+        graph: &PackageModuleGraph,
+    ) -> Result<Self, Diagnostic> {
+        if path.is_empty() {
+            return Err(Diagnostic::new("wildcard use path must include a module"));
+        }
+        let first = path[0].to_string();
+        let accessible = match &self.package {
+            None => graph.root_deps.contains(&first),
+            Some(package) => graph
+                .packages
+                .get(package)
+                .is_some_and(|info| info.deps.contains(&first)),
+        };
+        if accessible {
+            if path.len() < 2 {
+                return Err(Diagnostic::new(
+                    "package wildcard use path must be `package::module::*`",
+                ));
+            }
+            let module_path = path[1..]
+                .iter()
+                .map(|p| (*p).to_string())
+                .collect::<Vec<_>>();
+            let info = graph.packages.get(&first).ok_or_else(|| {
+                Diagnostic::new(format!("package dependency `{first}` was not resolved"))
+            })?;
+            if !info.public_modules.contains(&module_path) {
+                return Err(Diagnostic::new(format!(
+                    "module `{}` is not exported by package `{first}`",
+                    module_path.join("::")
+                )));
+            }
+            return Ok(Self::package(&first, module_path));
+        }
+        if first == STANDARD_LIBRARY_PACKAGE {
+            if path.len() < 2 {
+                return Err(Diagnostic::new(
+                    "standard library wildcard use path must be `std::module::*`",
+                ));
+            }
+            let module_path = path[1..]
+                .iter()
+                .map(|p| (*p).to_string())
+                .collect::<Vec<_>>();
+            return Ok(Self::package(STANDARD_LIBRARY_PACKAGE, module_path));
+        }
+        Ok(self.local_module_path_parts(path))
+    }
 }
 
 #[derive(Clone)]
 struct ParsedModule<'bump> {
     id: ModuleId,
+    file: PathBuf,
+    source_hash: u64,
+    imports: Vec<Vec<String>>,
     tops: Vec<TopLevel<'bump>>,
+}
+
+#[derive(Clone, Debug)]
+struct ModuleCacheRecord {
+    package: String,
+    package_root: PathBuf,
+    file: PathBuf,
+    entry: CachedFile,
 }
 
 #[derive(Clone, Debug)]
@@ -290,6 +375,7 @@ pub fn parse_module_surface(
 struct ModuleEnv<'bump> {
     exports: HashMap<ModuleId, HashMap<String, String>>,
     rewritten: HashMap<ModuleId, Vec<TopLevel<'bump>>>,
+    cache_records: HashMap<ModuleId, ModuleCacheRecord>,
     order: Vec<ModuleId>,
 }
 
@@ -341,12 +427,17 @@ impl<'bump> Compiler<'bump> {
                 self.process_top_level(top)?;
             }
         }
-        self.validate_module_main()
+        self.validate_module_main()?;
+        let cache_root =
+            package_root_for_file(Path::new(file)).unwrap_or_else(|| PathBuf::from("."));
+        let root_package = root_cache_package_name(&cache_root);
+        save_module_cache_records(&cache_root, &root_package, env.cache_records.into_values())
     }
 
     pub(crate) fn collect_module_entry(&mut self, file: &str) -> Result<(), Diagnostic> {
         self.quiet = true;
         let env = self.load_module_graph(file)?;
+        let mut checked_records = Vec::new();
         for id in env.order {
             let content = env.rewritten.get(&id).cloned().unwrap_or_default();
             for top in &content {
@@ -362,8 +453,15 @@ impl<'bump> Compiler<'bump> {
             self.enum_types.extend(monomorphized.codegen.enum_types);
             self.struct_types.extend(monomorphized.codegen.struct_types);
             self.tops.extend(erased.tops);
+            if let Some(record) = env.cache_records.get(&id) {
+                checked_records.push(record.clone());
+            }
         }
-        self.validate_module_main()
+        self.validate_module_main()?;
+        let cache_root =
+            package_root_for_file(Path::new(file)).unwrap_or_else(|| PathBuf::from("."));
+        let root_package = root_cache_package_name(&cache_root);
+        save_module_cache_records(&cache_root, &root_package, checked_records)
     }
 
     pub fn process_project_entry(
@@ -373,13 +471,19 @@ impl<'bump> Compiler<'bump> {
         graph: PackageModuleGraph,
     ) -> Result<(), Diagnostic> {
         let env = self.load_project_module_graph(root, entry, graph, true)?;
+        let mut checked_records = Vec::new();
         for id in env.order {
             let tops = env.rewritten.get(&id).cloned().unwrap_or_default();
             for top in tops {
                 self.process_top_level(top)?;
             }
+            if let Some(record) = env.cache_records.get(&id) {
+                checked_records.push(record.clone());
+            }
         }
-        self.validate_module_main()
+        self.validate_module_main()?;
+        let root_package = root_cache_package_name(root);
+        save_module_cache_records(root, &root_package, checked_records)
     }
 
     pub fn collect_project_entry(
@@ -390,6 +494,7 @@ impl<'bump> Compiler<'bump> {
     ) -> Result<(), Diagnostic> {
         self.quiet = true;
         let env = self.load_project_module_graph(root, entry, graph, true)?;
+        let mut checked_records = Vec::new();
         for id in env.order {
             let content = env.rewritten.get(&id).cloned().unwrap_or_default();
             for top in &content {
@@ -405,8 +510,13 @@ impl<'bump> Compiler<'bump> {
             self.enum_types.extend(monomorphized.codegen.enum_types);
             self.struct_types.extend(monomorphized.codegen.struct_types);
             self.tops.extend(erased.tops);
+            if let Some(record) = env.cache_records.get(&id) {
+                checked_records.push(record.clone());
+            }
         }
-        self.validate_module_main()
+        self.validate_module_main()?;
+        let root_package = root_cache_package_name(root);
+        save_module_cache_records(root, &root_package, checked_records)
     }
 
     pub fn collect_project_lib_entry(
@@ -417,6 +527,7 @@ impl<'bump> Compiler<'bump> {
     ) -> Result<(), Diagnostic> {
         self.quiet = true;
         let env = self.load_project_module_graph(root, entry, graph, false)?;
+        let mut checked_records = Vec::new();
         for id in env.order {
             let content = env.rewritten.get(&id).cloned().unwrap_or_default();
             for top in &content {
@@ -432,7 +543,12 @@ impl<'bump> Compiler<'bump> {
             self.enum_types.extend(monomorphized.codegen.enum_types);
             self.struct_types.extend(monomorphized.codegen.struct_types);
             self.tops.extend(erased.tops);
+            if let Some(record) = env.cache_records.get(&id) {
+                checked_records.push(record.clone());
+            }
         }
+        let root_package = root_cache_package_name(root);
+        save_module_cache_records(root, &root_package, checked_records)?;
         Ok(())
     }
 
@@ -475,9 +591,11 @@ impl<'bump> Compiler<'bump> {
             )));
         }
         let exports = self.collect_exports(&parsed, &graph)?;
+        let cache_records = module_cache_records(&parsed, &exports);
         let mut env = ModuleEnv {
             exports,
             rewritten: HashMap::new(),
+            cache_records,
             order: Vec::new(),
         };
         let mut visiting = Vec::new();
@@ -507,13 +625,18 @@ impl<'bump> Compiler<'bump> {
         }
         let file_str = file.to_string_lossy().into_owned();
         let source = read_source_file(&file_str)?;
+        let hash = source_hash(&source);
         let tops = parse_program(&source, self.bump, self.arena)
             .map_err(|e| Diagnostic::with_span(format!("parse error: {}", e.message), e.span))
             .map_err(|d| d.with_source(&file_str, &source))?;
+        let imports = module_cache_imports(&id, &tops, graph)?;
         parsed.insert(
             id.clone(),
             ParsedModule {
                 id: id.clone(),
+                file: file.clone(),
+                source_hash: hash,
+                imports,
                 tops: tops.clone(),
             },
         );
@@ -598,6 +721,46 @@ impl<'bump> Compiler<'bump> {
                         continue;
                     }
                     for tree in import.trees {
+                        if tree.wildcard {
+                            let dep = if is_namespace_wildcard_path(tree.path) {
+                                module.id.namespace_import_prefix(tree.path, graph)?.0
+                            } else {
+                                module.id.wildcard_module_import(tree.path, graph)?
+                            };
+                            let dep_exports = exports.get(&dep).ok_or_else(|| {
+                                Diagnostic::new(format!(
+                                    "module not found: {}",
+                                    display_module(&dep)
+                                ))
+                            })?;
+                            if is_namespace_wildcard_path(tree.path) {
+                                let (_, prefix) =
+                                    module.id.namespace_import_prefix(tree.path, graph)?;
+                                let prefix_with_sep = format!("{prefix}::");
+                                for (exported, target) in dep_exports {
+                                    let Some(local) = exported.strip_prefix(&prefix_with_sep)
+                                    else {
+                                        continue;
+                                    };
+                                    if local.contains("::") {
+                                        continue;
+                                    }
+                                    let exported = id.join_symbol(local);
+                                    if set.insert(exported, target.clone()).is_none() {
+                                        changed = true;
+                                    }
+                                }
+                            } else {
+                                for (exported, target) in dep_exports {
+                                    let local = dep.local_symbol_name(exported);
+                                    let exported = id.join_symbol(&local);
+                                    if set.insert(exported, target.clone()).is_none() {
+                                        changed = true;
+                                    }
+                                }
+                            }
+                            continue;
+                        }
                         let requested =
                             id.symbol_from_import_path(tree.path, graph)
                                 .ok_or_else(|| {
@@ -689,19 +852,33 @@ impl<'bump> Compiler<'bump> {
         for import in module_imports(&module.tops) {
             for tree in import.trees {
                 if tree.wildcard {
-                    let (dep, prefix) = module.id.namespace_import_prefix(tree.path, graph)?;
-                    let dep_exports = exports.get(&dep).ok_or_else(|| {
-                        Diagnostic::new(format!("module not found: {}", display_module(&dep)))
-                    })?;
-                    let prefix_with_sep = format!("{prefix}::");
-                    for (exported, target) in dep_exports {
-                        let Some(local) = exported.strip_prefix(&prefix_with_sep) else {
-                            continue;
-                        };
-                        if local.contains("::") {
-                            continue;
+                    if is_namespace_wildcard_path(tree.path) {
+                        let (dep, prefix) = module.id.namespace_import_prefix(tree.path, graph)?;
+                        let dep_exports = exports.get(&dep).ok_or_else(|| {
+                            Diagnostic::new(format!("module not found: {}", display_module(&dep)))
+                        })?;
+                        let prefix_with_sep = format!("{prefix}::");
+                        for (exported, target) in dep_exports {
+                            let Some(local) = exported.strip_prefix(&prefix_with_sep) else {
+                                continue;
+                            };
+                            if local.contains("::") {
+                                continue;
+                            }
+                            insert_import(&mut imports, local.to_string(), target.clone())?;
                         }
-                        insert_import(&mut imports, local.to_string(), target.clone())?;
+                    } else {
+                        let dep = module.id.wildcard_module_import(tree.path, graph)?;
+                        let dep_exports = exports.get(&dep).ok_or_else(|| {
+                            Diagnostic::new(format!("module not found: {}", display_module(&dep)))
+                        })?;
+                        for (exported, target) in dep_exports {
+                            insert_import(
+                                &mut imports,
+                                dep.local_symbol_name(exported),
+                                target.clone(),
+                            )?;
+                        }
                     }
                     continue;
                 }
@@ -1230,11 +1407,15 @@ fn import_deps<'bump>(
     let mut seen = HashSet::new();
     for import in module_imports(tops) {
         for tree in import.trees {
-            if tree.path.len() < 2 {
+            if tree.path.len() < 2 && !tree.wildcard {
                 return Err(Diagnostic::new("use path must include a module and symbol"));
             }
             let dep = if tree.wildcard {
-                current.namespace_import_prefix(tree.path, graph)?.0
+                if is_namespace_wildcard_path(tree.path) {
+                    current.namespace_import_prefix(tree.path, graph)?.0
+                } else {
+                    current.wildcard_module_import(tree.path, graph)?
+                }
             } else if tree.path.len() >= 3 && is_namespace_segment(tree.path[tree.path.len() - 2]) {
                 let parts = tree.path.iter().map(|p| *p).collect::<Vec<_>>();
                 current.resolve_namespace_module_parts(&parts, 2, graph)?
@@ -1250,6 +1431,116 @@ fn import_deps<'bump>(
         }
     }
     Ok(deps)
+}
+
+fn module_cache_imports<'bump>(
+    current: &ModuleId,
+    tops: &[TopLevel<'bump>],
+    graph: &PackageModuleGraph,
+) -> Result<Vec<Vec<String>>, Diagnostic> {
+    let mut deps = declared_module_deps(current, tops);
+    deps.extend(import_deps(current, tops, graph)?);
+    deps.extend(qualified_term_deps(current, tops, graph)?);
+    let mut imports = deps
+        .into_iter()
+        .map(|dep| module_cache_path(&dep))
+        .collect::<Vec<_>>();
+    imports.sort();
+    imports.dedup();
+    Ok(imports)
+}
+
+fn module_cache_path(module: &ModuleId) -> Vec<String> {
+    let mut path = Vec::new();
+    if let Some(package) = &module.package {
+        path.push(package.clone());
+    }
+    if module.path.is_empty() {
+        path.push("main".to_string());
+    } else {
+        path.extend(module.path.clone());
+    }
+    path
+}
+
+fn module_cache_records<'bump>(
+    parsed: &HashMap<ModuleId, ParsedModule<'bump>>,
+    exports: &HashMap<ModuleId, HashMap<String, String>>,
+) -> HashMap<ModuleId, ModuleCacheRecord> {
+    parsed
+        .iter()
+        .map(|(id, module)| {
+            let mut exported = exports
+                .get(id)
+                .map(|exports| {
+                    exports
+                        .keys()
+                        .map(|symbol| id.local_symbol_name(symbol))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            exported.sort();
+            exported.dedup();
+            (
+                id.clone(),
+                ModuleCacheRecord {
+                    package: id
+                        .package
+                        .clone()
+                        .unwrap_or_else(|| FALLBACK_ROOT_PACKAGE.to_string()),
+                    package_root: package_root_for_file(&module.file).unwrap_or_else(|| {
+                        module
+                            .file
+                            .parent()
+                            .map(Path::to_path_buf)
+                            .unwrap_or_else(|| PathBuf::from("."))
+                    }),
+                    file: module.file.clone(),
+                    entry: CachedFile {
+                        package: id.package.clone(),
+                        module_path: id.path.clone(),
+                        source_hash: module.source_hash,
+                        imports: module.imports.clone(),
+                        exports: exported,
+                        checked_ok: true,
+                        updated_at_ms: now_ms(),
+                    },
+                },
+            )
+        })
+        .collect()
+}
+
+fn save_module_cache_records(
+    target_root: &Path,
+    root_package: &str,
+    records: impl IntoIterator<Item = ModuleCacheRecord>,
+) -> Result<(), Diagnostic> {
+    let mut caches = HashMap::<(String, PathBuf), PackageCompilerCache>::new();
+    for record in records {
+        let package = if record.package == FALLBACK_ROOT_PACKAGE {
+            root_package.to_string()
+        } else {
+            record.package.clone()
+        };
+        let key = (package.clone(), record.package_root.clone());
+        caches
+            .entry(key)
+            .or_insert_with(|| {
+                PackageCompilerCache::load(target_root, &record.package_root, &package)
+            })
+            .update(&record.file, record.entry);
+    }
+    for cache in caches.values() {
+        cache.save()?;
+    }
+    Ok(())
+}
+
+fn root_cache_package_name(root: &Path) -> String {
+    crate::package::read_manifest(root)
+        .map(|manifest| manifest.name)
+        .unwrap_or_else(|_| FALLBACK_ROOT_PACKAGE.to_string())
 }
 
 fn qualified_term_deps<'bump>(
@@ -1342,6 +1633,10 @@ fn is_namespace_segment(name: &str) -> bool {
     name.chars()
         .next()
         .is_some_and(|ch| ch.is_ascii_uppercase())
+}
+
+fn is_namespace_wildcard_path(path: &[Name<'_>]) -> bool {
+    path.len() >= 2 && path.last().is_some_and(|name| is_namespace_segment(name))
 }
 
 fn qualified_names_in_tops<'bump>(tops: &[TopLevel<'bump>]) -> HashSet<String> {

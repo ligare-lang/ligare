@@ -1,0 +1,7 @@
+pub use convert::*
+
+mod convert
+
+pub def Eq (Self : prop) := struct
+    eq: Self -> bool
+

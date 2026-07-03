@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use bumpalo::Bump;
 use ligare::checker::builtin::BUILTIN_CONSTRAINT_NAMES;
+use ligare::compiler::cache::{PackageCompilerCache, cache_file_path, source_hash};
 use ligare::config::GLOBAL_ALLOCATOR_NAME_PREFIX;
 use ligare::core::pool::TermArena;
 use ligare::core::syntax::Term;
@@ -72,6 +73,20 @@ fn global_allocator_attribute_is_parsed_with_following_def() {
     );
     assert!(
         matches!(ast.items[1], AstNode::TopLevel(TopLevel::TLDef(name, ..)) if name == "after")
+    );
+}
+
+#[test]
+fn shared_constraint_param_group_reuses_ligare_ast() {
+    let (bump, arena) = arena();
+    let source = "def add (a b : int) : int := a + b";
+
+    let (ast, errors) = parse_program_lsp(source, bump, &arena);
+
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(ast.top_levels().count(), 1);
+    assert!(
+        matches!(ast.items[0], AstNode::TopLevel(TopLevel::TLDef(_, params, _, _, _)) if params.len() == 2)
     );
 }
 
@@ -361,6 +376,22 @@ fn cache_reports_incomplete_use_path() {
 }
 
 #[test]
+fn cache_resolves_wildcard_use_imports() {
+    let mut cache = LspCache::new();
+    let math_uri = lsp::Url::parse("file:///workspace/math.lig").unwrap();
+    let main_uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+
+    cache.update_fast(math_uri, Some(1), "pub def one : int := 1\n".to_string());
+    let update = cache.update_fast(
+        main_uri,
+        Some(1),
+        "mod math\nuse math::*\n#check one : int\n".to_string(),
+    );
+
+    assert!(update.diagnostics.is_empty(), "{:#?}", update.diagnostics);
+}
+
+#[test]
 fn cache_reports_unknown_declared_module() {
     let mut cache = LspCache::new();
     let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
@@ -450,6 +481,83 @@ fn cache_hit_rate_tracks_item_reuse() {
     assert_eq!(stats.item_hits, 2);
     assert_eq!(stats.item_misses, 4);
     assert!((stats.item_hit_rate() - (2.0 / 6.0)).abs() < f64::EPSILON);
+}
+
+#[test]
+fn full_check_updates_and_reuses_package_compiler_cache() {
+    let root = std::env::temp_dir().join(format!(
+        "ligare_lsp_compiler_cache_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("ligare.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let source = "pub def main : IO () := ()\n";
+    let path = root.join("src/main.lig");
+    std::fs::write(&path, source).unwrap();
+    let uri = lsp::Url::from_file_path(&path).unwrap();
+    let mut cache = LspCache::new();
+
+    let initial = cache.update_full(uri.clone(), Some(1), source.to_string());
+    assert!(initial.diagnostics.is_empty(), "{:#?}", initial.diagnostics);
+    assert!(PackageCompilerCache::load(&root, &root, "app").is_fresh(&path, source_hash(source)));
+
+    let reused = cache.update_full(uri, Some(2), source.to_string());
+    assert!(reused.diagnostics.is_empty(), "{:#?}", reused.diagnostics);
+    assert_eq!(cache.stats().compiler_cache_hits, 1);
+}
+
+#[test]
+fn full_check_writes_dependency_cache_under_workspace_package_target() {
+    let root = std::env::temp_dir().join(format!(
+        "ligare_lsp_dep_compiler_cache_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let util = root.join("util");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(util.join("src")).unwrap();
+    std::fs::write(
+        root.join("ligare.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nutil = { path = \"util\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        util.join("ligare.toml"),
+        "[package]\nname = \"util\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(util.join("src/main.lig"), "pub mod math\n").unwrap();
+    let main_source = "use util::math::inc\npub def main : IO () := let _ := inc 1 in ()\n";
+    let util_source = "pub def inc (x : int) : int := x + 1\n";
+    let main_path = root.join("src/main.lig");
+    let util_path = util.join("src/math.lig");
+    std::fs::write(&main_path, main_source).unwrap();
+    std::fs::write(&util_path, util_source).unwrap();
+    let main_uri = lsp::Url::from_file_path(&main_path).unwrap();
+    let util_uri = lsp::Url::from_file_path(&util_path).unwrap();
+    let mut cache = LspCache::new();
+
+    cache.update_fast(main_uri, Some(1), main_source.to_string());
+    let update = cache.update_full(util_uri, Some(1), util_source.to_string());
+
+    assert!(update.diagnostics.is_empty(), "{:#?}", update.diagnostics);
+    assert!(
+        PackageCompilerCache::load(&root, &util, "util")
+            .is_fresh(&util_path, source_hash(util_source))
+    );
+    assert!(cache_file_path(&root, "util").exists());
+    assert!(!cache_file_path(&util, "util").exists());
 }
 
 #[test]

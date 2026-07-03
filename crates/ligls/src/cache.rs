@@ -1,9 +1,12 @@
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
 
 use bumpalo::Bump;
 use ligare::checker::CheckMode;
 use ligare::compiler::Compiler;
+use ligare::compiler::cache::{
+    CachedFile, FALLBACK_ROOT_PACKAGE, PackageCompilerCache, now_ms, package_root_for_file,
+    source_hash,
+};
 use ligare::core::pool::TermArena;
 use ligare::core::syntax::{DoStmt, Tactic, Term};
 use ligare::front::parser::{TopLevel, UseTree};
@@ -30,6 +33,8 @@ pub(crate) struct CacheStats {
     pub(crate) file_misses: usize,
     pub(crate) item_hits: usize,
     pub(crate) item_misses: usize,
+    pub(crate) compiler_cache_hits: usize,
+    pub(crate) compiler_cache_misses: usize,
 }
 
 impl CacheStats {
@@ -263,7 +268,19 @@ impl LspCache {
             .map(|project| project.module_key_for_uri(&uri))
             .unwrap_or_else(|| fallback_module_key(&uri));
         let changed_names = changed_names(previous.as_ref(), &parsed.item_infos);
-        let dirty_indices = dirty_indices(previous.as_ref(), &parsed.item_infos, &changed_names);
+        let mut dirty_indices =
+            dirty_indices(previous.as_ref(), &parsed.item_infos, &changed_names);
+        let text_hash = stable_hash(&text);
+        let compiler_cache_hit = check == DiagnosticCheck::Full
+            && parsed.parse_errors.is_empty()
+            && !previous.as_ref().is_some_and(|file| file.dirty)
+            && compiler_cache_is_fresh(&uri, text_hash, project.as_ref(), &module_key);
+        if compiler_cache_hit {
+            self.stats.compiler_cache_hits += 1;
+            dirty_indices.clear();
+        } else if check == DiagnosticCheck::Full {
+            self.stats.compiler_cache_misses += 1;
+        }
         self.stats.item_hits += parsed.item_infos.len().saturating_sub(dirty_indices.len());
         self.stats.item_misses += dirty_indices.len();
 
@@ -307,6 +324,17 @@ impl LspCache {
             }
         }));
         let diagnostics = dedup_diagnostics(diagnostics);
+        if check == DiagnosticCheck::Full {
+            update_compiler_cache(
+                &uri,
+                text_hash,
+                &module_key,
+                &parsed.module_imports,
+                &parsed.exports,
+                diagnostics.is_empty(),
+                project.as_ref(),
+            );
+        }
 
         let dependencies = resolve_module_imports(
             &parsed.module_imports,
@@ -772,18 +800,10 @@ fn imported_symbol_aliases<'bump>(
             continue;
         };
         for tree in *uses {
-            if tree.path.len() < 2 {
+            if tree.path.len() < 2 && !tree.wildcard {
                 continue;
             }
-            let module_path = tree.path[..tree.path.len() - 1]
-                .iter()
-                .map(|part| (*part).to_string())
-                .collect::<Vec<_>>();
-            let item = tree.path[tree.path.len() - 1].to_string();
-            let local = tree
-                .alias
-                .unwrap_or(tree.path[tree.path.len() - 1])
-                .to_string();
+            let module_path = use_tree_module(tree).unwrap_or_default();
             let modules = project
                 .map(|project| project.imported_module_keys(current_module, &module_path))
                 .unwrap_or_else(|| fallback_imported_module_keys(current_module, &module_path));
@@ -794,12 +814,25 @@ fn imported_symbol_aliases<'bump>(
             }) else {
                 continue;
             };
-            let exported = module_index
+            let Some(file) = module_index
                 .iter()
                 .find(|(module_key, _)| module_key == &module)
                 .and_then(|(_, uri)| files.get(uri))
-                .is_some_and(|file| file.exports.contains(&item));
-            if exported {
+            else {
+                continue;
+            };
+            if tree.wildcard {
+                for item in &file.exports {
+                    aliases.insert(item.clone(), module.join_symbol(item));
+                }
+                continue;
+            }
+            let item = tree.path[tree.path.len() - 1].to_string();
+            if file.exports.contains(&item) {
+                let local = tree
+                    .alias
+                    .unwrap_or(tree.path[tree.path.len() - 1])
+                    .to_string();
                 aliases.insert(local, module.join_symbol(&item));
             }
         }
@@ -871,7 +904,7 @@ fn use_module_diagnostics<'bump>(
         match unwrap_public(top) {
             TopLevel::TLUse(uses, visibility, span) => {
                 for tree in *uses {
-                    if tree.path.len() < 2 {
+                    if tree.path.len() < 2 && !tree.wildcard {
                         if dirty.contains(&idx) {
                             let message = if matches!(
                                 visibility,
@@ -900,10 +933,7 @@ fn use_module_diagnostics<'bump>(
                         .unwrap_or_default()
                         .to_string();
                     let range = lsp_range_for_span(source, span);
-                    let module_path = tree.path[..tree.path.len() - 1]
-                        .iter()
-                        .map(|part| (*part).to_string())
-                        .collect::<Vec<_>>();
+                    let module_path = use_tree_module(tree).unwrap_or_default();
                     imports.push(ImportDiagnosticInfo {
                         idx,
                         local,
@@ -1846,6 +1876,10 @@ fn qualified_module_imports_for_top(top: &TopLevel<'_>) -> Vec<Vec<String>> {
 }
 
 fn use_tree_module(tree: &UseTree<'_>) -> Option<Vec<String>> {
+    if tree.wildcard {
+        return (!tree.path.is_empty())
+            .then(|| tree.path.iter().map(|part| (*part).to_string()).collect());
+    }
     (tree.path.len() > 1).then(|| {
         tree.path[..tree.path.len() - 1]
             .iter()
@@ -1899,7 +1933,77 @@ fn unwrap_public<'a, 'bump>(top: &'a TopLevel<'bump>) -> &'a TopLevel<'bump> {
 }
 
 fn stable_hash(value: &str) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    value.hash(&mut hasher);
-    hasher.finish()
+    source_hash(value)
+}
+
+fn compiler_cache_is_fresh(
+    uri: &lsp::Url,
+    text_hash: u64,
+    project: Option<&ProjectContext>,
+    module: &ModuleKey,
+) -> bool {
+    let Ok(path) = uri.to_file_path() else {
+        return false;
+    };
+    let Some(package_root) = package_root_for_file(&path) else {
+        return false;
+    };
+    let target_root = project
+        .map(ProjectContext::cache_target_root)
+        .unwrap_or(package_root.as_path());
+    let package = project
+        .map(|project| project.cache_package_name(module))
+        .unwrap_or_else(|| fallback_cache_package_name(module, &package_root));
+    PackageCompilerCache::load(target_root, &package_root, &package).is_fresh(&path, text_hash)
+}
+
+fn update_compiler_cache(
+    uri: &lsp::Url,
+    text_hash: u64,
+    module: &ModuleKey,
+    imports: &[Vec<String>],
+    exports: &[String],
+    checked_ok: bool,
+    project: Option<&ProjectContext>,
+) {
+    let Ok(path) = uri.to_file_path() else {
+        return;
+    };
+    let Some(package_root) = package_root_for_file(&path) else {
+        return;
+    };
+    let target_root = project
+        .map(ProjectContext::cache_target_root)
+        .unwrap_or(package_root.as_path());
+    let package = project
+        .map(|project| project.cache_package_name(module))
+        .unwrap_or_else(|| fallback_cache_package_name(module, &package_root));
+    let mut cache = PackageCompilerCache::load(target_root, &package_root, &package);
+    let mut imports = imports.to_vec();
+    imports.sort();
+    imports.dedup();
+    let mut exports = exports.to_vec();
+    exports.sort();
+    exports.dedup();
+    cache.update(
+        &path,
+        CachedFile {
+            package: module.package.clone(),
+            module_path: module.path.clone(),
+            source_hash: text_hash,
+            imports,
+            exports,
+            checked_ok,
+            updated_at_ms: now_ms(),
+        },
+    );
+    let _ = cache.save();
+}
+
+fn fallback_cache_package_name(module: &ModuleKey, package_root: &std::path::Path) -> String {
+    module.package.clone().unwrap_or_else(|| {
+        ligare::package::read_manifest(package_root)
+            .map(|manifest| manifest.name)
+            .unwrap_or_else(|_| FALLBACK_ROOT_PACKAGE.to_string())
+    })
 }
