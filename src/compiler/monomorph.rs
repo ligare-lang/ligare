@@ -13,7 +13,7 @@ mod replace;
 
 #[derive(Clone)]
 struct GenericDef<'bump> {
-    n_type_params: usize,
+    erased_param_indices: Vec<usize>,
     params: &'bump [(Name<'bump>, Option<&'bump Term<'bump>>)],
     ret: Option<&'bump Term<'bump>>,
     body: &'bump Term<'bump>,
@@ -22,7 +22,8 @@ struct GenericDef<'bump> {
 
 #[derive(Clone)]
 struct GenericTypeDef<'bump> {
-    n_type_params: usize,
+    n_params: usize,
+    layout_param_indices: Vec<usize>,
     body: &'bump Term<'bump>,
 }
 
@@ -143,14 +144,17 @@ impl<'bump> Compiler<'bump> {
                 let TopLevel::TLDef(name, params, ret, body, span) = top else {
                     return None;
                 };
-                let n_type_params = params
+                let erased_param_indices = params
                     .iter()
-                    .take_while(|(_, c)| c.is_some_and(&is_erased_param_constraint))
-                    .count();
-                (n_type_params > 0).then_some((
+                    .enumerate()
+                    .filter_map(|(idx, (_, c))| {
+                        c.is_some_and(&is_erased_param_constraint).then_some(idx)
+                    })
+                    .collect::<Vec<_>>();
+                (!erased_param_indices.is_empty()).then_some((
                     *name,
                     GenericDef {
-                        n_type_params,
+                        erased_param_indices,
                         params,
                         ret: *ret,
                         body,
@@ -170,19 +174,28 @@ impl<'bump> Compiler<'bump> {
                 let TopLevel::TLDef(name, params, _ret, body, _span) = top else {
                     return None;
                 };
-                let n_type_params = params
-                    .iter()
-                    .take_while(|(_, c)| c.is_some_and(|t| self.is_erased_param_constraint(t)))
-                    .count();
-                if n_type_params == 0 || !matches!(body, Term::EnumDef(..) | Term::StructDef(..)) {
+                let n_params = params.len();
+                if n_params == 0 || !matches!(body, Term::EnumDef(..) | Term::StructDef(..)) {
                     return None;
                 }
+                let layout_param_indices = params
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, (_, c))| {
+                        c.is_some_and(Self::is_type_layout_param_constraint)
+                            .then_some(idx)
+                    })
+                    .chain(Self::layout_param_indices_from_body(body, n_params))
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .collect();
                 let names: Vec<_> = params.iter().rev().map(|(pn, _)| *pn).collect();
                 let body = self.checker.desugar_with_names_context(body, &names).ok()?;
                 Some((
                     *name,
                     GenericTypeDef {
-                        n_type_params,
+                        n_params,
+                        layout_param_indices,
                         body,
                     },
                 ))
@@ -207,7 +220,10 @@ impl<'bump> Compiler<'bump> {
                     .desugar_with_context(b)
                     .map(|b| self.subst_top_level(b))
                     .unwrap_or(b);
-                let body = self.rewrite_term(body, state);
+                let body = match ret {
+                    Some(ret) => self.rewrite_term_for_constraint(body, ret, state),
+                    None => self.rewrite_term(body, state),
+                };
                 TopLevel::TLDef(n, params, ret, body, s)
             }
             TopLevel::TLExternDef(n, p, r, s) => {
@@ -216,16 +232,24 @@ impl<'bump> Compiler<'bump> {
                 TopLevel::TLExternDef(n, params, ret, s)
             }
             TopLevel::TLInstance(..) => top,
+            TopLevel::TLVariable(..) => top,
             TopLevel::TLCheck(t, c, s) => TopLevel::TLCheck(t, c, s),
             TopLevel::TLTheorem(n, p, b, s) => {
                 let p = self.rewrite_type_constraint(p, state);
                 let b = self.rewrite_term(b, state);
                 TopLevel::TLTheorem(n, p, b, s)
             }
-            TopLevel::TLUse(..) | TopLevel::TLMod(..) | TopLevel::TLNamespace(..) => top,
+            TopLevel::TLUse(..)
+            | TopLevel::TLMod(..)
+            | TopLevel::TLNamespace(..)
+            | TopLevel::TLSplice(..) => top,
             TopLevel::TLPublic(inner) => {
                 let rewritten = self.rewrite_top((*inner).clone(), state);
                 TopLevel::TLPublic(self.arena.bump().alloc(rewritten))
+            }
+            TopLevel::TLAttributed(attrs, inner, span) => {
+                let rewritten = self.rewrite_top((*inner).clone(), state);
+                TopLevel::TLAttributed(attrs, self.arena.bump().alloc(rewritten), span)
             }
         }
     }
@@ -327,15 +351,25 @@ impl<'bump> Compiler<'bump> {
             state.generic_fns.insert(base, def);
         }
         let def = state.generic_fns.get(base)?;
-        let n_type_params = def.n_type_params;
-        if n_type_params == 0 || args.len() < n_type_params {
+        let Some(max_erased) = def.erased_param_indices.iter().copied().max() else {
+            return None;
+        };
+        if args.len() <= max_erased {
             return None;
         }
-        let type_args = args[..n_type_params].to_vec();
+        let type_args = def
+            .erased_param_indices
+            .iter()
+            .map(|idx| args[*idx])
+            .collect::<Vec<_>>();
         if !type_args.iter().all(|t| self.type_arg_is_supported(t)) {
             return None;
         }
-        let data_args = args[n_type_params..].to_vec();
+        let data_args = args
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, arg)| (!def.erased_param_indices.contains(&idx)).then_some(*arg))
+            .collect::<Vec<_>>();
         Some((base, self.mono_name(base, &type_args), type_args, data_args))
     }
 
@@ -345,21 +379,21 @@ impl<'bump> Compiler<'bump> {
             return None;
         };
         let mut params = Vec::new();
-        let mut n_type_params = 0;
+        let mut erased_param_indices = Vec::new();
         let mut cursor = signature;
         while let Ok(Term::Pi(name, domain, codomain)) = self.checker.evaluator.whnf(cursor) {
             let is_erased = self.is_erased_param_constraint(domain);
-            if is_erased && n_type_params == params.len() {
-                n_type_params += 1;
+            if is_erased {
+                erased_param_indices.push(params.len());
             }
             params.push((*name, Some(*domain)));
             cursor = *codomain;
         }
-        if n_type_params == 0 {
+        if erased_param_indices.is_empty() {
             return None;
         }
         Some(GenericDef {
-            n_type_params,
+            erased_param_indices,
             params: self.arena.alloc_slice(&params),
             ret: Some(cursor),
             body,
@@ -427,16 +461,21 @@ impl<'bump> Compiler<'bump> {
         let (head, args) = self.collect_app(term);
         let base = Self::symbol_name(head)?;
         let def = self.generic_type_def(base, generic_types)?;
-        let n_type_params = def.n_type_params;
-        if n_type_params == 0 || args.len() < n_type_params {
+        let n_params = def.n_params;
+        if n_params == 0 || args.len() < n_params {
             return None;
         }
-        let type_args = args[..n_type_params].to_vec();
+        let type_args = args[..n_params].to_vec();
         if !type_args.iter().all(|t| self.type_arg_is_supported(t)) {
             return None;
         }
-        let data_args = args[n_type_params..].to_vec();
-        Some((base, self.mono_name(base, &type_args), type_args, data_args))
+        let data_args = args[n_params..].to_vec();
+        Some((
+            base,
+            self.type_mono_name(base, &type_args, &def.layout_param_indices),
+            type_args,
+            data_args,
+        ))
     }
 
     fn instantiate_generic(
@@ -445,26 +484,28 @@ impl<'bump> Compiler<'bump> {
         type_args: &[&'bump Term<'bump>],
         state: &mut MonoState<'bump>,
     ) -> InstantiatedGeneric<'bump> {
-        let n_type_params = def.n_type_params;
-
-        let data_params = def.params[n_type_params..]
+        let data_params = def
+            .params
             .iter()
             .enumerate()
-            .map(|(idx, (n, c))| {
-                (
+            .filter_map(|(idx, (n, c))| {
+                if def.erased_param_indices.contains(&idx) {
+                    return None;
+                }
+                Some((
                     *n,
                     c.map(|t| {
                         let replaced =
-                            self.replace_type_param_vars(t, type_args, n_type_params + idx);
+                            self.replace_param_vars(t, type_args, &def.erased_param_indices, idx);
                         self.rewrite_type_constraint(replaced, state)
                     }),
-                )
+                ))
             })
             .collect::<Vec<_>>();
-        let body = self.apply_erased_args(def.body, type_args);
-        let body = self.replace_type_param_vars(body, type_args, def.params.len());
+        let body = self.apply_erased_params(def.body, def, type_args);
         let ret = def.ret.map(|t| {
-            let replaced = self.replace_type_param_vars(t, type_args, def.params.len());
+            let replaced =
+                self.replace_param_vars(t, type_args, &def.erased_param_indices, def.params.len());
             self.rewrite_type_constraint(replaced, state)
         });
         let body = match ret {
@@ -479,12 +520,18 @@ impl<'bump> Compiler<'bump> {
         def: &GenericDef<'bump>,
         type_args: &[&'bump Term<'bump>],
     ) -> Vec<Option<&'bump Term<'bump>>> {
-        let n_type_params = def.n_type_params;
-        def.params[n_type_params..]
+        def.params
             .iter()
             .enumerate()
-            .map(|(idx, (_, c))| {
-                c.map(|t| self.replace_type_param_vars(t, type_args, n_type_params + idx))
+            .filter_map(|(idx, (_, c))| {
+                if def.erased_param_indices.contains(&idx) {
+                    return None;
+                }
+                Some(
+                    c.map(|t| {
+                        self.replace_param_vars(t, type_args, &def.erased_param_indices, idx)
+                    }),
+                )
             })
             .collect()
     }
@@ -572,6 +619,9 @@ impl<'bump> Compiler<'bump> {
         state: &mut MonoState<'bump>,
     ) -> &'bump Term<'bump> {
         let term = self.checker.desugar_with_context(term).unwrap_or(term);
+        if let Term::Annot(inner, _) = term {
+            return self.rewrite_constructed_type(inner, mono_type, type_args, state);
+        }
         if let Some((uname, idx, fields, args)) = self.collect_variant_args(term)
             && args.len() == fields.len()
         {
@@ -585,6 +635,13 @@ impl<'bump> Compiler<'bump> {
                 .arena
                 .variant(mono_type, idx, self.arena.alloc_slice(&rewritten));
         }
+        if let Term::Builtin(name) | Term::Global(name) = term
+            && let Some((uname, idx, fields)) = self.checker.lookup_variant(name)
+            && fields.is_empty()
+        {
+            let _ = uname;
+            return self.arena.variant(mono_type, idx, &[]);
+        }
         if let Some((sname, fields, values)) = self.collect_struct_args(term)
             && values.len() == fields.len()
         {
@@ -597,6 +654,13 @@ impl<'bump> Compiler<'bump> {
             return self
                 .arena
                 .struct_cons(mono_type, self.arena.alloc_slice(&rewritten));
+        }
+        if let Term::Builtin(name) | Term::Global(name) = term
+            && let Some((sname, fields)) = self.checker.lookup_struct_ctor(name)
+            && fields.is_empty()
+        {
+            let _ = sname;
+            return self.arena.struct_cons(mono_type, &[]);
         }
         match term {
             Term::Variant(uname, idx, payloads) => {
@@ -703,7 +767,7 @@ impl<'bump> Compiler<'bump> {
                             .iter()
                             .map(|(fname, c)| {
                                 let replaced =
-                                    self.replace_type_param_vars(c, type_args, def.n_type_params);
+                                    self.replace_type_param_vars(c, type_args, def.n_params);
                                 (*fname, self.rewrite_type_constraint(replaced, state))
                             })
                             .collect::<Vec<_>>();
@@ -717,8 +781,7 @@ impl<'bump> Compiler<'bump> {
                 let fields = fields
                     .iter()
                     .map(|(fname, c)| {
-                        let replaced =
-                            self.replace_type_param_vars(c, type_args, def.n_type_params);
+                        let replaced = self.replace_type_param_vars(c, type_args, def.n_params);
                         (*fname, self.rewrite_type_constraint(replaced, state))
                     })
                     .collect::<Vec<_>>();
@@ -757,14 +820,19 @@ impl<'bump> Compiler<'bump> {
             self.checker
                 .lookup_enum(base)
                 .map(|(body, params)| GenericTypeDef {
-                    n_type_params: params.len(),
+                    n_params: params.len(),
+                    layout_param_indices: Self::layout_param_indices_from_body(body, params.len()),
                     body,
                 })
                 .or_else(|| {
                     self.checker
                         .lookup_struct(base)
                         .map(|(body, params)| GenericTypeDef {
-                            n_type_params: params.len(),
+                            n_params: params.len(),
+                            layout_param_indices: Self::layout_param_indices_from_body(
+                                body,
+                                params.len(),
+                            ),
                             body,
                         })
                 })
@@ -818,14 +886,15 @@ impl<'bump> Compiler<'bump> {
     }
 
     fn top_has_erased_params(&self, top: &TopLevel<'bump>) -> bool {
-        matches!(
-            top,
-            TopLevel::TLDef(_, params, _, _, _)
-                | TopLevel::TLExternDef(_, params, _, _)
-                if params
-                    .iter()
-                    .any(|(_, c)| c.is_some_and(|t| self.is_erased_param_constraint(t)))
-        )
+        match top {
+            TopLevel::TLDef(_, params, _, _, _) | TopLevel::TLExternDef(_, params, _, _) => params
+                .iter()
+                .any(|(_, c)| c.is_some_and(|t| self.is_erased_param_constraint(t))),
+            TopLevel::TLPublic(inner) | TopLevel::TLAttributed(_, inner, _) => {
+                self.top_has_erased_params(inner)
+            }
+            _ => false,
+        }
     }
 
     fn collect_app(
@@ -855,7 +924,49 @@ impl<'bump> Compiler<'bump> {
                 | Term::StructCons(..)
                 | Term::Variant(..)
                 | Term::Annot(_, _)
+                | Term::LitInt(_)
         )
+    }
+
+    fn is_type_layout_param_constraint(term: &Term<'_>) -> bool {
+        matches!(term, Term::Builtin("prop") | Term::Global("prop"))
+    }
+
+    fn layout_param_indices_from_body(body: &Term<'_>, n_params: usize) -> Vec<usize> {
+        let mut indices = HashSet::new();
+        match body {
+            Term::EnumDef(_, variants) => {
+                for (_, fields) in variants.iter() {
+                    for (_, constraint) in fields.iter() {
+                        Self::collect_direct_layout_param(constraint, n_params, &mut indices);
+                    }
+                }
+            }
+            Term::StructDef(_, fields) => {
+                for (_, constraint) in fields.iter() {
+                    Self::collect_direct_layout_param(constraint, n_params, &mut indices);
+                }
+            }
+            _ => {}
+        }
+        let mut indices = indices.into_iter().collect::<Vec<_>>();
+        indices.sort_unstable();
+        indices
+    }
+
+    fn collect_direct_layout_param(term: &Term<'_>, n_params: usize, indices: &mut HashSet<usize>) {
+        match term {
+            Term::Var(i) if *i < n_params => {
+                indices.insert(n_params - 1 - i);
+            }
+            Term::Annot(inner, _) | Term::Unsafe(inner) | Term::Pure(inner) => {
+                Self::collect_direct_layout_param(inner, n_params, indices);
+            }
+            Term::Refine(_, parent, _) => {
+                Self::collect_direct_layout_param(parent, n_params, indices);
+            }
+            _ => {}
+        }
     }
 
     fn mono_name(&self, base: Name<'bump>, type_args: &[&Term<'_>]) -> Name<'bump> {
@@ -868,8 +979,30 @@ impl<'bump> Compiler<'bump> {
         self.arena.alloc_str(&format!("{base}__{suffix}"))
     }
 
+    fn type_mono_name(
+        &self,
+        base: Name<'bump>,
+        type_args: &[&Term<'_>],
+        layout_param_indices: &[usize],
+    ) -> Name<'bump> {
+        let layout_args = layout_param_indices
+            .iter()
+            .filter_map(|idx| type_args.get(*idx).copied())
+            .collect::<Vec<_>>();
+        if layout_args.is_empty() {
+            let base = base.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+            self.arena.alloc_str(&base)
+        } else {
+            self.mono_name(base, &layout_args)
+        }
+    }
+
     fn type_arg_slug(&self, term: &Term<'_>) -> String {
+        if let Some(n) = self.peano_nat_value(term) {
+            return format!("n{n}");
+        }
         match term {
+            Term::LitInt(n) => format!("i{n}").replace('-', "neg"),
             Term::Builtin(n) | Term::Global(n) => {
                 n.replace(|c: char| !c.is_ascii_alphanumeric(), "_")
             }
@@ -893,23 +1026,70 @@ impl<'bump> Compiler<'bump> {
         }
     }
 
-    fn apply_erased_args(
+    fn peano_nat_value(&self, term: &Term<'_>) -> Option<u64> {
+        match term {
+            Term::Builtin(name) | Term::Global(name) if is_zero_name(name) => Some(0),
+            Term::App(head, pred) if matches!(**head, Term::Builtin(name) | Term::Global(name) if is_succ_name(name)) => {
+                self.peano_nat_value(pred).map(|n| n + 1)
+            }
+            Term::Variant(name, 0, payloads) if payloads.is_empty() && is_nat_name(name) => Some(0),
+            Term::Variant(name, 1, payloads) if payloads.len() == 1 && is_nat_name(name) => {
+                self.peano_nat_value(payloads[0]).map(|n| n + 1)
+            }
+            Term::Annot(inner, _) => self.peano_nat_value(inner),
+            _ => None,
+        }
+    }
+
+    fn apply_erased_params(
         &self,
         term: &'bump Term<'bump>,
+        def: &GenericDef<'bump>,
         args: &[&'bump Term<'bump>],
     ) -> &'bump Term<'bump> {
-        let sub = crate::core::debruijn::SubstitutionContext::new(self.arena);
-        let mut body = term;
-        for arg in args {
-            body = match body {
-                Term::Annot(inner, _) => inner,
-                _ => body,
-            };
-            match body {
-                Term::Lam(lam_body) => body = sub.beta(lam_body, arg),
-                _ => break,
-            }
-        }
-        body
+        self.apply_erased_params_at(term, def, args, 0)
     }
+
+    fn apply_erased_params_at(
+        &self,
+        term: &'bump Term<'bump>,
+        def: &GenericDef<'bump>,
+        args: &[&'bump Term<'bump>],
+        param_idx: usize,
+    ) -> &'bump Term<'bump> {
+        if param_idx >= def.params.len() {
+            return term;
+        }
+        let sub = crate::core::debruijn::SubstitutionContext::new(self.arena);
+        let body = match term {
+            Term::Annot(inner, _) => inner,
+            _ => term,
+        };
+        let Term::Lam(lam_body) = body else {
+            return body;
+        };
+        if let Some(arg_idx) = def
+            .erased_param_indices
+            .iter()
+            .position(|idx| *idx == param_idx)
+        {
+            let body = sub.beta(lam_body, args[arg_idx]);
+            self.apply_erased_params_at(body, def, args, param_idx + 1)
+        } else {
+            self.arena
+                .lam(self.apply_erased_params_at(lam_body, def, args, param_idx + 1))
+        }
+    }
+}
+
+fn is_nat_name(name: &str) -> bool {
+    name == "Nat" || name.ends_with("::Nat")
+}
+
+fn is_zero_name(name: &str) -> bool {
+    name == "Zero" || name.ends_with("::Zero")
+}
+
+fn is_succ_name(name: &str) -> bool {
+    name == "Succ" || name.ends_with("::Succ")
 }

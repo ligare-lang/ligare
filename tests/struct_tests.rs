@@ -64,6 +64,21 @@ fn struct_wrong_field_count_fails() {
 }
 
 #[test]
+fn struct_field_direct_prop_type_fails() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    let err = compiler
+        .process_file_str("def Bad : prop := struct\n  proof_field : prop\n")
+        .expect_err("data struct fields cannot be direct prop runtime members");
+    assert!(
+        err.message
+            .contains("cannot use prop/theorem/proof as a runtime member"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
 fn struct_wrong_type_for_struct_fails() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);

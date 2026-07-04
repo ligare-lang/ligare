@@ -2,6 +2,10 @@
 
 use crate::checker::builtin::BuiltinRegistry;
 use crate::checker::context::Context;
+use crate::config::{
+    BUILTIN_AND, BUILTIN_BOOL, BUILTIN_DATA, BUILTIN_NOT, BUILTIN_OR, BUILTIN_PROOF, BUILTIN_PROP,
+    BUILTIN_PTR, BUILTIN_STR, BUILTIN_THEOREM, canonical_builtin_name, is_builtin_name,
+};
 use crate::core::syntax::{Term, Universe};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +72,8 @@ impl<'a> SemanticQueries<'a> {
             Term::StructProj(subject, _) | Term::MethodCall(subject, _) => {
                 self.universe(ctx, subject)
             }
+            Term::Quote(_) => Some(Universe::UData),
+            Term::Splice(inner) => self.universe(ctx, inner),
             Term::Match(_, branches) => branches
                 .first()
                 .and_then(|(_, _, body)| self.universe(ctx, body)),
@@ -79,24 +85,40 @@ impl<'a> SemanticQueries<'a> {
 
     pub fn constraint_kind(&self, term: &Term<'_>) -> ConstraintKind {
         match term {
-            Term::Builtin(name) | Term::Global(name) if *name == "data" => ConstraintKind::DataTop,
+            Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_DATA) => {
+                ConstraintKind::DataTop
+            }
             Term::Implicit(_) => ConstraintKind::MetaConstraint,
+            Term::Builtin(name) | Term::Global(name) if is_peano_nat_name(name) => {
+                ConstraintKind::MetaConstraint
+            }
             Term::Builtin(name) | Term::Global(name)
-                if matches!(*name, "prop" | "theorem" | "proof") =>
+                if matches!(
+                    canonical_builtin_name(name),
+                    BUILTIN_PROP | BUILTIN_THEOREM | BUILTIN_PROOF
+                ) =>
             {
                 ConstraintKind::MetaConstraint
             }
             Term::Universe(Universe::UData) => ConstraintKind::DataTop,
             Term::Universe(_) => ConstraintKind::MetaConstraint,
             Term::Builtin(name) | Term::Global(name)
-                if matches!(*name, "int" | "bool" | "str" | "ptr") =>
+                if matches!(
+                    canonical_builtin_name(name),
+                    "int" | BUILTIN_BOOL | BUILTIN_STR | BUILTIN_PTR
+                ) =>
             {
                 ConstraintKind::BuiltinDataConstraint
             }
-            Term::App(head, _) if matches!(head, Term::Builtin(name) | Term::Global(name) if *name == "ptr") => {
+            Term::App(head, _) if matches!(head, Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_PTR)) => {
                 ConstraintKind::BuiltinDataConstraint
             }
-            Term::Builtin(name) | Term::Global(name) if matches!(*name, "and" | "or" | "not") => {
+            Term::Builtin(name) | Term::Global(name)
+                if matches!(
+                    canonical_builtin_name(name),
+                    BUILTIN_AND | BUILTIN_OR | BUILTIN_NOT
+                ) =>
+            {
                 ConstraintKind::LogicalOp
             }
             Term::Refine(..) => ConstraintKind::Refine,
@@ -129,7 +151,9 @@ impl<'a> SemanticQueries<'a> {
             | Term::NamedLam(..)
             | Term::NamedMatch(..)
             | Term::Do(_)
-            | Term::MethodCall(..) => {
+            | Term::MethodCall(..)
+            | Term::Quote(..)
+            | Term::Splice(..) => {
                 panic!("parser-level term reached erase-policy query before desugaring")
             }
             Term::ByProof(None, _)
@@ -149,4 +173,8 @@ impl<'a> SemanticQueries<'a> {
             ErasePolicy::EraseToUnit
         }
     }
+}
+
+fn is_peano_nat_name(name: &str) -> bool {
+    name == "std::data::nat::Nat"
 }

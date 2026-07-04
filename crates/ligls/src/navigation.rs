@@ -9,9 +9,10 @@ use ligare::front::parser::TopLevel;
 use tower_lsp::lsp_types as lsp;
 
 use crate::completion::{
-    Constraint, Signature, SymbolKind, TokenSpan, constraint_from_source, constructor_signature,
-    infer_literal_constraint, signature_from_parts, term_signature, tokenize, top_level_ranges,
-    top_params, type_or_value_kind,
+    Constraint, META_EXPR_TYPE, META_EXPR_VARIANTS, Signature, SymbolKind, TokenSpan,
+    constraint_from_source, constructor_signature, expanded_top_level_ranges,
+    infer_literal_constraint, signature_from_parts, term_signature, tokenize, top_params,
+    type_or_value_kind,
 };
 use crate::parse_program_lsp;
 use crate::project::{
@@ -99,6 +100,45 @@ pub(crate) fn hover_for_documents(
     let reference = doc.reference_at(position)?;
     let symbol = index.resolve_reference(doc, &reference)?;
     Some(symbol.hover())
+}
+
+#[allow(deprecated)]
+pub(crate) fn document_symbols_for_documents(
+    documents: &[SourceDocument],
+    uri: &lsp::Url,
+) -> Option<lsp::DocumentSymbolResponse> {
+    let index = NavIndex::build(documents, uri);
+    let doc = index.document(uri)?;
+    let symbols = doc
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.uri == *uri && symbol.scope.is_none())
+        .map(|symbol| lsp::SymbolInformation {
+            name: symbol.name.clone(),
+            kind: symbol.kind.lsp_symbol_kind(),
+            tags: None,
+            deprecated: None,
+            location: lsp::Location {
+                uri: symbol.uri.clone(),
+                range: symbol.range,
+            },
+            container_name: None,
+        })
+        .collect::<Vec<_>>();
+    Some(lsp::DocumentSymbolResponse::Flat(symbols))
+}
+
+pub(crate) fn references_for_documents(
+    documents: &[SourceDocument],
+    uri: &lsp::Url,
+    position: lsp::Position,
+    include_declaration: bool,
+) -> Option<Vec<lsp::Location>> {
+    let index = NavIndex::build(documents, uri);
+    let doc = index.document(uri)?;
+    let reference = doc.reference_at(position)?;
+    let target = index.resolve_reference(doc, &reference)?;
+    Some(index.references_to(target, include_declaration))
 }
 
 #[derive(Debug, Clone)]
@@ -243,6 +283,61 @@ impl NavIndex {
             .iter()
             .find(|symbol| symbol.name == name && symbol.uri == doc.uri)
     }
+
+    fn references_to(&self, target: &NavSymbol, include_declaration: bool) -> Vec<lsp::Location> {
+        let mut locations = Vec::new();
+        if include_declaration && target.range != lsp::Range::default() {
+            locations.push(lsp::Location {
+                uri: target.uri.clone(),
+                range: target.range,
+            });
+        }
+
+        for doc in &self.docs {
+            for (token_index, token) in doc.tokens.iter().enumerate() {
+                if !matches!(token.token, Token::Ident(_)) {
+                    continue;
+                }
+                let reference = Reference {
+                    name: doc.reference_name(token_index),
+                    offset: token.span.start,
+                    use_path: doc
+                        .use_path_at(token_index)
+                        .or_else(|| doc.qualified_path_at(token_index)),
+                };
+                let Some(resolved) = self.resolve_reference(doc, &reference) else {
+                    continue;
+                };
+                if same_symbol(resolved, target) {
+                    locations.push(lsp::Location {
+                        uri: doc.uri.clone(),
+                        range: doc.span_to_range(token.span.clone()),
+                    });
+                }
+            }
+        }
+
+        locations.sort_by(|a, b| {
+            (
+                a.uri.as_str(),
+                a.range.start.line,
+                a.range.start.character,
+                a.range.end.line,
+                a.range.end.character,
+            )
+                .cmp(&(
+                    b.uri.as_str(),
+                    b.range.start.line,
+                    b.range.start.character,
+                    b.range.end.line,
+                    b.range.end.character,
+                ))
+        });
+        locations.dedup_by(|a, b| {
+            a.uri == b.uri && a.range.start == b.range.start && a.range.end == b.range.end
+        });
+        locations
+    }
 }
 
 impl IndexedDocument {
@@ -251,7 +346,7 @@ impl IndexedDocument {
         let arena = TermArena::new(&bump);
         let (ast, _) = parse_program_lsp(&document.text, &bump, &arena);
         let tokens = tokenize(&document.text);
-        let top_ranges = top_level_ranges(&document.text, &ast);
+        let top_ranges = expanded_top_level_ranges(&document.text, &ast, &bump, &arena);
         let module_key = project
             .map(|project| project.module_key_for_uri(&document.uri))
             .unwrap_or_else(|| fallback_module_key(&document.uri));
@@ -479,6 +574,32 @@ impl IndexedDocument {
                     });
                 }
             }
+            TopLevel::TLVariable(params, _) => {
+                for (name, constraint) in *params {
+                    if let Some(span) = self.find_param_span(start, end, name) {
+                        self.push_symbol(NavSymbol {
+                            name: (*name).to_string(),
+                            detail: constraint
+                                .map(|c| Constraint::from_term(c).display)
+                                .unwrap_or_else(|| "data".to_string()),
+                            constraint: constraint.map(Constraint::from_term),
+                            signature: None,
+                            kind: SymbolKind::Value,
+                            uri: self.uri.clone(),
+                            range: self.span_to_range(span.clone()),
+                            byte_start: span.start,
+                            module_key: self.module_key.clone(),
+                            imported_path: None,
+                            doc: None,
+                            scope: Some(Scope {
+                                uri: self.uri.clone(),
+                                start,
+                                end,
+                            }),
+                        });
+                    }
+                }
+            }
             TopLevel::TLTheorem(name, prop, _, _) => {
                 if let Some(span) = self.find_decl_name_span(start, end, name) {
                     self.push_symbol(NavSymbol {
@@ -576,8 +697,11 @@ impl IndexedDocument {
                     });
                 }
             }
-            TopLevel::TLCheck(_, _, _) | TopLevel::TLEval(_, _) | TopLevel::TLExpr(_, _) => {}
-            TopLevel::TLPublic(_) => unreachable!(),
+            TopLevel::TLCheck(_, _, _)
+            | TopLevel::TLEval(_, _)
+            | TopLevel::TLExpr(_, _)
+            | TopLevel::TLSplice(_, _) => {}
+            TopLevel::TLPublic(_) | TopLevel::TLAttributed(..) => unreachable!(),
         }
     }
 
@@ -756,6 +880,36 @@ impl IndexedDocument {
                 constraint: Some(Constraint::named("prop")),
                 signature: None,
                 kind: SymbolKind::Type,
+                uri: self.uri.clone(),
+                range: lsp::Range::default(),
+                byte_start: 0,
+                module_key: self.module_key.clone(),
+                imported_path: None,
+                doc: None,
+                scope: None,
+            });
+        }
+        self.push_symbol(NavSymbol {
+            name: META_EXPR_TYPE.to_string(),
+            detail: "builtin meta constraint".to_string(),
+            constraint: Some(Constraint::named("prop")),
+            signature: None,
+            kind: SymbolKind::Type,
+            uri: self.uri.clone(),
+            range: lsp::Range::default(),
+            byte_start: 0,
+            module_key: self.module_key.clone(),
+            imported_path: None,
+            doc: None,
+            scope: None,
+        });
+        for variant in META_EXPR_VARIANTS {
+            self.push_symbol(NavSymbol {
+                name: (*variant).to_string(),
+                detail: META_EXPR_TYPE.to_string(),
+                constraint: Some(Constraint::named(META_EXPR_TYPE)),
+                signature: None,
+                kind: SymbolKind::Constructor,
                 uri: self.uri.clone(),
                 range: lsp::Range::default(),
                 byte_start: 0,
@@ -968,9 +1122,30 @@ impl NavSymbol {
     }
 }
 
+impl SymbolKind {
+    fn lsp_symbol_kind(self) -> lsp::SymbolKind {
+        match self {
+            SymbolKind::Local | SymbolKind::Value => lsp::SymbolKind::VARIABLE,
+            SymbolKind::Function => lsp::SymbolKind::FUNCTION,
+            SymbolKind::Constructor => lsp::SymbolKind::CONSTRUCTOR,
+            SymbolKind::Type => lsp::SymbolKind::STRUCT,
+            SymbolKind::Import => lsp::SymbolKind::NAMESPACE,
+            SymbolKind::Module | SymbolKind::Keyword => lsp::SymbolKind::MODULE,
+        }
+    }
+}
+
+fn same_symbol(left: &NavSymbol, right: &NavSymbol) -> bool {
+    left.uri == right.uri
+        && left.range.start == right.range.start
+        && left.range.end == right.range.end
+        && left.name == right.name
+}
+
 fn unwrap_public<'a, 'bump>(top: &'a TopLevel<'bump>) -> &'a TopLevel<'bump> {
     match top {
         TopLevel::TLPublic(inner) => unwrap_public(inner),
+        TopLevel::TLAttributed(_, inner, _) => unwrap_public(inner),
         other => other,
     }
 }

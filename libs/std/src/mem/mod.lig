@@ -1,4 +1,5 @@
 pub mod list
+pub mod vec
 
 pub def Allocator : prop := struct
   allocate : int -> ptr ()

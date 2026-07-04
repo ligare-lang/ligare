@@ -5,7 +5,10 @@ use tower_lsp::lsp_types as lsp;
 
 use crate::cache::LspCache;
 use crate::completion::completion_items_for_source_with_module_paths;
-use crate::navigation::{SourceDocument, definition_for_documents, hover_for_documents};
+use crate::navigation::{
+    SourceDocument, definition_for_documents, document_symbols_for_documents, hover_for_documents,
+    references_for_documents,
+};
 use crate::project::project_context_for_uri;
 use crate::text::apply_content_changes;
 
@@ -153,6 +156,21 @@ where
     pub async fn hover(&self, uri: &lsp::Url, position: lsp::Position) -> Option<lsp::Hover> {
         let documents = self.document_snapshots().await;
         hover_for_documents(&documents, uri, position)
+    }
+
+    pub async fn document_symbols(&self, uri: &lsp::Url) -> Option<lsp::DocumentSymbolResponse> {
+        let documents = self.document_snapshots().await;
+        document_symbols_for_documents(&documents, uri)
+    }
+
+    pub async fn references(
+        &self,
+        uri: &lsp::Url,
+        position: lsp::Position,
+        include_declaration: bool,
+    ) -> Option<Vec<lsp::Location>> {
+        let documents = self.document_snapshots().await;
+        references_for_documents(&documents, uri, position, include_declaration)
     }
 
     pub async fn semantic_tokens(&self, uri: &lsp::Url) -> Option<lsp::SemanticTokensResult> {

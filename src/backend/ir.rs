@@ -7,7 +7,11 @@
 use std::collections::HashSet;
 
 use crate::checker::builtin::BuiltinRegistry;
-use crate::config::{BUILTIN_IO, BUILTIN_PTR, BUILTIN_UNIT};
+use crate::config::{
+    BUILTIN_BOOL, BUILTIN_C_INT, BUILTIN_C_UINT, BUILTIN_I8, BUILTIN_I16, BUILTIN_I32, BUILTIN_I64,
+    BUILTIN_INT, BUILTIN_IO, BUILTIN_PTR, BUILTIN_STR, BUILTIN_U8, BUILTIN_U16, BUILTIN_U32,
+    BUILTIN_U64, BUILTIN_UNIT, canonical_builtin_name, is_builtin_name,
+};
 use crate::core::semantics::SemanticQueries;
 use crate::core::syntax::Term;
 use crate::diagnostic::Diagnostic;
@@ -48,8 +52,7 @@ impl CType {
             CType::CUInt => "unsigned int".into(),
             CType::Str => "const char*".into(),
             CType::Ptr(inner) => format!("{}*", inner.c_name()),
-            CType::Enum(name) => name.clone(),
-            CType::Struct(name) => name.clone(),
+            CType::Enum(name) | CType::Struct(name) => c_identifier(name),
         }
     }
 
@@ -66,9 +69,24 @@ impl CType {
             | CType::CInt
             | CType::CUInt => "0".into(),
             CType::Str | CType::Ptr(_) => "NULL".into(),
-            CType::Enum(name) | CType::Struct(name) => format!("({}){{0}}", name),
+            CType::Enum(name) | CType::Struct(name) => format!("({}){{0}}", c_identifier(name)),
         }
     }
+}
+
+fn c_identifier(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.as_bytes().first().is_some_and(|b| b.is_ascii_digit()) {
+        out.insert(0, '_');
+    }
+    out
 }
 
 /// Erased C signature of a named function.
@@ -237,7 +255,7 @@ fn term_is_str_like(term: &Term<'_>) -> bool {
     match term {
         Term::LitStr(_) => true,
         Term::Annot(_, constraint) => {
-            matches!(**constraint, Term::Builtin("str") | Term::Global("str"))
+            matches!(**constraint, Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_STR))
         }
         Term::Unsafe(inner) | Term::Pure(inner) => term_is_str_like(inner),
         Term::App(_, _) => infer_primop_ret_ctype(term)
@@ -267,21 +285,44 @@ pub fn constraint_to_ctype(
     struct_names: &HashSet<String>,
 ) -> Result<CType, Diagnostic> {
     match t {
-        Term::Builtin(name)
-            if *name == "int" || *name == "i64" || *name == "bool" || *name == BUILTIN_UNIT =>
+        Term::Builtin(name) | Term::Global(name)
+            if matches!(
+                canonical_builtin_name(name),
+                BUILTIN_INT | BUILTIN_I64 | BUILTIN_BOOL | BUILTIN_UNIT
+            ) =>
         {
             Ok(CType::Int64)
         }
-        Term::Builtin(name) if *name == "i8" => Ok(CType::Int8),
-        Term::Builtin(name) if *name == "i16" => Ok(CType::Int16),
-        Term::Builtin(name) if *name == "i32" => Ok(CType::Int32),
-        Term::Builtin(name) if *name == "u8" => Ok(CType::UInt8),
-        Term::Builtin(name) if *name == "u16" => Ok(CType::UInt16),
-        Term::Builtin(name) if *name == "u32" => Ok(CType::UInt32),
-        Term::Builtin(name) if *name == "u64" => Ok(CType::UInt64),
-        Term::Builtin(name) if *name == "c_int" => Ok(CType::CInt),
-        Term::Builtin(name) if *name == "c_uint" => Ok(CType::CUInt),
-        Term::Builtin(name) if *name == "str" => Ok(CType::Str),
+        Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_I8) => {
+            Ok(CType::Int8)
+        }
+        Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_I16) => {
+            Ok(CType::Int16)
+        }
+        Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_I32) => {
+            Ok(CType::Int32)
+        }
+        Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_U8) => {
+            Ok(CType::UInt8)
+        }
+        Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_U16) => {
+            Ok(CType::UInt16)
+        }
+        Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_U32) => {
+            Ok(CType::UInt32)
+        }
+        Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_U64) => {
+            Ok(CType::UInt64)
+        }
+        Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_C_INT) => {
+            Ok(CType::CInt)
+        }
+        Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_C_UINT) => {
+            Ok(CType::CUInt)
+        }
+        Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_STR) => {
+            Ok(CType::Str)
+        }
         Term::Builtin(name) | Term::Global(name) if struct_names.contains(&name.to_string()) => {
             Ok(CType::Struct(name.to_string()))
         }
@@ -296,7 +337,8 @@ pub fn constraint_to_ctype(
         // Handle monomorphized generic type applications like
         // `Option int` → Enum("Option__int") when that instance exists.
         Term::App(head, _) => {
-            if matches!(head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_PTR) {
+            if matches!(head, Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_PTR))
+            {
                 let (_, args) = collect_type_app(t);
                 let [inner] = args.as_slice() else {
                     return Err(Diagnostic::new(format!(
@@ -310,12 +352,12 @@ pub fn constraint_to_ctype(
                 )?)));
             }
             if let Term::App(io_head, inner) = t
-                && matches!(io_head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_IO)
+                && matches!(io_head, Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_IO))
             {
                 return constraint_to_ctype(inner, enum_names, struct_names);
             }
             if let Term::Builtin(name) | Term::Global(name) = *head
-                && *name == BUILTIN_IO
+                && is_builtin_name(name, BUILTIN_IO)
             {
                 return Ok(CType::Int64);
             }

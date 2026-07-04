@@ -68,9 +68,11 @@ fn global_allocator_attribute_is_parsed_with_following_def() {
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(ast.top_levels().count(), 2);
     let alloc_name = format!("{GLOBAL_ALLOCATOR_NAME_PREFIX}alloc");
-    assert!(
-        matches!(ast.items[0], AstNode::TopLevel(TopLevel::TLDef(name, ..)) if name == alloc_name)
-    );
+    assert!(matches!(
+        ast.items[0],
+        AstNode::TopLevel(TopLevel::TLAttributed(_, inner, _))
+            if matches!(*inner, TopLevel::TLDef(name, ..) if name == alloc_name)
+    ));
     assert!(
         matches!(ast.items[1], AstNode::TopLevel(TopLevel::TLDef(name, ..)) if name == "after")
     );
@@ -172,6 +174,33 @@ fn diagnostics_check_eval_like_forms_in_quiet_mode() {
             "{diagnostics:#?}"
         );
     }
+}
+
+#[test]
+fn metaprogramming_syntax_reuses_ligare_ast() {
+    let (bump, arena) = arena();
+    let source = "#eval $(quote { 1 + 2 })";
+
+    let (ast, errors) = parse_program_lsp(source, bump, &arena);
+
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(
+        matches!(ast.items[0], AstNode::TopLevel(TopLevel::TLEval(term, _)) if matches!(*term, Term::Splice(_)))
+    );
+}
+
+#[test]
+fn diagnostics_expand_quote_and_splice() {
+    let ok = lsp_diagnostics_for_source("#check quote { 1 + 2 } : Expr", DiagnosticCheck::Fast);
+    assert!(ok.is_empty(), "{ok:#?}");
+
+    let bad = lsp_diagnostics_for_source("def bad : int := $(1)", DiagnosticCheck::Fast);
+    assert!(
+        bad.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("splice expression must have type Expr")),
+        "{bad:#?}"
+    );
 }
 
 #[derive(Clone, Default)]
@@ -657,6 +686,43 @@ fn semantic_tokens_legend_exposes_constraints_as_lsp_types() {
 }
 
 #[test]
+fn semantic_tokens_legend_exposes_attributes_as_lsp_decorators() {
+    let legend = crate::semantic_tokens_legend();
+
+    assert_eq!(
+        legend.token_types[8],
+        lsp::SemanticTokenType::DECORATOR,
+        "language attributes should use the standard LSP decorator token type"
+    );
+}
+
+#[test]
+fn semantic_tokens_classify_attribute_paths() {
+    let mut cache = LspCache::new();
+    let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+    let source = r#"
+def target : int := 1
+#[meta::rewrite("x", target)]
+def value : int := target
+"#;
+
+    cache.update_fast(uri.clone(), Some(1), source.to_string());
+    let tokens = cache.semantic_tokens(&uri).expect("semantic tokens");
+    let decoded = decode_semantic_tokens(source, &tokens);
+
+    assert_token(&decoded, "meta", "attribute");
+    assert_token(&decoded, "rewrite", "attribute");
+    assert!(
+        decoded
+            .iter()
+            .filter(|token| token.text == "target" && token.kind == "attribute")
+            .count()
+            == 0,
+        "{decoded:#?}"
+    );
+}
+
+#[test]
 fn semantic_tokens_classify_builtin_constraints() {
     let mut cache = LspCache::new();
     let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
@@ -867,6 +933,21 @@ fn semantic_tokens_keep_classification_after_block_comment_in_declaration() {
     assert_token(&decoded, "int", "constraint");
 }
 
+#[test]
+fn semantic_tokens_classify_metaprogramming_surface() {
+    let mut cache = LspCache::new();
+    let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+    let source = "#check quote { 1 + 2 } : Expr\n#check Int 1 : Expr";
+
+    cache.update_fast(uri.clone(), Some(1), source.to_string());
+    let tokens = cache.semantic_tokens(&uri).expect("semantic tokens");
+    let decoded = decode_semantic_tokens(source, &tokens);
+
+    assert_token(&decoded, "quote", "keyword");
+    assert_token(&decoded, "Expr", "constraint");
+    assert_token(&decoded, "Int", "constructor");
+}
+
 fn diagnostic_keys(
     diagnostics: &[lsp::Diagnostic],
 ) -> std::collections::HashSet<(u32, u32, u32, u32, String)> {
@@ -1008,6 +1089,15 @@ def main : int := le<|>
 }
 
 #[test]
+fn completion_includes_metaprogramming_symbols() {
+    let labels = completion_labels("#check <|>");
+
+    assert!(labels.contains(&"quote".to_string()), "{labels:?}");
+    assert!(labels.contains(&"Expr".to_string()), "{labels:?}");
+    assert!(labels.contains(&"Int".to_string()), "{labels:?}");
+}
+
+#[test]
 fn module_path_completion_returns_visible_path_segments() {
     let labels = completion_labels(
         r#"
@@ -1122,6 +1212,72 @@ def get (p : Point) : int := Point.x p
     };
     assert_eq!(field_location.uri, uri);
     assert_eq!(range_text(&source, field_location.range), "x");
+}
+
+#[tokio::test]
+async fn document_symbols_list_top_level_symbols() {
+    let publisher = RecordingPublisher::default();
+    let service = DiagnosticService::new(publisher);
+    let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+    let source = r#"
+def Option : prop := enum
+  | None
+  | Some of (value : int)
+def inc (x : int) : int := x + 1
+"#
+    .to_string();
+
+    service.did_open(uri.clone(), Some(1), source).await;
+    let symbols = service.document_symbols(&uri).await.expect("symbols");
+    let lsp::DocumentSymbolResponse::Flat(symbols) = symbols else {
+        panic!("expected flat document symbols");
+    };
+    let names = symbols
+        .into_iter()
+        .map(|symbol| symbol.name)
+        .collect::<Vec<_>>();
+
+    assert!(names.contains(&"Option".to_string()), "{names:?}");
+    assert!(names.contains(&"Some".to_string()), "{names:?}");
+    assert!(names.contains(&"inc".to_string()), "{names:?}");
+}
+
+#[tokio::test]
+async fn references_find_local_symbol_uses() {
+    let publisher = RecordingPublisher::default();
+    let service = DiagnosticService::new(publisher);
+    let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+    let (source, position) = source_and_position(
+        r#"
+def n : int := 1
+def a : int := <|>n
+def b : int := n + n
+"#,
+    );
+
+    service.did_open(uri.clone(), Some(1), source.clone()).await;
+    let refs = service
+        .references(&uri, position, true)
+        .await
+        .expect("references");
+    let texts = refs
+        .into_iter()
+        .map(|location| range_text(&source, location.range).to_string())
+        .collect::<Vec<_>>();
+
+    assert_eq!(texts, vec!["n", "n", "n", "n"]);
+}
+
+#[test]
+fn diagnostic_range_targets_unbound_identifier() {
+    let source = "def good : int := 1\ndef bad : int := missing + good\n";
+    let diagnostics = lsp_diagnostics_for_source(source, DiagnosticCheck::Fast);
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("unbound: missing"))
+        .expect("unbound diagnostic");
+
+    assert_eq!(range_text(source, diagnostic.range), "missing");
 }
 
 #[tokio::test]

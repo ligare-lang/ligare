@@ -1,0 +1,22 @@
+use std::data::nat::Nat
+use std::data::nat::Zero
+use std::data::nat::Succ
+
+pub def Vec (T : prop) (n : Nat) : prop := enum
+    | Nil
+    | Cons of (head : T) (tail : Vec T n)
+
+namespace Vec {
+    pub def empty (T : prop) : Vec T Zero := Nil
+
+    pub def cons (T : prop) (n : Nat) (head : T) (tail : Vec T n) : Vec T (Succ n) :=
+        Cons head tail
+
+    pub def append (T : prop) (n : Nat) (xs : Vec T n) (x : T) : Vec T (Succ n) :=
+        Cons x xs
+
+    pub def remove (T : prop) (n : Nat) (xs : Vec T (Succ n)) : Vec T n := match xs with
+        | Nil => Nil
+        | Cons _ tail => tail
+}
+

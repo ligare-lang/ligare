@@ -14,6 +14,29 @@ impl<'bump> Compiler<'bump> {
         self.replace_type_param_vars_at(term, type_args, &type_param_indices, 0)
     }
 
+    pub(super) fn replace_param_vars(
+        &self,
+        term: &'bump Term<'bump>,
+        args: &[&'bump Term<'bump>],
+        param_indices: &[usize],
+        scope_len: usize,
+    ) -> &'bump Term<'bump> {
+        let mut filtered_args = Vec::new();
+        let debruijn_indices = param_indices
+            .iter()
+            .zip(args.iter())
+            .filter_map(|(idx, arg)| {
+                if *idx < scope_len {
+                    filtered_args.push(*arg);
+                    Some(scope_len - 1 - idx)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        self.replace_type_param_vars_at(term, &filtered_args, &debruijn_indices, 0)
+    }
+
     fn replace_type_param_vars_at(
         &self,
         term: &'bump Term<'bump>,
@@ -105,6 +128,20 @@ impl<'bump> Compiler<'bump> {
                                 depth,
                             ),
                         ),
+                        Tactic::Custom(name, args) => {
+                            let args = args
+                                .iter()
+                                .map(|arg| {
+                                    self.replace_type_param_vars_at(
+                                        arg,
+                                        type_args,
+                                        type_param_indices,
+                                        depth,
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            Tactic::Custom(name, self.arena.alloc_slice(&args))
+                        }
                     })
                     .collect::<Vec<_>>();
                 self.arena.by_proof(inner, self.arena.alloc_slice(&tactics))
@@ -232,6 +269,9 @@ impl<'bump> Compiler<'bump> {
             )),
             Term::Named(_) | Term::NamedLam(..) | Term::NamedMatch(..) => {
                 panic!("parser-level term reached generic instantiation before desugaring")
+            }
+            Term::Quote(..) | Term::Splice(..) => {
+                panic!("metaprogram term reached generic instantiation before expansion")
             }
             _ => term,
         }

@@ -150,6 +150,8 @@ impl<'bump> Evaluator<'bump> {
             }
             Term::NamedMatch(..) => Err("NamedMatch reached eval before desugaring".into()),
             Term::MethodCall(..) => Err("MethodCall reached eval before resolution".into()),
+            Term::Quote(..) => Err("Quote reached eval before metaprogram expansion".into()),
+            Term::Splice(..) => Err("Splice reached eval before metaprogram expansion".into()),
         }
     }
 

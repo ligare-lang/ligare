@@ -5,8 +5,11 @@ use crate::checker::builtin::LogicKind;
 use crate::checker::context::{
     Context, add_refine, add_theorem, expand_constraint, extend_ctx, extend_ctx_term, lookup_refine,
 };
-use crate::config::{BUILTIN_BOOL, BUILTIN_DATA, BUILTIN_IO, BUILTIN_PTR, BUILTIN_PTR_CAST};
-use crate::core::syntax::{MatchBranch, Name, PrimOp, Term, Universe};
+use crate::config::{
+    BUILTIN_BOOL, BUILTIN_DATA, BUILTIN_IO, BUILTIN_PTR, BUILTIN_PTR_CAST, is_builtin_name,
+};
+use crate::core::semantics::SemanticQueries;
+use crate::core::syntax::{MatchBranch, Name, PrimOp, Term, Universe, compute_level};
 use crate::diagnostic::Diagnostic;
 use crate::pretty::PrettyPrinter;
 
@@ -22,7 +25,7 @@ impl<'bump> TypeChecker<'bump> {
     /// Returns true if the term represents the universal `data` constraint
     /// (either as `Builtin("data")` or `Universe(UData)`).
     pub(crate) fn is_data_like(t: &Term<'_>) -> bool {
-        matches!(t, Term::Builtin(n) if *n == BUILTIN_DATA)
+        matches!(t, Term::Builtin(n) | Term::Global(n) if is_builtin_name(n, BUILTIN_DATA))
             || matches!(t, Term::Universe(Universe::UData))
     }
 
@@ -59,10 +62,16 @@ impl<'bump> TypeChecker<'bump> {
                     ));
                 }
                 let field_constraint = field_specs[0].1;
+                let type_args = self.constraint_type_args_for(uname, constraint);
+                let field_constraint = if let Some(type_args) = type_args.as_deref() {
+                    self.replace_generic_constraint_vars(field_constraint, type_args)
+                } else {
+                    field_constraint
+                };
                 // If the field constraint is a generic parameter of the enum,
                 // skip the field check — the overall constraint check below
                 // will verify the variant belongs to the right enum.
-                if !self.is_enum_generic_param(uname, field_constraint) {
+                if type_args.is_some() || !self.is_enum_generic_param(uname, field_constraint) {
                     self.check(ctx, a, field_constraint)?;
                 }
                 let variant_term = self.arena.variant(uname, idx, self.arena.alloc_slice(&[a]));
@@ -78,9 +87,15 @@ impl<'bump> TypeChecker<'bump> {
                     ));
                 }
                 let field_constraint = field_specs[0].1;
+                let type_args = self.constraint_type_args_for(sname, constraint);
+                let field_constraint = if let Some(type_args) = type_args.as_deref() {
+                    self.replace_generic_constraint_vars(field_constraint, type_args)
+                } else {
+                    field_constraint
+                };
                 // If the field constraint is a generic parameter of the struct,
                 // skip the field check.
-                if !self.is_struct_generic_param(sname, field_constraint) {
+                if type_args.is_some() || !self.is_struct_generic_param(sname, field_constraint) {
                     self.check(ctx, a, field_constraint)?;
                 }
                 let sc = self.arena.struct_cons(sname, self.arena.alloc_slice(&[a]));
@@ -302,7 +317,7 @@ impl<'bump> TypeChecker<'bump> {
                     || self.named_constraint_equiv(inner, constraint_val)
             })
         {
-            Ok(())
+            self.check_var_universe_level(constraint)
         } else {
             Err(diag!(
                 "constraint mismatch: declared {}, required {}",
@@ -523,7 +538,7 @@ impl<'bump> TypeChecker<'bump> {
     ) -> Result<Option<&'bump Term<'bump>>, Diagnostic> {
         let f_dsg = self.desugar_with_context(f)?;
         if let Term::App(head, target) = f_dsg
-            && matches!(head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_PTR_CAST)
+            && matches!(head, Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_PTR_CAST))
         {
             Ok(Some(target))
         } else {
@@ -561,7 +576,7 @@ impl<'bump> TypeChecker<'bump> {
         let inferred = self.infer_binding_constraint(ctx, pointer)?;
         let inferred_nf = self.evaluator.whnf(inferred)?;
         match inferred_nf {
-            Term::App(head, _) if matches!(head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_PTR) =>
+            Term::App(head, _) if matches!(head, Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_PTR)) =>
             {
                 self.check(ctx, pointer, inferred)?;
                 Ok(self.ptr_constraint(target))
@@ -653,11 +668,12 @@ impl<'bump> TypeChecker<'bump> {
         }
 
         let norm = self.evaluator.whnf(constraint)?;
-        match norm {
+        let result = match norm {
             Term::Builtin(name) | Term::Global(name) => {
                 // Check if term is a Variant — verify enum name matches constraint
                 if let Term::Variant(uname, _, _) = term
-                    && uname == name
+                    && crate::config::canonical_builtin_name(uname)
+                        == crate::config::canonical_builtin_name(name)
                 {
                     return Ok(());
                 }
@@ -689,15 +705,25 @@ impl<'bump> TypeChecker<'bump> {
                 }
             }
             Term::App(head, a) => {
-                if matches!(head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_IO) {
+                let head_nf = self.evaluator.whnf(head)?;
+                if matches!(head_nf, Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_IO))
+                {
                     self.check(ctx, term, a)
-                } else if matches!(head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_PTR)
+                } else if matches!(head_nf, Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_PTR))
                 {
                     let inferred = self.infer_binding_constraint(ctx, term)?;
                     self.check_domain_match(inferred, norm)
-                } else if let Term::EnumDef(uname, _) = self.evaluator.whnf(head)? {
+                } else if let Term::EnumDef(uname, _) = head_nf {
                     self.check_enum_constraint(term, uname)
-                } else if let Term::StructDef(sname, _) = self.evaluator.whnf(head)? {
+                } else if let Term::StructDef(sname, _) = head_nf {
+                    self.check_struct_constraint(term, sname)
+                } else if let Term::Builtin(uname) | Term::Global(uname) = head_nf
+                    && self.lookup_enum(uname).is_some()
+                {
+                    self.check_enum_constraint(term, uname)
+                } else if let Term::Builtin(sname) | Term::Global(sname) = head_nf
+                    && self.lookup_struct(sname).is_some()
+                {
                     self.check_struct_constraint(term, sname)
                 } else {
                     self.try_check_logical_op(ctx, term, head, a, norm)
@@ -709,20 +735,242 @@ impl<'bump> TypeChecker<'bump> {
             Term::StructDef(sname, _) => self.check_struct_constraint(term, sname),
             _ => {
                 if let Some(result) = self.try_bool_constraint(term, norm) {
-                    return result;
-                }
-
-                let cname = self.constraint_name(norm);
-                if let Some((parent, pred)) = lookup_refine(cname, &self.table) {
-                    self.check(ctx, term, parent)?;
-                    self.prove_auto(ctx, term, pred)
+                    result
                 } else {
-                    Err(diag!(
-                        "cannot use {} as a constraint",
-                        PrettyPrinter::pretty(norm)
-                    ))
+                    let cname = self.constraint_name(norm);
+                    if let Some((parent, pred)) = lookup_refine(cname, &self.table) {
+                        self.check(ctx, term, parent)?;
+                        self.prove_auto(ctx, term, pred)
+                    } else {
+                        Err(diag!(
+                            "cannot use {} as a constraint",
+                            PrettyPrinter::pretty(norm)
+                        ))
+                    }
                 }
             }
+        };
+        result.and_then(|_| self.check_universe_level(ctx, term, constraint))
+    }
+
+    pub(crate) fn check_universe_level(
+        &self,
+        ctx: &Context<'bump>,
+        term: &'bump Term<'bump>,
+        constraint: &'bump Term<'bump>,
+    ) -> Result<(), Diagnostic> {
+        if self.is_data_top_constraint(constraint)? {
+            let semantics = SemanticQueries::new(&self.builtins);
+            if semantics.universe(ctx, term) == Some(Universe::UData) {
+                return Ok(());
+            }
+        }
+        let term_level = self.term_level(ctx, term)?;
+        let constraint_level = self.constraint_level_for_check(constraint)?;
+        if term_level < constraint_level {
+            Ok(())
+        } else {
+            Err(diag!(
+                "宇宙层级错误：项层级 {} 不小于约束层级 {}",
+                term_level,
+                constraint_level
+            ))
+        }
+    }
+
+    fn is_data_top_constraint(
+        &self,
+        constraint: &'bump Term<'bump>,
+    ) -> Result<bool, Diagnostic> {
+        let constraint = Self::implicit_inner(constraint);
+        if Self::is_data_like(constraint) {
+            return Ok(true);
+        }
+        Ok(Self::is_data_like(self.evaluator.whnf(constraint)?))
+    }
+
+    fn check_var_universe_level(&self, constraint: &'bump Term<'bump>) -> Result<(), Diagnostic> {
+        let constraint_level = self.constraint_level_for_check(constraint)?;
+        let term_level = constraint_level.saturating_sub(1);
+        if term_level < constraint_level {
+            Ok(())
+        } else {
+            Err(diag!(
+                "宇宙层级错误：项层级 {} 不小于约束层级 {}",
+                term_level,
+                constraint_level
+            ))
+        }
+    }
+
+    fn term_level(
+        &self,
+        ctx: &Context<'bump>,
+        term: &'bump Term<'bump>,
+    ) -> Result<u32, Diagnostic> {
+        match term {
+            Term::Var(i) => Ok(ctx
+                .lookup(*i)
+                .map(|constraint| self.constraint_level_for_check(constraint))
+                .transpose()?
+                .unwrap_or(1)
+                .saturating_sub(1)),
+            Term::Annot(inner, _) => self.term_level(ctx, inner),
+            Term::ByProof(Some(inner), _) => self.term_level(ctx, inner),
+            Term::Unsafe(inner) | Term::Pure(inner) => self.term_level(ctx, inner),
+            Term::App(..)
+            | Term::StructCons(..)
+            | Term::Variant(..)
+            | Term::IfThenElse(..)
+            | Term::Match(..)
+            | Term::StructProj(..) => {
+                if let Ok(constraint) = self.infer_binding_constraint(ctx, term) {
+                    Ok(self
+                        .constraint_level_for_check(constraint)?
+                        .saturating_sub(1))
+                } else {
+                    Ok(compute_level(term))
+                }
+            }
+            Term::Builtin(name) | Term::Global(name) => {
+                if let Some((parent, predicate)) = lookup_refine(name, &self.table) {
+                    Ok(compute_level(self.arena.refine(name, parent, predicate)))
+                } else if let Some((def, _)) =
+                    self.lookup_enum(name).or_else(|| self.lookup_struct(name))
+                {
+                    Ok(compute_level(def))
+                } else {
+                    Ok(compute_level(term))
+                }
+            }
+            _ => Ok(compute_level(term)),
+        }
+    }
+
+    fn constraint_level_for_check(
+        &self,
+        constraint: &'bump Term<'bump>,
+    ) -> Result<u32, Diagnostic> {
+        let constraint = Self::implicit_inner(constraint);
+        match constraint {
+            Term::Refine(_, parent, _) => return self.constraint_level_for_check(parent),
+            Term::Universe(Universe::UData | Universe::UProp) => return Ok(1),
+            Term::Universe(Universe::UTheorem | Universe::UProof) => return Ok(2),
+            Term::Builtin(name) | Term::Global(name)
+                if crate::config::is_builtin_name(name, crate::config::BUILTIN_DATA) =>
+            {
+                return Ok(1);
+            }
+            Term::Builtin(name) | Term::Global(name)
+                if crate::config::is_builtin_name(name, crate::config::BUILTIN_UNIT) =>
+            {
+                return Ok(1);
+            }
+            Term::Builtin(name) | Term::Global(name)
+                if matches!(
+                    crate::config::canonical_builtin_name(name),
+                    crate::config::BUILTIN_PROP
+                        | crate::config::BUILTIN_THEOREM
+                        | crate::config::BUILTIN_PROOF
+                ) =>
+            {
+                return Ok(2);
+            }
+            Term::Builtin(name) | Term::Global(name) => {
+                if let Some((parent, _)) = lookup_refine(name, &self.table) {
+                    return self.constraint_level_for_check(parent);
+                }
+                if let Some((def, _)) = self.lookup_enum(name).or_else(|| self.lookup_struct(name))
+                {
+                    return Ok(compute_level(def));
+                }
+            }
+            Term::App(..) => {
+                if let Some((name, args)) = self.constraint_app_name_and_args(constraint)
+                    && let Some((def, _)) = self.lookup_enum(name).or_else(|| self.lookup_struct(name))
+                {
+                    let arg_level = args.iter().map(|arg| compute_level(arg)).max().unwrap_or(0);
+                    return Ok(compute_level(def).max(arg_level.saturating_add(1)));
+                }
+            }
+            _ => {}
+        }
+        let norm = self.evaluator.whnf(constraint)?;
+        if norm == constraint {
+            Ok(compute_level(norm).max(1))
+        } else {
+            self.normalized_constraint_level_for_check(norm)
+        }
+    }
+
+    fn normalized_constraint_level_for_check(
+        &self,
+        constraint: &'bump Term<'bump>,
+    ) -> Result<u32, Diagnostic> {
+        let constraint = Self::implicit_inner(constraint);
+        match constraint {
+            Term::Refine(_, parent, _) => self.constraint_level_for_check(parent),
+            Term::Universe(Universe::UData | Universe::UProp) => Ok(1),
+            Term::Universe(Universe::UTheorem | Universe::UProof) => Ok(2),
+            Term::Builtin(name) | Term::Global(name)
+                if crate::config::is_builtin_name(name, crate::config::BUILTIN_DATA) =>
+            {
+                Ok(1)
+            }
+            Term::Builtin(name) | Term::Global(name)
+                if crate::config::is_builtin_name(name, crate::config::BUILTIN_UNIT) =>
+            {
+                Ok(1)
+            }
+            Term::Builtin(name) | Term::Global(name)
+                if matches!(
+                    crate::config::canonical_builtin_name(name),
+                    crate::config::BUILTIN_PROP
+                        | crate::config::BUILTIN_THEOREM
+                        | crate::config::BUILTIN_PROOF
+                ) =>
+            {
+                Ok(2)
+            }
+            Term::Builtin(name) | Term::Global(name) => {
+                if let Some((parent, _)) = lookup_refine(name, &self.table) {
+                    self.constraint_level_for_check(parent)
+                } else if let Some((def, _)) =
+                    self.lookup_enum(name).or_else(|| self.lookup_struct(name))
+                {
+                    Ok(compute_level(def))
+                } else {
+                    Ok(compute_level(constraint))
+                }
+            }
+            Term::App(..) => {
+                if let Some((name, args)) = self.constraint_app_name_and_args(constraint)
+                    && let Some((def, _)) = self.lookup_enum(name).or_else(|| self.lookup_struct(name))
+                {
+                    let arg_level = args.iter().map(|arg| compute_level(arg)).max().unwrap_or(0);
+                    Ok(compute_level(def).max(arg_level.saturating_add(1)))
+                } else {
+                    Ok(compute_level(constraint).max(1))
+                }
+            }
+            _ => Ok(compute_level(constraint).max(1)),
+        }
+    }
+
+    fn constraint_app_name_and_args(
+        &self,
+        term: &'bump Term<'bump>,
+    ) -> Option<(Name<'bump>, Vec<&'bump Term<'bump>>)> {
+        let mut args = Vec::new();
+        let mut current = term;
+        while let Term::App(f, a) = current {
+            args.push(*a);
+            current = f;
+        }
+        args.reverse();
+        match current {
+            Term::Builtin(name) | Term::Global(name) => Some((*name, args)),
+            _ => None,
         }
     }
 
@@ -732,7 +980,9 @@ impl<'bump> TypeChecker<'bump> {
         expected: &str,
     ) -> Result<(), Diagnostic> {
         if let Term::Variant(actual, _, _) = term {
-            if *actual == expected {
+            if crate::config::canonical_builtin_name(actual)
+                == crate::config::canonical_builtin_name(expected)
+            {
                 Ok(())
             } else {
                 Err(diag!(
@@ -976,7 +1226,7 @@ impl<'bump> TypeChecker<'bump> {
                 self.check_pi_match(parent, other)
             }
             (Term::Builtin(n1) | Term::Global(n1), Term::Builtin(n2) | Term::Global(n2))
-                if n1 == n2 =>
+                if is_builtin_name(n1, crate::config::canonical_builtin_name(n2)) =>
             {
                 Ok(())
             }
@@ -1039,25 +1289,38 @@ impl<'bump> TypeChecker<'bump> {
     /// even if one side is a resolved `EnumDef`/`StructDef` and the other is
     /// an unresolved `App(Builtin(name), …)`.
     fn named_constraint_equiv(&self, a: &'bump Term<'bump>, b: &'bump Term<'bump>) -> bool {
-        let extract = |t: &'bump Term<'bump>| -> Option<&str> {
-            match t {
-                Term::EnumDef(name, _) | Term::StructDef(name, _) => Some(name),
-                Term::App(head, _) => {
-                    if let Term::EnumDef(n, _) | Term::StructDef(n, _) = *head {
-                        Some(n)
-                    } else if let Term::Builtin(n) | Term::Global(n) = *head
-                        && (self.lookup_enum(n).is_some() || self.lookup_struct(n).is_some())
-                    {
-                        Some(n)
-                    } else {
-                        None
-                    }
+        let extract = |t: &'bump Term<'bump>| -> Option<(&str, Vec<&'bump Term<'bump>>)> {
+            let mut args = Vec::new();
+            let mut current = t;
+            while let Term::App(f, a) = current {
+                args.push(*a);
+                current = f;
+            }
+            args.reverse();
+            match current {
+                Term::EnumDef(name, _) | Term::StructDef(name, _) => Some((name, args)),
+                Term::Builtin(name) | Term::Global(name)
+                    if self.lookup_enum(name).is_some() || self.lookup_struct(name).is_some() =>
+                {
+                    Some((name, args))
                 }
                 _ => None,
             }
         };
         match (extract(a), extract(b)) {
-            (Some(n1), Some(n2)) => n1 == n2,
+            (Some((n1, args1)), Some((n2, args2)))
+                if n1 == n2
+                    || crate::config::canonical_builtin_name(n1)
+                        == crate::config::canonical_builtin_name(n2) =>
+            {
+                args1.is_empty()
+                    || args2.is_empty()
+                    || (args1.len() == args2.len()
+                        && args1
+                            .iter()
+                            .zip(args2.iter())
+                            .all(|(x, y)| self.constraint_equiv(x, y)))
+            }
             _ => false,
         }
     }
@@ -1077,7 +1340,7 @@ impl<'bump> TypeChecker<'bump> {
         let mut bb = Vec::new();
         let ah = collect(a, &mut aa);
         let bh = collect(b, &mut bb);
-        matches!((ah, bh), (Term::Builtin(x) | Term::Global(x), Term::Builtin(y) | Term::Global(y)) if x == y)
+        matches!((ah, bh), (Term::Builtin(x) | Term::Global(x), Term::Builtin(y) | Term::Global(y)) if crate::config::canonical_builtin_name(x) == crate::config::canonical_builtin_name(y))
             && aa.len() == bb.len()
             && aa
                 .iter()
@@ -1092,7 +1355,10 @@ impl<'bump> TypeChecker<'bump> {
         matches!(
             inner,
             Term::Builtin(name) | Term::Global(name)
-                if matches!(*name, "prop" | "theorem" | "proof" | "data")
+                if matches!(
+                    crate::config::canonical_builtin_name(name),
+                    "prop" | "theorem" | "proof" | "data"
+                )
         ) || matches!(
             inner,
             Term::Universe(
@@ -1110,7 +1376,7 @@ impl<'bump> TypeChecker<'bump> {
 
     fn is_effect_data_marker(t: &'bump Term<'bump>) -> bool {
         if let Term::App(head, inner) = t
-            && matches!(head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_IO)
+            && matches!(head, Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_IO))
         {
             return Self::is_data_like(inner);
         }
@@ -1121,10 +1387,22 @@ impl<'bump> TypeChecker<'bump> {
     fn pi_equiv(a: &'bump Term<'bump>, b: &'bump Term<'bump>) -> bool {
         match (a, b) {
             (Term::Pi(_, a_dom, a_cod), Term::Pi(_, b_dom, b_cod)) => {
-                a_dom == b_dom && (a_cod == b_cod || Self::pi_equiv(a_cod, b_cod))
+                Self::simple_constraint_name_equiv(a_dom, b_dom)
+                    && (Self::simple_constraint_name_equiv(a_cod, b_cod)
+                        || Self::pi_equiv(a_cod, b_cod))
             }
             _ => false,
         }
+    }
+
+    fn simple_constraint_name_equiv(a: &Term<'_>, b: &Term<'_>) -> bool {
+        a == b
+            || matches!(
+                (a, b),
+                (Term::Builtin(x) | Term::Global(x), Term::Builtin(y) | Term::Global(y))
+                    if crate::config::canonical_builtin_name(x)
+                        == crate::config::canonical_builtin_name(y)
+            )
     }
 
     pub(crate) fn constraint_name<'a>(&self, t: &Term<'a>) -> &'a str {
@@ -1195,6 +1473,12 @@ impl<'bump> TypeChecker<'bump> {
             } else {
                 *fconstraint
             };
+            if Self::is_direct_prop_runtime_member(fconstraint) {
+                return Err(Diagnostic::new(format!(
+                    "data struct {} field '{}' cannot use prop/theorem/proof as a runtime member",
+                    sname, fname
+                )));
+            }
             if type_args.is_none() && self.is_generic_param(type_params, fconstraint) {
                 continue;
             }
@@ -1232,8 +1516,20 @@ impl<'bump> TypeChecker<'bump> {
                 payloads.len()
             ));
         }
+        let type_args = self.constraint_type_args_for(uname, constraint);
         for (i, (fname, fconstraint)) in fields.iter().enumerate() {
-            if self.is_generic_param(type_params, fconstraint) {
+            let fconstraint = if let Some(type_args) = type_args.as_deref() {
+                self.replace_generic_constraint_vars(fconstraint, type_args)
+            } else {
+                *fconstraint
+            };
+            if Self::is_direct_prop_runtime_member(fconstraint) {
+                return Err(Diagnostic::new(format!(
+                    "data enum {} variant {} field '{}' cannot use prop/theorem/proof as a runtime member",
+                    uname, vname, fname
+                )));
+            }
+            if type_args.is_none() && self.is_generic_param(type_params, fconstraint) {
                 continue;
             }
             self.check(ctx, payloads[i], fconstraint).map_err(|e| {
@@ -1247,6 +1543,22 @@ impl<'bump> TypeChecker<'bump> {
         match constraint {
             Term::Var(i) => *i < type_params.len(),
             Term::Builtin(name) | Term::Global(name) => type_params.iter().any(|p| **p == **name),
+            _ => false,
+        }
+    }
+
+    fn is_direct_prop_runtime_member(term: &Term<'_>) -> bool {
+        match term {
+            Term::Builtin(name) | Term::Global(name) => matches!(
+                crate::config::canonical_builtin_name(name),
+                crate::config::BUILTIN_PROP
+                    | crate::config::BUILTIN_THEOREM
+                    | crate::config::BUILTIN_PROOF
+            ),
+            Term::Universe(Universe::UProp | Universe::UTheorem | Universe::UProof) => true,
+            Term::Implicit(inner) | Term::Annot(inner, _) => {
+                Self::is_direct_prop_runtime_member(inner)
+            }
             _ => false,
         }
     }
@@ -1265,7 +1577,12 @@ impl<'bump> TypeChecker<'bump> {
         args.reverse();
         match current {
             Term::Builtin(name) | Term::Global(name) if *name == expected_name => Some(args),
-            _ => None,
+            _ => match self.evaluator.whnf(Self::implicit_inner(constraint)).ok()? {
+                Term::EnumDef(name, _) | Term::StructDef(name, _) if *name == expected_name => {
+                    Some(args)
+                }
+                _ => None,
+            },
         }
     }
 

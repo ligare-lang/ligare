@@ -440,6 +440,93 @@ fn std_import_uses_ligare_std_path() {
 }
 
 #[test]
+fn std_prelude_primitives_are_compiler_intrinsics() {
+    let root = temp_project();
+    write(
+        &root,
+        "main.lig",
+        "use std::prelude::*\n\
+         extern def puts (s : str) : IO c_int\n\
+         pub def main : IO () := do\n\
+           let n : int = 5\n\
+           let _ = unsafe { puts \"hello\" }\n\
+           ()\n",
+    );
+
+    let std_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("libs/std");
+    let compiler = with_ligare_std_path(Some(std_root.to_string_lossy().into_owned()), || {
+        collect(&root)
+    })
+    .unwrap();
+    let c = emit_c(
+        compiler.tops(),
+        compiler.raw_defs(),
+        compiler.fun_sigs(),
+        &compiler.enum_types,
+        &compiler.struct_types,
+    )
+    .unwrap();
+
+    assert!(c.contains("extern int puts(const char*);"), "{c}");
+    assert!(!c.contains("std_primitive_int"), "{c}");
+}
+
+#[test]
+fn real_std_vec_import_checks() {
+    let root = temp_project();
+    write(
+        &root,
+        "main.lig",
+        "use std::mem::vec::Vec\n\
+         use std::data::nat::Zero\n\
+         use std::data::nat::Succ\n\
+         pub def main : IO () := do\n\
+           let empty : Vec int Zero = Nil\n\
+           let one : Vec int (Succ Zero) = Cons 1 empty\n\
+           ()\n",
+    );
+
+    let std_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("libs/std");
+    with_ligare_std_path(Some(std_root.to_string_lossy().into_owned()), || {
+        collect(&root)
+    })
+    .unwrap();
+}
+
+#[test]
+fn real_std_vec_codegen_uses_layout_type_only() {
+    let root = temp_project();
+    write(
+        &root,
+        "main.lig",
+        "use std::mem::vec::Vec\n\
+         use std::data::nat::Zero\n\
+         pub def main : IO () := do\n\
+           let vec : Vec int Zero = Nil\n\
+           let vec_1 = vec.append 1\n\
+           ()\n",
+    );
+
+    let std_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("libs/std");
+    let compiler = with_ligare_std_path(Some(std_root.to_string_lossy().into_owned()), || {
+        collect(&root)
+    })
+    .unwrap();
+    let c = emit_c(
+        compiler.tops(),
+        compiler.raw_defs(),
+        compiler.fun_sigs(),
+        &compiler.enum_types,
+        &compiler.struct_types,
+    )
+    .unwrap();
+
+    assert!(c.contains("std__mem__vec__Vec__int"), "{c}");
+    assert!(!c.contains("std__mem__vec__Vec__int__n0"), "{c}");
+    assert!(!c.contains("std__mem__vec__Vec__int__n1"), "{c}");
+}
+
+#[test]
 fn qualified_std_call_without_use_resolves_public_symbol() {
     let root = temp_project();
     let std_root = root.join("custom_std");

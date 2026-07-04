@@ -67,7 +67,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
     }
 
     pub(super) fn is_at_end(&self) -> bool {
-        self.pos >= self.tokens.len()
+        self.peek().is_none()
     }
 
     pub(super) fn current_span(&self) -> std::ops::Range<usize> {

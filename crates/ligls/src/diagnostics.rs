@@ -58,13 +58,49 @@ pub(crate) fn compiler_diagnostic_to_lsp(
     source: &str,
     diagnostic: CompilerDiagnostic,
 ) -> lsp::Diagnostic {
+    let span = refine_compiler_span(source, &diagnostic)
+        .or(diagnostic.span)
+        .unwrap_or(0..0);
     lsp::Diagnostic {
-        range: span_to_lsp_range(source, diagnostic.span.unwrap_or(0..0)),
+        range: span_to_lsp_range(source, span),
         severity: Some(lsp::DiagnosticSeverity::ERROR),
         source: Some("ligare".to_string()),
         message: diagnostic.message,
         ..Default::default()
     }
+}
+
+fn refine_compiler_span(source: &str, diagnostic: &CompilerDiagnostic) -> Option<Span> {
+    let base = diagnostic.span.clone().unwrap_or(0..source.len());
+    let name = diagnostic
+        .message
+        .split("unbound: ")
+        .nth(1)
+        .and_then(first_ident_like)
+        .or_else(|| quoted_after(&diagnostic.message, "call to external function `"))?;
+    find_name_in_span(source, base, name)
+}
+
+fn first_ident_like(text: &str) -> Option<&str> {
+    let end = text
+        .find(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | '.' | '-')))
+        .unwrap_or(text.len());
+    (end > 0).then_some(&text[..end])
+}
+
+fn quoted_after<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    let rest = text.split(prefix).nth(1)?;
+    let end = rest.find('`')?;
+    Some(&rest[..end])
+}
+
+fn find_name_in_span(source: &str, span: Span, name: &str) -> Option<Span> {
+    let start = span.start.min(source.len());
+    let end = span.end.min(source.len()).max(start);
+    source[start..end]
+        .find(name)
+        .map(|offset| start + offset..start + offset + name.len())
+        .or_else(|| source.find(name).map(|offset| offset..offset + name.len()))
 }
 
 pub(crate) fn dedup_diagnostics(diagnostics: Vec<lsp::Diagnostic>) -> Vec<lsp::Diagnostic> {

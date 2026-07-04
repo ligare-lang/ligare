@@ -55,6 +55,10 @@ impl PrettyPrinter {
                         Tactic::Have(n, t) => {
                             format!("have {} := {}", n, Self::pretty(t))
                         }
+                        Tactic::Custom(name, args) => {
+                            let args = args.iter().map(|arg| Self::pretty(arg)).collect::<Vec<_>>();
+                            format!("{}({})", name, args.join(", "))
+                        }
                     })
                     .collect();
                 match inner {
@@ -145,6 +149,8 @@ impl PrettyPrinter {
             Term::MethodCall(receiver, method) => {
                 format!("{}.{}", Self::pretty(receiver), method)
             }
+            Term::Quote(inner) => format!("quote {{ {} }}", Self::pretty(inner)),
+            Term::Splice(inner) => format!("$({})", Self::pretty(inner)),
         }
     }
 

@@ -111,6 +111,11 @@ impl<'bump> TypeChecker<'bump> {
                     let lemma_val = self.evaluator.whnf(lemma)?;
                     current_ctx = current_ctx.add_theorem(name, lemma_val);
                 }
+                Tactic::Custom(name, _) => {
+                    return Err(Diagnostic::new(format!(
+                        "custom tactic `{name}` reached checker before metaprogram expansion"
+                    )));
+                }
             }
         }
 

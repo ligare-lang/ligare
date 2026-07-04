@@ -1,9 +1,10 @@
 use std::io::put_str
-use std::mem::list::List
+use std::mem::vec::Vec
+use std::data::nat::Zero
 
 pub def main : IO () := do
     let _ = std::io::put_str "hello world"
-    let list = Nil
-    let list_ = list.append 1
+    let vec : Vec int Zero = Nil
+    let vec_1 = vec.append 1
     ()
 

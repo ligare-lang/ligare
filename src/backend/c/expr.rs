@@ -11,7 +11,7 @@ use crate::backend::c::names::NameResolver;
 use crate::backend::c::types::{EnumInfo, StructInfo};
 use crate::backend::c::value::{CCode, CExpr, CValue, MatchBind, MatchCase, MatchPlan};
 use crate::backend::ir::{CType, FunSig};
-use crate::config::{BUILTIN_PTR_CAST, BUILTIN_UNIT};
+use crate::config::{BUILTIN_PTR_CAST, BUILTIN_UNIT, is_builtin_name};
 use crate::core::syntax::{MatchBranch, PrimOp, Term};
 use crate::diagnostic::Diagnostic;
 use std::cell::Cell;
@@ -158,7 +158,7 @@ impl<'a> ExpressionEmitter<'a> {
             Term::Pure(inner) => self.emit_expr(inner, ctx, enum_map, struct_map),
 
             Term::Builtin(name) | Term::Global(name) => {
-                if *name == BUILTIN_UNIT {
+                if is_builtin_name(name, BUILTIN_UNIT) {
                     return Ok(CValue::code("0", CType::Int64));
                 }
                 let ty = self
@@ -264,8 +264,9 @@ impl<'a> ExpressionEmitter<'a> {
             .map(CCode::as_str)
             .collect::<Vec<_>>()
             .join(", ");
+        let c_type_name = CType::Struct(type_name.clone()).c_name();
         Ok(CValue::code(
-            format!("(({}){{ {} }})", type_name, field_codes),
+            format!("(({}){{ {} }})", c_type_name, field_codes),
             CType::Struct(type_name),
         ))
     }
@@ -308,10 +309,11 @@ impl<'a> ExpressionEmitter<'a> {
         let type_name: String = uname.to_string();
         let data_init =
             self.variant_data_init(&type_name, idx, payloads, ctx, enum_map, struct_map)?;
+        let c_type_name = CType::Enum(type_name.clone()).c_name();
         Ok(CValue::code(
             format!(
                 "(({}){{ .tag = {}, .data = {} }})",
-                type_name, idx, data_init
+                c_type_name, idx, data_init
             ),
             CType::Enum(type_name),
         ))
@@ -564,7 +566,8 @@ impl<'a> ExpressionEmitter<'a> {
         let Term::App(head, target) = *f else {
             return None;
         };
-        if matches!(*head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_PTR_CAST) {
+        if matches!(*head, Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_PTR_CAST))
+        {
             Some((target, pointer))
         } else {
             None

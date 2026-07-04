@@ -385,7 +385,7 @@ fn enum_typedef_with_recursive_field() {
         0..0,
     )];
 
-    let c = emit_with_types(tops, &[], &[], enum_types, &[]);
+    let c = emit_with_types(tops, tops, &[], enum_types, &[]);
     // Typedef uses a pointer for recursive fields.
     assert!(c.contains("Nat* pred;"), "expected Nat* pred; in:\n{c}");
     // Empty variant uses proper initializer
@@ -395,6 +395,32 @@ fn enum_typedef_with_recursive_field() {
         c.contains("const Nat zero ="),
         "expected const Nat zero in:\n{c}"
     );
+}
+
+#[test]
+fn enum_typedef_sanitizes_qualified_type_name() {
+    let (_b, arena) = setup();
+    let nat_name = arena.alloc_str("std::data::nat::Nat");
+    let variants: &[(
+        crate::core::syntax::Name,
+        &[(crate::core::syntax::Name, &crate::core::syntax::Term)],
+    )] = arena.alloc_slice(&[(arena.alloc_str("Zero"), arena.alloc_slice(&[]))]);
+    let nat_udef = arena.enum_def(nat_name, variants);
+    let enum_types: &[(&str, &crate::core::syntax::Term)] =
+        arena.bump().alloc([(nat_name, nat_udef)]);
+    let zero_v = arena.variant(nat_name, 0, arena.alloc_slice(&[]));
+    let tops = &[TopLevel::TLDef(
+        arena.alloc_str("zero"),
+        &[],
+        Some(arena.builtin(nat_name)),
+        zero_v,
+        0..0,
+    )];
+
+    let c = emit_with_types(tops, tops, &[], enum_types, &[]);
+    assert!(c.contains("typedef struct std__data__nat__Nat"), "{c}");
+    assert!(c.contains("const std__data__nat__Nat zero"), "{c}");
+    assert!(!c.contains("struct std::data::nat::Nat"), "{c}");
 }
 
 /// Recursive variant construction heap-copies the payload.

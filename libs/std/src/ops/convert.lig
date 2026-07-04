@@ -1,3 +1,6 @@
-pub def From {A : prop} {B : prop} := struct
+pub def From {A B : prop} := struct
     from: A -> B
+
+pub def Into {A B : prop} := struct
+    to : A -> B
 

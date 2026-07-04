@@ -195,8 +195,9 @@ impl TypeAnalyzer {
         let Term::EnumDef(_, variants) = udef else {
             return Ok(String::new());
         };
+        let c_name = CType::Enum(name.to_string()).c_name();
         let mut out = format!("// {name}\n");
-        out.push_str(&format!("typedef struct {name} {{\n"));
+        out.push_str(&format!("typedef struct {c_name} {{\n"));
         out.push_str("    int tag;\n");
         out.push_str("    union {\n");
         let info = self
@@ -220,7 +221,7 @@ impl TypeAnalyzer {
             }
         }
         out.push_str("    } data;\n");
-        out.push_str(&format!("}} {name};\n"));
+        out.push_str(&format!("}} {c_name};\n"));
         Ok(out)
     }
 
@@ -229,13 +230,14 @@ impl TypeAnalyzer {
         let Term::StructDef(_, fields) = sdef else {
             return Ok(String::new());
         };
+        let c_name = CType::Struct(name.to_string()).c_name();
         let mut out = format!("// struct {name}\n");
-        out.push_str(&format!("typedef struct {name} {{\n"));
+        out.push_str(&format!("typedef struct {c_name} {{\n"));
         for (fname, fty) in fields.iter() {
             let cty = self.constraint_to_ctype(fty)?;
             out.push_str(&format!("    {} {};\n", cty.c_name(), fname));
         }
-        out.push_str(&format!("}} {name};\n"));
+        out.push_str(&format!("}} {c_name};\n"));
         Ok(out)
     }
 
@@ -248,8 +250,9 @@ impl TypeAnalyzer {
         let Term::StructDef(_, fields) = sdef else {
             return Ok(String::new());
         };
+        let c_name = CType::Struct(name.to_string()).c_name();
         let mut out = format!("// struct {name} (ptr cycle)\n");
-        out.push_str(&format!("typedef struct {name} {{\n"));
+        out.push_str(&format!("typedef struct {c_name} {{\n"));
         for (fname, fty) in fields.iter() {
             let cty = self.constraint_to_ctype(fty)?;
             if matches!(cty, CType::Enum(_)) {
@@ -258,7 +261,7 @@ impl TypeAnalyzer {
                 out.push_str(&format!("    {} {};\n", cty.c_name(), fname));
             }
         }
-        out.push_str(&format!("}} {name};\n"));
+        out.push_str(&format!("}} {c_name};\n"));
         Ok(out)
     }
 
@@ -271,10 +274,12 @@ impl TypeAnalyzer {
     ) -> Result<(), Diagnostic> {
         // Forward declarations
         for (name, _) in struct_types {
-            out.push_str(&format!("typedef struct {name} {name};\n"));
+            let c_name = CType::Struct((*name).to_string()).c_name();
+            out.push_str(&format!("typedef struct {c_name} {c_name};\n"));
         }
         for (name, _) in enum_types {
-            out.push_str(&format!("typedef struct {name} {name};\n"));
+            let c_name = CType::Enum((*name).to_string()).c_name();
+            out.push_str(&format!("typedef struct {c_name} {c_name};\n"));
         }
         out.push('\n');
 

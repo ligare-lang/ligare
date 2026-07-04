@@ -1,4 +1,4 @@
-use super::{ParseError, ParsedDef, Parser, TopLevel, UseTree, Visibility};
+use super::{Attribute, ParseError, ParsedDef, Parser, TopLevel, UseTree, Visibility};
 use crate::config::{GLOBAL_ALLOCATOR_ATTR, GLOBAL_ALLOCATOR_NAME_PREFIX};
 use crate::core::syntax::Term;
 use crate::front::lexer::Token;
@@ -6,7 +6,13 @@ use crate::front::lexer::Token;
 impl<'a, 'bump> Parser<'a, 'bump> {
     pub fn parse_program(&mut self) -> Result<Vec<TopLevel<'bump>>, ParseError> {
         let mut tops = Vec::new();
-        while !self.is_at_end() {
+        loop {
+            while self.peek_token() == Some(Token::Newline) {
+                self.advance();
+            }
+            if self.is_at_end() {
+                break;
+            }
             tops.push(self.parse_top_level()?);
         }
         Ok(tops)
@@ -32,12 +38,11 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             self.advance();
         }
         let start_span = self.current_span();
-        let global_allocator_attr = if self.peek_token() == Some(Token::HashGlobalAllocator) {
+        let attrs = self.parse_attributes()?;
+        while self.peek_token() == Some(Token::Newline) {
             self.advance();
-            true
-        } else {
-            false
-        };
+        }
+        let global_allocator_attr = attrs.iter().any(|attr| attr.is_name(GLOBAL_ALLOCATOR_ATTR));
 
         let visibility = if self.peek_token() == Some(Token::KwPub) {
             self.advance();
@@ -46,16 +51,28 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             Visibility::Private
         };
 
+        if global_allocator_attr && self.peek_token() != Some(Token::KwDef) {
+            return Err(ParseError {
+                message: format!("#[{GLOBAL_ALLOCATOR_ATTR}] may only prefix `def`"),
+                span: start_span,
+            });
+        }
+
         if self.peek_token() == Some(Token::KwUse) {
             let uses = self.parse_use_trees()?;
-            return Ok(TopLevel::TLUse(uses, visibility, start_span));
+            return Ok(self.with_attributes(
+                TopLevel::TLUse(uses, visibility, start_span.clone()),
+                &attrs,
+                start_span,
+            ));
         }
 
         if self.peek_token() == Some(Token::KwMod) {
             self.advance();
             let name = self.parse_ident()?;
             let top = TopLevel::TLMod(name, start_span.clone());
-            return Ok(self.with_visibility(top, visibility));
+            let top = self.with_visibility(top, visibility);
+            return Ok(self.with_attributes(top, &attrs, start_span));
         }
 
         if self.peek_token() == Some(Token::KwNamespace) {
@@ -75,20 +92,40 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             self.expect(&Token::RBrace)?;
             let top =
                 TopLevel::TLNamespace(name, self.arena.bump().alloc_slice_clone(&tops), start_span);
-            return Ok(self.with_visibility(top, visibility));
+            let top = self.with_visibility(top, visibility);
+            return Ok(self.with_attributes(top, &attrs, self.current_span()));
         }
 
         if self.peek_token() == Some(Token::KwExtern) {
             self.advance();
             let (name, params, ret) = self.parse_extern_def()?;
             let top = TopLevel::TLExternDef(name, params, ret, start_span);
-            return Ok(self.with_visibility(top, visibility));
+            let top = self.with_visibility(top, visibility);
+            return Ok(self.with_attributes(top, &attrs, self.current_span()));
         }
 
         if self.peek_token() == Some(Token::KwInstance) {
             let (name, constraint, value) = self.parse_instance()?;
             let top = TopLevel::TLInstance(name, constraint, value, start_span);
-            return Ok(self.with_visibility(top, visibility));
+            let top = self.with_visibility(top, visibility);
+            return Ok(self.with_attributes(top, &attrs, self.current_span()));
+        }
+
+        if self.peek_token() == Some(Token::KwVariable) {
+            if matches!(visibility, Visibility::Public) {
+                return Err(ParseError {
+                    message:
+                        "`pub` may only prefix `def`, `instance`, `theorem`, `use`, `mod`, or `namespace`"
+                            .into(),
+                    span: start_span,
+                });
+            }
+            let params = self.parse_variable()?;
+            return Ok(self.with_attributes(
+                TopLevel::TLVariable(params, start_span.clone()),
+                &attrs,
+                start_span,
+            ));
         }
 
         if self.peek_token() == Some(Token::KwTheorem) {
@@ -102,7 +139,8 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             self.expect(&Token::ColonEq)?;
             let body = self.parse_expr()?;
             let top = TopLevel::TLTheorem(name, prop, body, start_span);
-            return Ok(self.with_visibility(top, visibility));
+            let top = self.with_visibility(top, visibility);
+            return Ok(self.with_attributes(top, &attrs, self.current_span()));
         }
 
         if self.peek_token() == Some(Token::KwDef) {
@@ -114,14 +152,8 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 name
             };
             let top = TopLevel::TLDef(name, params, m_ret, body, start_span);
-            return Ok(self.with_visibility(top, visibility));
-        }
-
-        if global_allocator_attr {
-            return Err(ParseError {
-                message: format!("#[{GLOBAL_ALLOCATOR_ATTR}] may only prefix `def`"),
-                span: start_span,
-            });
+            let top = self.with_visibility(top, visibility);
+            return Ok(self.with_attributes(top, &attrs, self.current_span()));
         }
 
         if matches!(visibility, Visibility::Public) {
@@ -151,15 +183,77 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             } else {
                 (term, constraint)
             };
-            return Ok(TopLevel::TLCheck(term, constraint, start_span));
+            return Ok(self.with_attributes(
+                TopLevel::TLCheck(term, constraint, start_span.clone()),
+                &attrs,
+                start_span,
+            ));
         }
 
         if self.peek_token() == Some(Token::HashEval) {
             self.advance();
-            return Ok(TopLevel::TLEval(self.parse_expr()?, start_span));
+            let term = self.parse_expr()?;
+            return Ok(self.with_attributes(
+                TopLevel::TLEval(term, start_span.clone()),
+                &attrs,
+                start_span,
+            ));
         }
 
-        Ok(TopLevel::TLExpr(self.parse_expr()?, start_span))
+        if self.peek_token() == Some(Token::Dollar) {
+            let Term::Splice(inner) = self.parse_expr()? else {
+                unreachable!("a top-level `$` expression parses as splice")
+            };
+            return Ok(self.with_attributes(
+                TopLevel::TLSplice(inner, start_span.clone()),
+                &attrs,
+                start_span,
+            ));
+        }
+
+        let term = self.parse_expr()?;
+        Ok(self.with_attributes(
+            TopLevel::TLExpr(term, start_span.clone()),
+            &attrs,
+            start_span,
+        ))
+    }
+
+    fn parse_attributes(&mut self) -> Result<Vec<Attribute<'bump>>, ParseError> {
+        let mut attrs = Vec::new();
+        while self.peek_token() == Some(Token::HashLBracket) {
+            self.advance();
+            let mut path = vec![self.parse_ident()?];
+            while self.try_expect(&Token::PathSep) {
+                path.push(self.parse_ident()?);
+            }
+            let args = if self.try_expect(&Token::LParen) {
+                let mut args = Vec::new();
+                if self.peek_token() != Some(Token::RParen) {
+                    loop {
+                        args.push(self.parse_expr_until(|tokens, i| {
+                            matches!(tokens[i].0, Token::Comma | Token::RParen)
+                        })?);
+                        if !self.try_expect(&Token::Comma) {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&Token::RParen)?;
+                self.arena.alloc_slice(&args)
+            } else {
+                self.arena.alloc_slice(&[])
+            };
+            self.expect(&Token::RBracket)?;
+            attrs.push(Attribute {
+                path: self.arena.alloc_slice(&path),
+                args,
+            });
+            while self.peek_token() == Some(Token::Newline) {
+                self.advance();
+            }
+        }
+        Ok(attrs)
     }
 
     fn find_check_constraint_colon(&self) -> Option<usize> {
@@ -183,7 +277,8 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 | Token::KwNamespace
                 | Token::KwExtern
                 | Token::KwInstance
-                | Token::HashGlobalAllocator
+                | Token::KwVariable
+                | Token::HashLBracket
                     if parens == 0 && braces == 0 =>
                 {
                     break;
@@ -270,6 +365,23 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         match visibility {
             Visibility::Private => top,
             Visibility::Public => TopLevel::TLPublic(self.bump_alloc_top(top)),
+        }
+    }
+
+    fn with_attributes(
+        &self,
+        top: TopLevel<'bump>,
+        attrs: &[Attribute<'bump>],
+        span: std::ops::Range<usize>,
+    ) -> TopLevel<'bump> {
+        if attrs.is_empty() {
+            top
+        } else {
+            TopLevel::TLAttributed(
+                self.arena.alloc_slice(attrs),
+                self.bump_alloc_top(top),
+                span,
+            )
         }
     }
 

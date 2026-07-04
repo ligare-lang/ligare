@@ -8,7 +8,9 @@ use ligare::front::lexer::Token;
 use ligare::front::parser::{TopLevel, Visibility};
 use tower_lsp::lsp_types as lsp;
 
-use crate::completion::{TokenSpan, tokenize, top_level_ranges, top_start};
+use crate::completion::{
+    META_EXPR_TYPE, META_EXPR_VARIANTS, TokenSpan, expanded_top_level_ranges, tokenize, top_start,
+};
 use crate::text::offset_to_position;
 use crate::{Ast, parse_program_lsp};
 
@@ -22,6 +24,7 @@ pub(crate) enum SemanticKind {
     Keyword,
     Parameter,
     Comment,
+    Attribute,
 }
 
 impl SemanticKind {
@@ -36,6 +39,7 @@ impl SemanticKind {
             SemanticKind::Keyword => "keyword",
             SemanticKind::Parameter => "parameter",
             SemanticKind::Comment => "comment",
+            SemanticKind::Attribute => "attribute",
         }
     }
 
@@ -49,6 +53,7 @@ impl SemanticKind {
             SemanticKind::Keyword => 5,
             SemanticKind::Parameter => 6,
             SemanticKind::Comment => 7,
+            SemanticKind::Attribute => 8,
         }
     }
 }
@@ -67,6 +72,7 @@ pub fn semantic_tokens_legend() -> lsp::SemanticTokensLegend {
             lsp::SemanticTokenType::KEYWORD,
             lsp::SemanticTokenType::PARAMETER,
             lsp::SemanticTokenType::COMMENT,
+            lsp::SemanticTokenType::DECORATOR,
         ],
         token_modifiers: vec![
             lsp::SemanticTokenModifier::DEFINITION,
@@ -92,7 +98,7 @@ pub fn semantic_tokens_for_source_text(source: &str) -> lsp::SemanticTokens {
     let bump = bumpalo::Bump::new();
     let arena = ligare::core::pool::TermArena::new(&bump);
     let (ast, _) = parse_program_lsp(source, &bump, &arena);
-    let top_ranges = top_level_ranges(source, &ast);
+    let top_ranges = expanded_top_level_ranges(source, &ast, &bump, &arena);
     lsp::SemanticTokens {
         result_id: None,
         data: semantic_tokens_for_source(source, &ast, &top_ranges),
@@ -134,6 +140,10 @@ impl SemanticModel {
                 .iter()
                 .map(|name| (*name).to_string()),
         );
+        model.constraints.insert(META_EXPR_TYPE.to_string());
+        model
+            .constructors
+            .extend(META_EXPR_VARIANTS.iter().map(|name| (*name).to_string()));
 
         for (start, end, top) in top_ranges {
             model.collect_top(tokens, &(*start..*end), top, None);
@@ -178,6 +188,9 @@ impl SemanticModel {
                 self.variables.insert(qualified);
                 self.mark_declaration(tokens, range, name, SemanticKind::Variable, modifiers);
                 collect_constraint_names(constraint, &mut self.constraints);
+            }
+            TopLevel::TLVariable(params, _) => {
+                self.collect_params(tokens, range, params, &mut scope);
             }
             TopLevel::TLTheorem(name, _, _, _) => {
                 let qualified = qualified_name(namespace, name);
@@ -225,8 +238,11 @@ impl SemanticModel {
                 }
                 return;
             }
-            TopLevel::TLCheck(..) | TopLevel::TLEval(..) | TopLevel::TLExpr(..) => {}
-            TopLevel::TLPublic(_) => unreachable!(),
+            TopLevel::TLCheck(..)
+            | TopLevel::TLEval(..)
+            | TopLevel::TLExpr(..)
+            | TopLevel::TLSplice(..) => {}
+            TopLevel::TLPublic(_) | TopLevel::TLAttributed(..) => unreachable!(),
         }
 
         self.collect_lexical_bindings(tokens, range, &mut scope);
@@ -251,7 +267,8 @@ impl SemanticModel {
             | SemanticKind::Namespace
             | SemanticKind::Keyword
             | SemanticKind::Parameter
-            | SemanticKind::Comment => {}
+            | SemanticKind::Comment
+            | SemanticKind::Attribute => {}
         }
     }
 
@@ -471,6 +488,26 @@ fn collect_raw_tokens(
             continue;
         };
 
+        if is_quote_keyword(tokens, idx) {
+            raw.push(RawSemanticToken {
+                span: token.span.clone(),
+                kind: SemanticKind::Keyword,
+                modifiers: 0,
+                priority: 5,
+            });
+            continue;
+        }
+
+        if is_attribute_path_token(tokens, idx) {
+            raw.push(RawSemanticToken {
+                span: token.span.clone(),
+                kind: SemanticKind::Attribute,
+                modifiers: 0,
+                priority: 10,
+            });
+            continue;
+        }
+
         if let Some((kind, modifiers)) = model.declarations.get(&token.span.start) {
             raw.push(RawSemanticToken {
                 span: token.span.clone(),
@@ -522,6 +559,18 @@ fn is_builtin_constraint_keyword(source: &str, tokens: &[TokenSpan], idx: usize)
         return false;
     };
     token.token == Token::KwTheorem && !is_theorem_declaration_token(source, tokens, idx)
+}
+
+fn is_quote_keyword(tokens: &[TokenSpan], idx: usize) -> bool {
+    matches!(
+        tokens.get(idx),
+        Some(TokenSpan {
+            token: Token::Ident(name),
+            ..
+        }) if name == "quote"
+    ) && tokens
+        .get(idx + 1)
+        .is_some_and(|token| token.token == Token::LBrace)
 }
 
 fn is_theorem_declaration_token(source: &str, tokens: &[TokenSpan], idx: usize) -> bool {
@@ -923,6 +972,25 @@ fn qualified_path_ending_at(tokens: &[TokenSpan], idx: usize) -> Option<String> 
     (path.part_index + 1 == path.parts.len() && path.parts.len() > 1).then(|| path.parts.join("::"))
 }
 
+fn is_attribute_path_token(tokens: &[TokenSpan], idx: usize) -> bool {
+    if !matches!(
+        tokens.get(idx).map(|token| &token.token),
+        Some(Token::Ident(_))
+    ) {
+        return false;
+    }
+
+    let mut start = idx;
+    while start >= 2
+        && tokens[start - 1].token == Token::PathSep
+        && matches!(tokens[start - 2].token, Token::Ident(_))
+    {
+        start -= 2;
+    }
+
+    start > 0 && tokens[start - 1].token == Token::HashLBracket
+}
+
 fn qualified_name(namespace: Option<&str>, name: &str) -> String {
     namespace
         .map(|namespace| format!("{namespace}::{name}"))
@@ -1028,9 +1096,17 @@ fn is_keyword(token: &Token) -> bool {
 }
 
 fn unwrap_public<'a, 'bump>(top: &'a TopLevel<'bump>) -> (bool, &'a TopLevel<'bump>) {
-    match top {
-        TopLevel::TLPublic(inner) => (true, inner),
-        other => (false, other),
+    let mut top = top;
+    let mut public = false;
+    loop {
+        match top {
+            TopLevel::TLPublic(inner) => {
+                public = true;
+                top = inner;
+            }
+            TopLevel::TLAttributed(_, inner, _) => top = inner,
+            other => return (public, other),
+        }
     }
 }
 
@@ -1086,6 +1162,7 @@ fn token_kind_name(idx: u32) -> &'static str {
         5 => SemanticKind::Keyword.as_str(),
         6 => SemanticKind::Parameter.as_str(),
         7 => SemanticKind::Comment.as_str(),
+        8 => SemanticKind::Attribute.as_str(),
         _ => "unknown",
     }
 }

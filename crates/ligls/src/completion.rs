@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use std::ops::Range;
 
 use bumpalo::Bump;
+use ligare::checker::CheckMode;
 use ligare::checker::builtin::BUILTIN_CONSTRAINT_NAMES;
+use ligare::compiler::Compiler;
 use ligare::core::pool::TermArena;
 use ligare::core::syntax::{Name, Term};
 use ligare::front::lexer::Token;
@@ -157,6 +159,12 @@ const KEYWORDS: &[&str] = &[
     "match",
     "with",
     "of",
+    "quote",
+];
+
+pub(crate) const META_EXPR_TYPE: &str = "Expr";
+pub(crate) const META_EXPR_VARIANTS: &[&str] = &[
+    "Int", "Bool", "Str", "Var", "Name", "Global", "Prim", "App", "Lam", "Let", "If", "Annot",
 ];
 
 pub fn completion_items_for_source(
@@ -186,8 +194,8 @@ fn completion_items_at_offset(
     let arena = TermArena::new(&bump);
     let (ast, _) = parse_program_lsp(source, &bump, &arena);
     let tokens = tokenize(source);
-    let top_ranges = top_level_ranges(source, &ast);
-    let mut symbols = collect_symbols(source, &ast, &tokens, &top_ranges, offset);
+    let top_ranges = expanded_top_level_ranges(source, &ast, &bump, &arena);
+    let mut symbols = collect_symbols(source, &tokens, &top_ranges, offset);
     let mut module_paths = collect_module_paths(&symbols);
     module_paths.extend(extra_module_paths);
     module_paths.sort();
@@ -226,13 +234,12 @@ pub(crate) fn tokenize(source: &str) -> Vec<TokenSpan> {
 
 fn collect_symbols<'bump>(
     source: &str,
-    ast: &crate::Ast<'bump>,
     tokens: &[TokenSpan],
     top_ranges: &[(usize, usize, TopLevel<'bump>)],
     offset: usize,
 ) -> Vec<Symbol> {
     let mut symbols = Vec::new();
-    for top in ast.top_levels() {
+    for (_, _, top) in top_ranges {
         collect_top_level_symbols(top, &mut symbols);
     }
     symbols.extend(local_symbols(source, tokens, top_ranges, offset));
@@ -242,6 +249,7 @@ fn collect_symbols<'bump>(
 pub(crate) fn collect_top_level_symbols(top: &TopLevel<'_>, symbols: &mut Vec<Symbol>) {
     match top {
         TopLevel::TLPublic(inner) => collect_top_level_symbols(inner, symbols),
+        TopLevel::TLAttributed(_, inner, _) => collect_top_level_symbols(inner, symbols),
         TopLevel::TLDef(name, params, ret, body, _) => {
             let signature = if params.is_empty() {
                 term_signature(body)
@@ -290,6 +298,7 @@ pub(crate) fn collect_top_level_symbols(top: &TopLevel<'_>, symbols: &mut Vec<Sy
             kind: SymbolKind::Value,
             imported_path: None,
         }),
+        TopLevel::TLVariable(_, _) => {}
         TopLevel::TLTheorem(name, prop, _, _) => symbols.push(Symbol {
             name: (*name).to_string(),
             detail: PrettyPrinter::pretty(prop),
@@ -335,7 +344,10 @@ pub(crate) fn collect_top_level_symbols(top: &TopLevel<'_>, symbols: &mut Vec<Sy
                 collect_namespace_symbols(name, item, symbols);
             }
         }
-        TopLevel::TLCheck(_, _, _) | TopLevel::TLEval(_, _) | TopLevel::TLExpr(_, _) => {}
+        TopLevel::TLCheck(_, _, _)
+        | TopLevel::TLEval(_, _)
+        | TopLevel::TLExpr(_, _)
+        | TopLevel::TLSplice(_, _) => {}
     }
 }
 
@@ -638,7 +650,7 @@ fn keyword_symbols() -> Vec<Symbol> {
 }
 
 fn builtin_symbols() -> Vec<Symbol> {
-    BUILTIN_CONSTRAINT_NAMES
+    let mut symbols = BUILTIN_CONSTRAINT_NAMES
         .iter()
         .map(|name| Symbol {
             name: (*name).to_string(),
@@ -648,7 +660,29 @@ fn builtin_symbols() -> Vec<Symbol> {
             kind: SymbolKind::Type,
             imported_path: None,
         })
-        .collect()
+        .collect::<Vec<_>>();
+    symbols.extend(meta_symbols());
+    symbols
+}
+
+pub(crate) fn meta_symbols() -> Vec<Symbol> {
+    let mut symbols = vec![Symbol {
+        name: META_EXPR_TYPE.to_string(),
+        detail: "builtin meta constraint".to_string(),
+        constraint: Some(Constraint::named("prop")),
+        signature: None,
+        kind: SymbolKind::Type,
+        imported_path: None,
+    }];
+    symbols.extend(META_EXPR_VARIANTS.iter().map(|variant| Symbol {
+        name: (*variant).to_string(),
+        detail: META_EXPR_TYPE.to_string(),
+        constraint: Some(Constraint::named(META_EXPR_TYPE)),
+        signature: None,
+        kind: SymbolKind::Constructor,
+        imported_path: None,
+    }));
+    symbols
 }
 
 fn build_context(
@@ -1262,10 +1296,14 @@ pub(crate) fn top_level_ranges<'bump>(
     source: &str,
     ast: &crate::Ast<'bump>,
 ) -> Vec<(usize, usize, TopLevel<'bump>)> {
-    let mut tops: Vec<_> = ast
-        .top_levels()
-        .map(|top| (top_start(top), top.clone()))
-        .collect();
+    top_level_ranges_from_tops(source, ast.top_levels().cloned())
+}
+
+pub(crate) fn top_level_ranges_from_tops<'bump>(
+    source: &str,
+    tops: impl IntoIterator<Item = TopLevel<'bump>>,
+) -> Vec<(usize, usize, TopLevel<'bump>)> {
+    let mut tops: Vec<_> = tops.into_iter().map(|top| (top_start(&top), top)).collect();
     tops.sort_by_key(|(start, _)| *start);
     let mut ranges = Vec::new();
     for idx in 0..tops.len() {
@@ -1279,18 +1317,51 @@ pub(crate) fn top_level_ranges<'bump>(
     ranges
 }
 
+pub(crate) fn expanded_top_level_ranges<'bump>(
+    source: &str,
+    ast: &crate::Ast<'bump>,
+    bump: &'bump Bump,
+    arena: &'bump TermArena<'bump>,
+) -> Vec<(usize, usize, TopLevel<'bump>)> {
+    let raw_ranges = top_level_ranges(source, ast);
+    let mut tops = raw_ranges
+        .iter()
+        .map(|(_, _, top)| top.clone())
+        .collect::<Vec<_>>();
+    let mut compiler = Compiler::new(bump, arena);
+    let work = raw_ranges
+        .iter()
+        .enumerate()
+        .map(|(idx, (_, _, top))| (idx, top.clone(), false));
+    let (expanded, _) = compiler.check_top_levels_with_expansion_for_diagnostics(
+        work,
+        "<lsp>",
+        source,
+        CheckMode::Fast,
+    );
+    for (idx, top) in expanded {
+        if let Some(slot) = tops.get_mut(idx) {
+            *slot = top;
+        }
+    }
+    top_level_ranges_from_tops(source, tops)
+}
+
 pub(crate) fn top_start(top: &TopLevel<'_>) -> usize {
     match top {
         TopLevel::TLDef(_, _, _, _, span)
         | TopLevel::TLExternDef(_, _, _, span)
         | TopLevel::TLInstance(_, _, _, span)
+        | TopLevel::TLVariable(_, span)
         | TopLevel::TLTheorem(_, _, _, span)
         | TopLevel::TLUse(_, _, span)
         | TopLevel::TLMod(_, span)
         | TopLevel::TLNamespace(_, _, span)
         | TopLevel::TLCheck(_, _, span)
         | TopLevel::TLEval(_, span)
-        | TopLevel::TLExpr(_, span) => span.start,
+        | TopLevel::TLExpr(_, span)
+        | TopLevel::TLSplice(_, span) => span.start,
         TopLevel::TLPublic(inner) => top_start(inner),
+        TopLevel::TLAttributed(_, inner, _) => top_start(inner),
     }
 }

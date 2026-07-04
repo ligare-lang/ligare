@@ -109,6 +109,9 @@ impl<'bump> Eraser<'bump> {
             Term::NamedMatch(..) => {
                 panic!("NamedMatch reached erasure before desugaring")
             }
+            Term::Quote(..) | Term::Splice(..) => {
+                panic!("metaprogram term reached erasure before expansion")
+            }
         }
     }
 }

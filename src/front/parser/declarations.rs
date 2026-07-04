@@ -32,12 +32,13 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                         | Token::KwExtern
                         | Token::HashCheck
                         | Token::HashEval
-                        | Token::HashGlobalAllocator
+                        | Token::HashLBracket
                         | Token::KwTheorem
                         | Token::KwPub
                         | Token::KwUse
                         | Token::KwMod
                         | Token::KwNamespace
+                        | Token::KwVariable
                 )
             })
             .ok_or_else(|| ParseError {
@@ -61,6 +62,32 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         self.expect(&Token::ColonEq)?;
         let value = self.parse_expr()?;
         Ok((name, constraint, value))
+    }
+
+    pub(super) fn parse_variable(
+        &mut self,
+    ) -> Result<&'bump [(Name<'bump>, Option<&'bump Term<'bump>>)], ParseError> {
+        self.expect(&Token::KwVariable)?;
+        let params = self.parse_many_curried_params()?;
+        if params.is_empty() {
+            return Err(ParseError {
+                message: "variable requires at least one parameter group".into(),
+                span: self.current_span(),
+            });
+        }
+        let default = self.arena.builtin(self.pool.intern("data"));
+        let params = params
+            .into_iter()
+            .map(|(name, constraint)| {
+                let constraint = match constraint {
+                    Some(Term::Implicit(_)) => constraint,
+                    Some(constraint) => Some(self.arena.implicit(constraint)),
+                    None => Some(self.arena.implicit(default)),
+                };
+                (name, constraint)
+            })
+            .collect::<Vec<_>>();
+        Ok(self.arena.alloc_slice(&params))
     }
 
     pub(super) fn desugar_def(
@@ -93,10 +120,39 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             self.parse_enum_body(name)?
         } else if self.peek_token() == Some(Token::KwStruct) {
             self.parse_struct_body(name)?
-        } else {
+        } else if matches!(self.peek_token(), Some(Token::KwDo | Token::KwMatch)) {
             self.parse_expr()?
+        } else if self.peek_token() == Some(Token::KwUnsafe) {
+            self.parse_unsafe_expr()?
+        } else {
+            self.parse_expr_until(Self::is_top_level_body_delim)?
         };
         Ok((params, m_ret, body_expr))
+    }
+
+    fn is_top_level_body_delim(tokens: &[SpannedToken], i: usize) -> bool {
+        if matches!(
+            tokens[i].0,
+            Token::KwDef
+                | Token::KwExtern
+                | Token::KwInstance
+                | Token::HashCheck
+                | Token::HashEval
+                | Token::HashLBracket
+                | Token::KwTheorem
+                | Token::KwPub
+                | Token::KwUse
+                | Token::KwMod
+                | Token::KwNamespace
+                | Token::KwVariable
+                | Token::RBrace
+                | Token::Semi
+                | Token::Newline
+        ) {
+            return true;
+        }
+        matches!(tokens[i].0, Token::Dollar)
+            && (i == 0 || matches!(tokens[i.saturating_sub(1)].0, Token::Newline))
     }
 
     pub(super) fn parse_param_group(
@@ -319,6 +375,28 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 self.expect(&Token::ColonEq)?;
                 let t = self.parse_tactic_arg()?;
                 Ok(Tactic::Have(name, t))
+            }
+            Some(Token::Ident(_))
+                if self
+                    .tokens
+                    .get(self.pos + 1)
+                    .is_some_and(|(tok, _)| *tok == Token::LParen) =>
+            {
+                let name = self.parse_path_ident()?;
+                self.expect(&Token::LParen)?;
+                let mut args = Vec::new();
+                if self.peek_token() != Some(Token::RParen) {
+                    loop {
+                        args.push(self.parse_expr_until(|tokens, i| {
+                            matches!(tokens[i].0, Token::Comma | Token::RParen)
+                        })?);
+                        if !self.try_expect(&Token::Comma) {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&Token::RParen)?;
+                Ok(Tactic::Custom(name, self.arena.alloc_slice(&args)))
             }
             _ => {
                 let t = self.parse_tactic_arg()?;

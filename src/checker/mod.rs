@@ -6,7 +6,7 @@ pub mod prove;
 
 use crate::checker::builtin::BuiltinRegistry;
 use crate::checker::context::{ConstraintTable, Context, add_refine, empty_table, lookup_refine};
-use crate::config::BUILTIN_IO;
+use crate::config::{BUILTIN_IO, is_builtin_name};
 use crate::core::debruijn::Desugarer;
 use crate::core::pool::TermArena;
 use crate::core::syntax::{Name, Tactic, Term};
@@ -550,7 +550,7 @@ impl<'bump> TypeChecker<'bump> {
 
     pub(crate) fn io_inner(&self, t: &'bump Term<'bump>) -> Option<&'bump Term<'bump>> {
         if let Term::App(head, inner) = t
-            && matches!(head, Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_IO)
+            && matches!(head, Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_IO))
         {
             return Some(inner);
         }

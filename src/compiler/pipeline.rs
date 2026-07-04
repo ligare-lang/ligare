@@ -1,5 +1,6 @@
 use crate::checker::context::lookup_refine;
 use crate::checker::erase::Eraser;
+use crate::config::COMPILER_INTRINSIC_ATTR;
 use crate::core::semantics::SemanticQueries;
 use crate::core::syntax::Term;
 use crate::diagnostic::Diagnostic;
@@ -57,12 +58,20 @@ impl<'bump> Compiler<'bump> {
 
     fn collect_str(&mut self, content: &str, file: &str) -> Result<(), Diagnostic> {
         let parsed = self.parse_program_for_collection(content, file)?;
-        for top in &parsed.tops {
-            self.process_top_level(top.clone())
+        let mut tops = Vec::new();
+        for top in parsed.tops {
+            let expanded = self
+                .expand_meta_tops(top)
                 .map_err(|d| d.with_source_if_missing(file, content))?;
+            for top in expanded {
+                self.process_expanded_top_level(top.clone())
+                    .map_err(|d| d.with_source_if_missing(file, content))?;
+                tops.push(top);
+            }
         }
-        let codegen = self.collect_codegen_state(&parsed.tops)?;
-        let monomorphized = self.monomorphize_for_codegen(parsed.tops, codegen)?;
+        let codegen_tops = self.expand_scoped_variable_params(&tops);
+        let codegen = self.collect_codegen_state(&codegen_tops)?;
+        let monomorphized = self.monomorphize_for_codegen(codegen_tops, codegen)?;
         self.apply_codegen_state(monomorphized.codegen);
 
         let eraser = Eraser::new(self.arena, self.checker.builtins.clone());
@@ -83,14 +92,92 @@ impl<'bump> Compiler<'bump> {
         Ok(ParsedProgram { tops })
     }
 
+    fn expand_scoped_variable_params(&self, tops: &[TopLevel<'bump>]) -> Vec<TopLevel<'bump>> {
+        let mut scoped = Vec::new();
+        self.expand_scoped_variable_params_in(tops, &mut scoped)
+    }
+
+    fn expand_scoped_variable_params_in(
+        &self,
+        tops: &[TopLevel<'bump>],
+        scoped: &mut Vec<(&'bump str, Option<&'bump Term<'bump>>)>,
+    ) -> Vec<TopLevel<'bump>> {
+        let mut out = Vec::with_capacity(tops.len());
+        for top in tops {
+            match top {
+                TopLevel::TLVariable(params, _) => {
+                    scoped.extend(params.iter().copied());
+                }
+                TopLevel::TLDef(name, params, ret, body, span) => {
+                    let params = if scoped.is_empty() {
+                        *params
+                    } else {
+                        let mut all = Vec::with_capacity(scoped.len() + params.len());
+                        all.extend(scoped.iter().copied());
+                        all.extend(params.iter().copied());
+                        self.arena.alloc_slice(&all)
+                    };
+                    out.push(TopLevel::TLDef(name, params, *ret, body, span.clone()));
+                }
+                TopLevel::TLNamespace(name, items, span) => {
+                    let scope_len = scoped.len();
+                    let items = self.expand_scoped_variable_params_in(items, scoped);
+                    scoped.truncate(scope_len);
+                    out.push(TopLevel::TLNamespace(
+                        name,
+                        self.arena.bump().alloc_slice_clone(&items),
+                        span.clone(),
+                    ));
+                }
+                TopLevel::TLPublic(inner) => {
+                    let expanded =
+                        self.expand_scoped_variable_params_in(&[(*inner).clone()], scoped);
+                    if let Some(expanded) = expanded.into_iter().next() {
+                        out.push(TopLevel::TLPublic(self.arena.bump().alloc(expanded)));
+                    }
+                }
+                TopLevel::TLAttributed(attrs, inner, span) => {
+                    let expanded =
+                        self.expand_scoped_variable_params_in(&[(*inner).clone()], scoped);
+                    if let Some(expanded) = expanded.into_iter().next() {
+                        out.push(TopLevel::TLAttributed(
+                            attrs,
+                            self.arena.bump().alloc(expanded),
+                            span.clone(),
+                        ));
+                    }
+                }
+                other => out.push(other.clone()),
+            }
+        }
+        out
+    }
+
     /// Collect the codegen-facing inputs from the original un-erased tops.
     pub(crate) fn collect_codegen_state(
         &self,
         tops: &[TopLevel<'bump>],
     ) -> Result<CodegenState<'bump>, Diagnostic> {
         let mut state = CodegenState::empty();
+        if let Some((expr_def, _)) = self.checker.lookup_enum(crate::compiler::meta::EXPR_TYPE) {
+            state.enum_types.push((
+                self.arena.alloc_str(crate::compiler::meta::EXPR_TYPE),
+                expr_def,
+            ));
+        }
+        if let Some((definitions_def, _)) = self
+            .checker
+            .lookup_enum(crate::compiler::meta::DEFINITIONS_TYPE)
+        {
+            state.enum_types.push((
+                self.arena
+                    .alloc_str(crate::compiler::meta::DEFINITIONS_TYPE),
+                definitions_def,
+            ));
+        }
         for top in tops {
-            if let TopLevel::TLDef(name, params, _m_ret, body, _) = top {
+            let logical_top = Self::logical_codegen_top(top);
+            if let TopLevel::TLDef(name, params, _m_ret, body, _) = logical_top {
                 let name = self.codegen_attribute_target_name(name);
                 let names: Vec<_> = params.iter().rev().map(|(pn, _)| *pn).collect();
                 if matches!(body, Term::EnumDef(..)) {
@@ -108,7 +195,8 @@ impl<'bump> Compiler<'bump> {
         }
 
         for top in tops {
-            if let TopLevel::TLExternDef(name, params, ret, span) = top {
+            let logical_top = Self::logical_codegen_top(top);
+            if let TopLevel::TLExternDef(name, params, ret, span) = logical_top {
                 let names: Vec<_> = params.iter().rev().map(|(pn, _)| *pn).collect();
                 let core_params = params
                     .iter()
@@ -135,7 +223,13 @@ impl<'bump> Compiler<'bump> {
                 ));
                 continue;
             }
-            if let TopLevel::TLDef(name, params, m_ret, body_term, span) = top {
+            if let TopLevel::TLDef(name, params, m_ret, body_term, span) = logical_top {
+                if Self::is_compiler_replaced_top(top, name) {
+                    continue;
+                }
+                if m_ret.is_some_and(Self::is_meta_codegen_constraint) {
+                    continue;
+                }
                 if matches!(body_term, Term::EnumDef(..) | Term::StructDef(..)) {
                     continue;
                 }
@@ -183,57 +277,14 @@ impl<'bump> Compiler<'bump> {
         let tops = tops
             .into_iter()
             .map(|top| match top {
-                TopLevel::TLDef(
-                    _name,
-                    _params,
-                    _m_ret,
-                    Term::EnumDef(..) | Term::StructDef(..),
-                    _,
-                ) => Ok(None),
-                TopLevel::TLDef(name, params, m_ret, body_term, span) => {
-                    if name.starts_with(crate::config::GLOBAL_ALLOCATOR_NAME_PREFIX) {
-                        return Ok(None);
+                TopLevel::TLAttributed(_, inner, _) => {
+                    if top.has_attribute(COMPILER_INTRINSIC_ATTR) {
+                        Ok(None)
+                    } else {
+                        self.erase_top_for_codegen((*inner).clone(), eraser)
                     }
-                    let semantics = SemanticQueries::new(self.checker.builtins());
-                    if params.iter().any(|(_, c)| {
-                        c.is_some_and(|t| semantics.is_erased_parameter_constraint(t))
-                    }) {
-                        return Ok(None);
-                    }
-                    let desugared = self
-                        .checker
-                        .desugar_with_context(body_term)
-                        .or_else(|_| {
-                            let term = self.env.get(name).copied().unwrap_or(body_term);
-                            self.checker.desugar_with_context(term)
-                        })?;
-                    let resolved = self.subst_top_level(desugared);
-                    let desugared = self.checker.desugar_with_context(resolved)?;
-                    let erased = eraser.erase(desugared);
-                    Ok(Some(TopLevel::TLDef(name, params, m_ret, erased, span)))
                 }
-                TopLevel::TLEval(term, span) => {
-                    let desugared = self.checker.desugar_with_context(term)?;
-                    let resolved = self.subst_top_level(desugared);
-                    Ok(Some(TopLevel::TLEval(eraser.erase(resolved), span)))
-                }
-                TopLevel::TLExpr(term, span) => {
-                    let desugared = self.checker.desugar_with_context(term)?;
-                    let resolved = self.subst_top_level(desugared);
-                    Ok(Some(TopLevel::TLExpr(eraser.erase(resolved), span)))
-                }
-                TopLevel::TLTheorem(name, _, body, span) => {
-                    let resolved_body = self.try_resolve_all(body)?;
-                    let erased = eraser.erase(resolved_body);
-                    Ok(Some(TopLevel::TLDef(name, &[], None, erased, span)))
-                }
-                TopLevel::TLExternDef(..) => Ok(None),
-                TopLevel::TLInstance(..) => Ok(None),
-                TopLevel::TLUse(..)
-                | TopLevel::TLMod(..)
-                | TopLevel::TLNamespace(..)
-                | TopLevel::TLPublic(_) => Ok(None),
-                TopLevel::TLCheck(_, _, _) => Ok(None),
+                other => self.erase_top_for_codegen(other, eraser),
             })
             .collect::<Result<Vec<_>, Diagnostic>>()?
             .into_iter()
@@ -248,6 +299,99 @@ impl<'bump> Compiler<'bump> {
             })
             .collect();
         Ok(ErasedProgram { tops })
+    }
+
+    fn erase_top_for_codegen(
+        &self,
+        top: TopLevel<'bump>,
+        eraser: &Eraser<'bump>,
+    ) -> Result<Option<TopLevel<'bump>>, Diagnostic> {
+        match top {
+            TopLevel::TLDef(_name, _params, _m_ret, Term::EnumDef(..) | Term::StructDef(..), _) => {
+                Ok(None)
+            }
+            TopLevel::TLDef(name, params, m_ret, body_term, span) => {
+                if crate::config::is_std_intrinsic_name(name) {
+                    return Ok(None);
+                }
+                if m_ret.is_some_and(Self::is_meta_codegen_constraint) {
+                    return Ok(None);
+                }
+                if name.starts_with(crate::config::GLOBAL_ALLOCATOR_NAME_PREFIX) {
+                    return Ok(None);
+                }
+                let semantics = SemanticQueries::new(self.checker.builtins());
+                if params
+                    .iter()
+                    .any(|(_, c)| c.is_some_and(|t| semantics.is_erased_parameter_constraint(t)))
+                {
+                    return Ok(None);
+                }
+                let desugared = self.checker.desugar_with_context(body_term).or_else(|_| {
+                    let term = self.env.get(name).copied().unwrap_or(body_term);
+                    self.checker.desugar_with_context(term)
+                })?;
+                let resolved = self.subst_top_level(desugared);
+                let desugared = self.checker.desugar_with_context(resolved)?;
+                let erased = eraser.erase(desugared);
+                Ok(Some(TopLevel::TLDef(name, params, m_ret, erased, span)))
+            }
+            TopLevel::TLEval(term, span) => {
+                let desugared = self.checker.desugar_with_context(term)?;
+                let resolved = self.subst_top_level(desugared);
+                Ok(Some(TopLevel::TLEval(eraser.erase(resolved), span)))
+            }
+            TopLevel::TLExpr(term, span) => {
+                let desugared = self.checker.desugar_with_context(term)?;
+                let resolved = self.subst_top_level(desugared);
+                Ok(Some(TopLevel::TLExpr(eraser.erase(resolved), span)))
+            }
+            TopLevel::TLTheorem(name, _, body, span) => {
+                let resolved_body = self.try_resolve_all(body)?;
+                let erased = eraser.erase(resolved_body);
+                Ok(Some(TopLevel::TLDef(name, &[], None, erased, span)))
+            }
+            TopLevel::TLExternDef(..) => Ok(None),
+            TopLevel::TLInstance(..) => Ok(None),
+            TopLevel::TLVariable(..) => Ok(None),
+            TopLevel::TLUse(..)
+            | TopLevel::TLMod(..)
+            | TopLevel::TLNamespace(..)
+            | TopLevel::TLSplice(..) => Ok(None),
+            TopLevel::TLPublic(inner) => self.erase_top_for_codegen((*inner).clone(), eraser),
+            TopLevel::TLCheck(_, _, _) => Ok(None),
+            TopLevel::TLAttributed(_, inner, _) => {
+                self.erase_top_for_codegen((*inner).clone(), eraser)
+            }
+        }
+    }
+
+    fn logical_codegen_top<'top>(top: &'top TopLevel<'bump>) -> &'top TopLevel<'bump> {
+        let mut top = top;
+        loop {
+            match top {
+                TopLevel::TLAttributed(_, inner, _) | TopLevel::TLPublic(inner) => top = inner,
+                other => return other,
+            }
+        }
+    }
+
+    fn is_compiler_replaced_top(top: &TopLevel<'bump>, name: &str) -> bool {
+        top.has_attribute(COMPILER_INTRINSIC_ATTR) || crate::config::is_std_intrinsic_name(name)
+    }
+
+    fn is_meta_codegen_constraint(term: &Term<'_>) -> bool {
+        match term {
+            Term::Builtin(name) | Term::Named(name) | Term::Global(name) => {
+                crate::config::canonical_builtin_name(name) == crate::compiler::meta::EXPR_TYPE
+                    || crate::config::canonical_builtin_name(name)
+                        == crate::compiler::meta::DEFINITIONS_TYPE
+            }
+            Term::Annot(inner, _) | Term::Implicit(inner) => {
+                Self::is_meta_codegen_constraint(inner)
+            }
+            _ => false,
+        }
     }
 
     fn normalize_codegen_type_def(&self, term: &'bump Term<'bump>) -> &'bump Term<'bump> {

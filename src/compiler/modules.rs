@@ -882,6 +882,20 @@ impl<'bump> Compiler<'bump> {
                     }
                     continue;
                 }
+                let (dep, full) = module
+                    .id
+                    .import_symbol_or_namespace_symbol(tree.path, graph)?;
+                let dep_exports = exports.get(&dep).ok_or_else(|| {
+                    Diagnostic::new(format!("module not found: {}", display_module(&dep)))
+                })?;
+                if let Some(target) = dep_exports.get(&full) {
+                    let local = tree
+                        .alias
+                        .map(|a| a.to_string())
+                        .unwrap_or_else(|| tree.path.last().unwrap().to_string());
+                    insert_import(&mut imports, local, target.clone())?;
+                    continue;
+                }
                 if let Some((dep, prefix, local_ns)) =
                     module.id.try_namespace_import(tree.path, graph)?
                 {
@@ -903,23 +917,11 @@ impl<'bump> Compiler<'bump> {
                         )?;
                     }
                     continue;
-                }
-                let (dep, full) = module
-                    .id
-                    .import_symbol_or_namespace_symbol(tree.path, graph)?;
-                let dep_exports = exports.get(&dep).ok_or_else(|| {
-                    Diagnostic::new(format!("module not found: {}", display_module(&dep)))
-                })?;
-                let Some(target) = dep_exports.get(&full) else {
+                } else {
                     return Err(Diagnostic::new(format!(
                         "cannot import private or unknown symbol `{full}`"
                     )));
-                };
-                let local = tree
-                    .alias
-                    .map(|a| a.to_string())
-                    .unwrap_or_else(|| tree.path.last().unwrap().to_string());
-                insert_import(&mut imports, local, target.clone())?;
+                }
             }
         }
         imports.extend(qualified_term_names(
@@ -989,6 +991,15 @@ impl<'bump> Compiler<'bump> {
                         span.clone(),
                     ));
                 }
+                TopLevel::TLVariable(params, span) => {
+                    let params = self.rewrite_module_params(
+                        params,
+                        &imports,
+                        &own_names,
+                        &mut RewriteScope::default(),
+                    );
+                    out.push(TopLevel::TLVariable(params, span.clone()));
+                }
                 TopLevel::TLTheorem(name, prop, body, span) => {
                     let qname = self.arena.alloc_str(&module.id.join_symbol(name));
                     let prop = self.rewrite_module_term(
@@ -1044,7 +1055,21 @@ impl<'bump> Compiler<'bump> {
                         span.clone(),
                     ));
                 }
-                TopLevel::TLUse(..) | TopLevel::TLMod(..) | TopLevel::TLPublic(_) => {}
+                TopLevel::TLSplice(term, span) => {
+                    out.push(TopLevel::TLSplice(
+                        self.rewrite_module_term(
+                            term,
+                            &imports,
+                            &own_names,
+                            &mut RewriteScope::default(),
+                        ),
+                        span.clone(),
+                    ));
+                }
+                TopLevel::TLUse(..)
+                | TopLevel::TLMod(..)
+                | TopLevel::TLPublic(_)
+                | TopLevel::TLAttributed(..) => {}
                 TopLevel::TLNamespace(name, items, span) => {
                     self.rewrite_namespace_items(
                         &module.id,
@@ -1131,11 +1156,14 @@ impl<'bump> Compiler<'bump> {
                 TopLevel::TLUse(..)
                 | TopLevel::TLMod(..)
                 | TopLevel::TLInstance(..)
+                | TopLevel::TLVariable(..)
                 | TopLevel::TLCheck(..)
                 | TopLevel::TLEval(..)
                 | TopLevel::TLExpr(..)
+                | TopLevel::TLSplice(..)
                 | TopLevel::TLNamespace(..)
-                | TopLevel::TLPublic(_) => {}
+                | TopLevel::TLPublic(_)
+                | TopLevel::TLAttributed(..) => {}
             }
         }
         Ok(())
@@ -1166,7 +1194,7 @@ impl<'bump> Compiler<'bump> {
         scope: &mut RewriteScope,
     ) -> &'bump Term<'bump> {
         match term {
-            Term::Named(name) => {
+            Term::Named(name) | Term::Builtin(name) | Term::Global(name) => {
                 if scope.contains(name) {
                     return term;
                 }
@@ -1175,7 +1203,6 @@ impl<'bump> Compiler<'bump> {
                 }
                 term
             }
-            Term::Builtin(_) | Term::Global(_) => term,
             Term::App(f, a) => self.arena.app(
                 self.rewrite_module_term(f, imports, own_names, scope),
                 self.rewrite_module_term(a, imports, own_names, scope),
@@ -1238,6 +1265,13 @@ impl<'bump> Compiler<'bump> {
                         Tactic::Intro(n) => Tactic::Intro(*n),
                         Tactic::Have(n, t) => {
                             Tactic::Have(n, self.rewrite_module_term(t, imports, own_names, scope))
+                        }
+                        Tactic::Custom(n, args) => {
+                            let args = args
+                                .iter()
+                                .map(|arg| self.rewrite_module_term(arg, imports, own_names, scope))
+                                .collect::<Vec<_>>();
+                            Tactic::Custom(n, self.arena.alloc_slice(&args))
                         }
                     })
                     .collect::<Vec<_>>();
@@ -1665,14 +1699,18 @@ fn collect_qualified_names_from_top<'bump>(top: &TopLevel<'bump>, names: &mut Ha
             collect_qualified_names_from_term(constraint, names);
             collect_qualified_names_from_term(value, names);
         }
+        TopLevel::TLVariable(params, _) => {
+            collect_qualified_names_from_params(params, names);
+        }
         TopLevel::TLTheorem(_, prop, body, _) | TopLevel::TLCheck(prop, body, _) => {
             collect_qualified_names_from_term(prop, names);
             collect_qualified_names_from_term(body, names);
         }
-        TopLevel::TLEval(term, _) | TopLevel::TLExpr(term, _) => {
+        TopLevel::TLEval(term, _) | TopLevel::TLExpr(term, _) | TopLevel::TLSplice(term, _) => {
             collect_qualified_names_from_term(term, names);
         }
         TopLevel::TLUse(..) | TopLevel::TLMod(..) | TopLevel::TLPublic(_) => {}
+        TopLevel::TLAttributed(_, inner, _) => collect_qualified_names_from_top(inner, names),
         TopLevel::TLNamespace(_, items, _) => {
             for item in *items {
                 collect_qualified_names_from_top(item, names);
@@ -1708,6 +1746,8 @@ fn collect_qualified_names_from_term<'bump>(term: &'bump Term<'bump>, names: &mu
         | Term::NamedLam(_, inner)
         | Term::Unsafe(inner)
         | Term::Pure(inner)
+        | Term::Quote(inner)
+        | Term::Splice(inner)
         | Term::StructProj(inner, _)
         | Term::MethodCall(inner, _) => collect_qualified_names_from_term(inner, names),
         Term::Pi(_, a, b) | Term::Refine(_, a, b) | Term::Annot(a, b) => {
@@ -1736,6 +1776,11 @@ fn collect_qualified_names_from_term<'bump>(term: &'bump Term<'bump>, names: &mu
                         collect_qualified_names_from_term(term, names);
                     }
                     Tactic::Intro(_) => {}
+                    Tactic::Custom(_, args) => {
+                        for arg in args {
+                            collect_qualified_names_from_term(arg, names);
+                        }
+                    }
                 }
             }
         }
@@ -1981,9 +2026,17 @@ fn has_public_main<'bump>(tops: &[TopLevel<'bump>]) -> bool {
 }
 
 fn unwrap_public<'a, 'bump>(top: &'a TopLevel<'bump>) -> (&'a TopLevel<'bump>, bool) {
-    match top {
-        TopLevel::TLPublic(inner) => (inner, true),
-        other => (other, false),
+    let mut top = top;
+    let mut public = false;
+    loop {
+        match top {
+            TopLevel::TLPublic(inner) => {
+                public = true;
+                top = inner;
+            }
+            TopLevel::TLAttributed(_, inner, _) => top = inner,
+            other => return (other, public),
+        }
     }
 }
 

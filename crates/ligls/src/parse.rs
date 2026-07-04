@@ -62,7 +62,7 @@ enum TokKind {
     KwWith,
     KwOf,
     Bar,
-    HashGlobalAllocator,
+    HashLBracket,
     HashCheck,
     HashEval,
     BlockComment,
@@ -77,6 +77,7 @@ enum TokKind {
     EqEq,
     LParen,
     RParen,
+    RBracket,
     Semi,
     Comma,
     LBrace,
@@ -90,6 +91,7 @@ enum TokKind {
     Star,
     Slash,
     Percent,
+    Dollar,
     Lt,
     Gt,
     Eq,
@@ -172,6 +174,7 @@ fn kind(token: &Token) -> TokKind {
         Token::KwDef => TokKind::KwDef,
         Token::KwExtern => TokKind::KwExtern,
         Token::KwInstance => TokKind::KwDef,
+        Token::KwVariable => TokKind::KwDef,
         Token::KwUnsafe => TokKind::KwUnsafe,
         Token::KwPure => TokKind::KwPure,
         Token::KwAuto => TokKind::KwAuto,
@@ -191,7 +194,8 @@ fn kind(token: &Token) -> TokKind {
         Token::KwWith => TokKind::KwWith,
         Token::KwOf => TokKind::KwOf,
         Token::Bar => TokKind::Bar,
-        Token::HashGlobalAllocator => TokKind::HashGlobalAllocator,
+        Token::HashLBracket => TokKind::HashLBracket,
+        Token::RBracket => TokKind::RBracket,
         Token::HashCheck => TokKind::HashCheck,
         Token::HashEval => TokKind::HashEval,
         Token::BlockComment => TokKind::BlockComment,
@@ -219,6 +223,7 @@ fn kind(token: &Token) -> TokKind {
         Token::Star => TokKind::Star,
         Token::Slash => TokKind::Slash,
         Token::Percent => TokKind::Percent,
+        Token::Dollar => TokKind::Dollar,
         Token::Lt => TokKind::Lt,
         Token::Gt => TokKind::Gt,
         Token::Eq => TokKind::Eq,
@@ -304,7 +309,7 @@ fn is_sync_start(source: &str, tokens: &[SpannedToken], index: usize) -> bool {
     }
     if matches!(
         previous_non_newline_kind(tokens, index),
-        Some(TokKind::HashGlobalAllocator | TokKind::KwPub)
+        Some(TokKind::HashLBracket | TokKind::RBracket | TokKind::KwPub)
     ) {
         return false;
     }
@@ -315,7 +320,7 @@ fn is_sync_start(source: &str, tokens: &[SpannedToken], index: usize) -> bool {
         | Token::KwUse
         | Token::KwMod
         | Token::KwNamespace
-        | Token::HashGlobalAllocator
+        | Token::HashLBracket
         | Token::HashCheck
         | Token::HashEval => true,
         Token::KwPub => next_non_newline_kind(tokens, index + 1).is_some_and(|k| {
@@ -401,7 +406,7 @@ fn starts_with_header(tokens: &[SpannedToken]) -> bool {
             | Token::KwTheorem
             | Token::KwUse
             | Token::KwMod
-            | Token::HashGlobalAllocator
+            | Token::HashLBracket
             | Token::HashCheck
             | Token::HashEval,
         ) => true,
@@ -428,7 +433,9 @@ fn header_parser() -> impl Parser<TokKind, HeaderKind, Error = Simple<TokKind>> 
     let check = just(TokKind::HashCheck).to(HeaderKind::Check);
     let eval = just(TokKind::HashEval).to(HeaderKind::Eval);
 
-    just(TokKind::HashGlobalAllocator)
+    just(TokKind::HashLBracket)
+        .then_ignore(none_of([TokKind::RBracket]).repeated())
+        .then_ignore(just(TokKind::RBracket))
         .then_ignore(newlines())
         .or_not()
         .ignore_then(just(TokKind::KwPub).then_ignore(newlines()).or_not())
@@ -455,6 +462,9 @@ fn offset_top_level<'bump>(
         TopLevel::TLInstance(name, constraint, value, span) => {
             TopLevel::TLInstance(name, constraint, value, offset_span(span, offset))
         }
+        TopLevel::TLVariable(params, span) => {
+            TopLevel::TLVariable(params, offset_span(span, offset))
+        }
         TopLevel::TLTheorem(name, prop, body, span) => {
             TopLevel::TLTheorem(name, prop, body, offset_span(span, offset))
         }
@@ -478,10 +488,19 @@ fn offset_top_level<'bump>(
             let shifted = offset_top_level((*inner).clone(), offset, arena);
             TopLevel::TLPublic(arena.bump().alloc(shifted))
         }
+        TopLevel::TLAttributed(attrs, inner, span) => {
+            let shifted = offset_top_level((*inner).clone(), offset, arena);
+            TopLevel::TLAttributed(
+                attrs,
+                arena.bump().alloc(shifted),
+                offset_span(span, offset),
+            )
+        }
         TopLevel::TLCheck(term, constraint, span) => {
             TopLevel::TLCheck(term, constraint, offset_span(span, offset))
         }
         TopLevel::TLEval(term, span) => TopLevel::TLEval(term, offset_span(span, offset)),
         TopLevel::TLExpr(term, span) => TopLevel::TLExpr(term, offset_span(span, offset)),
+        TopLevel::TLSplice(term, span) => TopLevel::TLSplice(term, offset_span(span, offset)),
     }
 }

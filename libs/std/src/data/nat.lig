@@ -1,0 +1,8 @@
+pub def Nat : prop := enum
+    | Zero
+    | Succ of (pred : Nat)
+
+pub def zero : Nat := Zero
+pub def one : Nat := Succ Zero
+pub def two : Nat := Succ (Succ Zero)
+

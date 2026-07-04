@@ -172,6 +172,16 @@ fn generic_enum_some_check() {
     assert!(result.is_ok(), "Error: {:?}", result.err());
 }
 
+#[test]
+fn generic_enum_payload_uses_constraint_args() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    let result = compiler.process_file_str(
+        "def Option (A : prop) : prop := enum\n  | None\n  | Some of (val : A)\n#check Some \"bad\" : Option int\n",
+    );
+    assert!(result.is_err(), "Should reject str payload for Option int");
+}
+
 // ── Generic struct type definition ──
 
 #[test]
@@ -431,6 +441,41 @@ fn codegen_generic_enum_monomorphizes_used_instance() {
     assert!(c.contains("typedef struct Option__int"), "{c}");
     assert!(c.contains("int64_t unwrap__int(Option__int opt"), "{c}");
     assert!(eval_c.contains("unwrap__int(((Option__int)"), "{eval_c}");
+}
+
+#[test]
+fn codegen_non_prefix_erased_param_monomorphizes() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    compiler
+        .collect_file_str(
+            "def choose (x : int) (A : prop) (y : A) : A := y\n\
+             #eval choose 0 int 5\n",
+        )
+        .unwrap();
+    let c = ligare::backend::c::emit_c(
+        compiler.tops(),
+        compiler.raw_defs(),
+        compiler.fun_sigs(),
+        &compiler.enum_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let eval_c = ligare::backend::c::emit_eval_c(
+        compiler.tops(),
+        compiler.raw_defs(),
+        compiler.fun_sigs(),
+        &compiler.enum_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"))
+    .unwrap();
+    assert!(
+        c.contains("int64_t choose__int(int64_t x, int64_t y)"),
+        "{c}"
+    );
+    assert!(eval_c.contains("choose__int(0, 5)"), "{eval_c}");
+    assert!(!c.contains("prop A"), "{c}");
 }
 
 #[test]

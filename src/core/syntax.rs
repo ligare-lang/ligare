@@ -1,6 +1,12 @@
 use std::fmt;
 
-use crate::config::{UNIVERSE_DATA, UNIVERSE_PROOF, UNIVERSE_PROP, UNIVERSE_THEOREM};
+use crate::config::{
+    BUILTIN_AND, BUILTIN_BOOL, BUILTIN_C_INT, BUILTIN_C_UINT, BUILTIN_DATA, BUILTIN_I8,
+    BUILTIN_I16, BUILTIN_I32, BUILTIN_I64, BUILTIN_IMPLIES, BUILTIN_INT, BUILTIN_IO, BUILTIN_NOT,
+    BUILTIN_OR, BUILTIN_PROOF, BUILTIN_PROP, BUILTIN_PTR, BUILTIN_STR, BUILTIN_THEOREM, BUILTIN_U8,
+    BUILTIN_U16, BUILTIN_U32, BUILTIN_U64, BUILTIN_UNIT, UNIVERSE_DATA, UNIVERSE_PROOF,
+    UNIVERSE_PROP, UNIVERSE_THEOREM, canonical_builtin_name,
+};
 
 pub type Name<'bump> = &'bump str;
 
@@ -85,6 +91,136 @@ impl<'bump> Term<'bump> {
     }
 }
 
+/// Compute the universe level of a term.
+///
+/// Levels are compile-time metadata only.  They are intentionally computed from
+/// the existing AST instead of being emitted into backend IR or C output.
+pub fn compute_level(term: &Term<'_>) -> u32 {
+    match term {
+        Term::LitInt(_)
+        | Term::LitBool(_)
+        | Term::LitStr(_)
+        | Term::Var(_)
+        | Term::Named(_)
+        | Term::Global(_)
+        | Term::PrimOp(_)
+        | Term::RefParam
+        | Term::Universe(Universe::UData | Universe::UProp) => 0,
+        Term::Universe(Universe::UTheorem | Universe::UProof) => 1,
+        Term::Builtin(name) => builtin_level(name),
+        Term::App(f, _) => compute_level(f),
+        Term::Implicit(inner)
+        | Term::Lam(inner)
+        | Term::NamedLam(_, inner)
+        | Term::Unsafe(inner)
+        | Term::Pure(inner)
+        | Term::Quote(inner)
+        | Term::Splice(inner)
+        | Term::StructProj(inner, _)
+        | Term::MethodCall(inner, _) => compute_level(inner),
+        Term::Pi(_, a, b) | Term::Refine(_, a, b) => {
+            compute_level(a).max(compute_level(b)).saturating_add(1)
+        }
+        Term::Let(_, val, body, constraint) => constraint
+            .map(compute_level)
+            .unwrap_or(0)
+            .max(compute_level(val))
+            .max(compute_level(body)),
+        Term::IfThenElse(cond, then_branch, else_branch) => compute_level(cond)
+            .max(compute_level(then_branch))
+            .max(compute_level(else_branch)),
+        Term::Annot(term, _) => compute_level(term),
+        Term::ByProof(Some(term), tactics) => compute_level(term).max(tactics_level(tactics)),
+        Term::ByProof(None, tactics) => 1.max(tactics_level(tactics)),
+        Term::AutoProof => 1,
+        Term::EnumDef(_, variants) => variants
+            .iter()
+            .flat_map(|(_, fields)| {
+                fields
+                    .iter()
+                    .map(|(_, constraint)| compute_level(constraint))
+            })
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1),
+        Term::Variant(_, _, payloads) | Term::StructCons(_, payloads) => payloads
+            .iter()
+            .map(|payload| compute_level(payload))
+            .max()
+            .unwrap_or(0),
+        Term::Match(scrutinee, branches) => branches
+            .iter()
+            .map(|(_, binds, body)| {
+                binds
+                    .iter()
+                    .map(|(_, constraint)| compute_level(constraint))
+                    .max()
+                    .unwrap_or(0)
+                    .max(compute_level(body))
+            })
+            .max()
+            .unwrap_or(0)
+            .max(compute_level(scrutinee)),
+        Term::NamedMatch(scrutinee, branches) => branches
+            .iter()
+            .map(|(_, binds, body)| {
+                binds
+                    .iter()
+                    .map(|(_, constraint)| compute_level(constraint))
+                    .max()
+                    .unwrap_or(0)
+                    .max(compute_level(body))
+            })
+            .max()
+            .unwrap_or(0)
+            .max(compute_level(scrutinee)),
+        Term::Do(stmts) => stmts
+            .iter()
+            .map(|stmt| match stmt {
+                DoStmt::Bind(_, rhs) => compute_level(rhs),
+                DoStmt::Let(_, rhs, constraint) => {
+                    compute_level(rhs).max(constraint.map(compute_level).unwrap_or(0))
+                }
+                DoStmt::Expr(expr) => compute_level(expr),
+            })
+            .max()
+            .unwrap_or(0),
+        Term::StructDef(_, fields) => fields
+            .iter()
+            .map(|(_, constraint)| compute_level(constraint))
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1),
+    }
+}
+
+pub fn builtin_level(name: &str) -> u32 {
+    match canonical_builtin_name(name) {
+        BUILTIN_DATA | BUILTIN_PROP => 0,
+        BUILTIN_THEOREM | BUILTIN_PROOF => 1,
+        BUILTIN_UNIT => 0,
+        BUILTIN_INT | BUILTIN_BOOL | BUILTIN_STR | BUILTIN_IO | BUILTIN_PTR | BUILTIN_AND
+        | BUILTIN_OR | BUILTIN_NOT | BUILTIN_IMPLIES | BUILTIN_I8 | BUILTIN_I16 | BUILTIN_I32
+        | BUILTIN_I64 | BUILTIN_U8 | BUILTIN_U16 | BUILTIN_U32 | BUILTIN_U64 | BUILTIN_C_INT
+        | BUILTIN_C_UINT => 1,
+        _ => 0,
+    }
+}
+
+fn tactics_level(tactics: &[Tactic<'_>]) -> u32 {
+    tactics
+        .iter()
+        .map(|tactic| match tactic {
+            Tactic::Exact(term) | Tactic::Apply(term) | Tactic::Have(_, term) => {
+                compute_level(term)
+            }
+            Tactic::Intro(_) => 0,
+            Tactic::Custom(_, args) => args.iter().map(|arg| compute_level(arg)).max().unwrap_or(0),
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 impl PrimOp {
     pub fn apply(&self, x: i64, y: i64) -> Term<'static> {
         match self {
@@ -116,6 +252,8 @@ pub enum Tactic<'bump> {
     /// `have <name> := <term>` — prove an intermediate lemma, add it to
     /// the context as a theorem, and continue.
     Have(Name<'bump>, &'bump Term<'bump>),
+    /// `name(args...)` — custom compile-time tactic registered with `#[tactic]`.
+    Custom(Name<'bump>, &'bump [&'bump Term<'bump>]),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,6 +315,10 @@ pub enum Term<'bump> {
     StructProj(&'bump Term<'bump>, usize),
     /// Parser-level implicit method call receiver: `receiver.method`.
     MethodCall(&'bump Term<'bump>, Name<'bump>),
+    /// Metaprogramming quote: parser-level code quotation.
+    Quote(&'bump Term<'bump>),
+    /// Metaprogramming splice: compile-time expression insertion.
+    Splice(&'bump Term<'bump>),
 }
 
 #[cfg(test)]

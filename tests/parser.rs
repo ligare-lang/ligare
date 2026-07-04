@@ -416,6 +416,66 @@ fn program_with_def_and_check() {
     assert!(matches!(tops[1], TopLevel::TLCheck(..)));
 }
 
+#[test]
+fn top_level_attribute_is_preserved_with_args() {
+    let (b, arena) = a();
+    let tops = parse_program("#[meta::rewrite(\"x\", 1)]\ndef x : int := 5", b, &arena)
+        .expect("program should parse");
+
+    assert_eq!(tops.len(), 1);
+    let TopLevel::TLAttributed(attrs, inner, _) = &tops[0] else {
+        panic!("expected attributed top-level, got {:?}", tops[0]);
+    };
+    assert_eq!(attrs.len(), 1);
+    assert_eq!(attrs[0].path, &["meta", "rewrite"]);
+    assert_eq!(attrs[0].args.len(), 2);
+    assert_eq!(*attrs[0].args[0], Term::LitStr("x"));
+    assert_eq!(*attrs[0].args[1], Term::LitInt(1));
+    assert!(matches!(**inner, TopLevel::TLDef(..)));
+}
+
+#[test]
+fn global_allocator_attribute_keeps_codegen_marker() {
+    let (b, arena) = a();
+    let tops =
+        parse_program("#[global_allocator]\ndef alloc : int := 1", b, &arena).expect("parse");
+
+    let TopLevel::TLAttributed(attrs, inner, _) = &tops[0] else {
+        panic!("expected attributed top-level, got {:?}", tops[0]);
+    };
+    assert!(attrs.iter().any(|attr| attr.is_name("global_allocator")));
+    assert!(
+        matches!(**inner, TopLevel::TLDef(name, ..) if name.starts_with("__ligare_global_allocator__"))
+    );
+}
+
+#[test]
+fn def_body_with_builtin_application_stops_at_newline() {
+    let (b, arena) = a();
+    parse_expr_top("ptr_cast c_uint p", b, &arena).expect("body expression should parse");
+    parse_expr_top("ptr c_uint", b, &arena).expect("return expression should parse");
+    parse_def_top(
+        "def cast (p : ptr c_int) : ptr c_uint := ptr_cast c_uint p",
+        b,
+        &arena,
+    )
+    .expect("def should parse");
+    parse_def_top(
+        "def cast (p : ptr c_int) : ptr c_uint := ptr_cast c_uint p\n",
+        b,
+        &arena,
+    )
+    .expect("def with newline should parse");
+    let tops = parse_program(
+        "def cast (p : ptr c_int) : ptr c_uint := ptr_cast c_uint p\n",
+        b,
+        &arena,
+    )
+    .expect("program should parse");
+    assert_eq!(tops.len(), 1);
+    assert!(matches!(tops[0], TopLevel::TLDef(..)));
+}
+
 // ── Enum & Match tests ──
 
 #[test]

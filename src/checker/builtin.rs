@@ -10,7 +10,7 @@ use crate::config::{
     BUILTIN_AND, BUILTIN_BOOL, BUILTIN_C_INT, BUILTIN_C_UINT, BUILTIN_DATA, BUILTIN_I8,
     BUILTIN_I16, BUILTIN_I32, BUILTIN_I64, BUILTIN_IMPLIES, BUILTIN_INT, BUILTIN_IO, BUILTIN_NOT,
     BUILTIN_OR, BUILTIN_PROOF, BUILTIN_PROP, BUILTIN_PTR, BUILTIN_STR, BUILTIN_THEOREM, BUILTIN_U8,
-    BUILTIN_U16, BUILTIN_U32, BUILTIN_U64, BUILTIN_UNIT,
+    BUILTIN_U16, BUILTIN_U32, BUILTIN_U64, BUILTIN_UNIT, canonical_builtin_name, is_builtin_name,
 };
 use crate::core::syntax::{Term, Universe};
 use crate::diagnostic::Diagnostic;
@@ -93,7 +93,7 @@ fn check_str(t: &Term<'_>) -> Result<(), Diagnostic> {
 
 fn check_unit(t: &Term<'_>) -> Result<(), Diagnostic> {
     match t {
-        Term::Builtin(name) | Term::Global(name) if *name == BUILTIN_UNIT => Ok(()),
+        Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_UNIT) => Ok(()),
         _ => Err(Diagnostic::new(format!(
             "expected (), got {}",
             PrettyPrinter::pretty(t)
@@ -166,17 +166,23 @@ impl BuiltinRegistry {
 
     /// Return the universe associated with a builtin name.
     pub fn universe_of(&self, name: &str) -> Option<Universe> {
-        self.table.get(name).map(|e| e.universe)
+        self.table
+            .get(canonical_builtin_name(name))
+            .map(|e| e.universe)
     }
 
     /// Get the checker function for a builtin name.
     pub fn checker(&self, name: &str) -> Option<BuiltinChecker> {
-        self.table.get(name).map(|e| e.checker)
+        self.table
+            .get(canonical_builtin_name(name))
+            .map(|e| e.checker)
     }
 
     /// Get the logic kind for a builtin name.
     pub fn logic_kind(&self, name: &str) -> Option<LogicKind> {
-        self.table.get(name).and_then(|e| e.logic_kind)
+        self.table
+            .get(canonical_builtin_name(name))
+            .and_then(|e| e.logic_kind)
     }
 }
 

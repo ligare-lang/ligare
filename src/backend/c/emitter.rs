@@ -460,7 +460,15 @@ impl<'a> CEmitter<'a> {
         outputs: &[&Term<'_>],
     ) -> Result<String, Diagnostic> {
         let mut called_names: HashSet<String> = if outputs.is_empty() {
-            self.name_resolver.all_def_names(raw_defs)
+            if let Some(main_body) = self.runtime_main_body(tops) {
+                let mut names = self
+                    .name_resolver
+                    .collect_called_names(&[main_body], raw_defs);
+                names.insert("main".to_string());
+                names
+            } else {
+                self.name_resolver.all_def_names(raw_defs)
+            }
         } else {
             self.name_resolver.collect_called_names(outputs, raw_defs)
         };
@@ -475,6 +483,7 @@ impl<'a> CEmitter<'a> {
             called_names.insert(allocator.deallocate.clone());
             called_names.insert(allocator.reallocate.clone());
         }
+        let filter_top_constants = outputs.is_empty() && self.runtime_main_body(tops).is_some();
 
         let mut out =
             String::from("#include <stdio.h>\n#include <stdint.h>\n#include <stddef.h>\n");
@@ -524,6 +533,9 @@ impl<'a> CEmitter<'a> {
                 && params.is_empty()
                 && self.name_resolver.count_lams(body) == 0
                 && *name != "main"
+                && (!filter_top_constants
+                    || called_names.contains(*name)
+                    || !self.term_requires_allocation(body))
             {
                 out.push_str(&self.emit_def(name, params, body)?);
                 out.push('\n');
@@ -616,6 +628,7 @@ impl<'a> CEmitter<'a> {
                         if *name != "main"
                             && params.is_empty()
                             && self.name_resolver.count_lams(body) == 0
+                            && (!self.runtime_main_body(tops).is_some() || called_names.contains(*name))
                             && self.term_requires_allocation(body)
                 )
             })

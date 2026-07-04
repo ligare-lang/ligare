@@ -39,6 +39,8 @@ pub enum Token {
     KwExtern,
     #[token("instance")]
     KwInstance,
+    #[token("variable")]
+    KwVariable,
     #[token("unsafe")]
     KwUnsafe,
     #[token("pure")]
@@ -81,8 +83,8 @@ pub enum Token {
     Bar,
 
     // Directives
-    #[token("#[global_allocator]")]
-    HashGlobalAllocator,
+    #[token("#[")]
+    HashLBracket,
     #[token("#check")]
     HashCheck,
     #[token("#eval")]
@@ -115,6 +117,8 @@ pub enum Token {
     LParen,
     #[token(")")]
     RParen,
+    #[token("]")]
+    RBracket,
     #[token(";")]
     Semi,
     #[token(",")]
@@ -141,6 +145,8 @@ pub enum Token {
     Slash,
     #[token("%")]
     Percent,
+    #[token("$")]
+    Dollar,
     #[token("<")]
     Lt,
     #[token(">")]

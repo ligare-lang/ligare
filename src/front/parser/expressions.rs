@@ -477,7 +477,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         Ok(self.desugar_def(name, &params, m_ret, body))
     }
 
-    fn parse_unsafe_expr(&mut self) -> Result<&'bump Term<'bump>, ParseError> {
+    pub(super) fn parse_unsafe_expr(&mut self) -> Result<&'bump Term<'bump>, ParseError> {
         self.expect(&Token::KwUnsafe)?;
         self.expect(&Token::LBrace)?;
         let inner = self.parse_expr_until(|tokens, i| matches!(tokens[i].0, Token::RBrace))?;
@@ -544,6 +544,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 | Token::Not
                 | Token::Implies
                 | Token::KwBy
+                | Token::Dollar
         )
     }
 
@@ -607,7 +608,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 | Token::KwUse
                 | Token::KwMod
                 | Token::KwNamespace
-                | Token::HashGlobalAllocator
+                | Token::HashLBracket
                 | Token::HashCheck
                 | Token::HashEval
                 | Token::ColonEq
@@ -807,6 +808,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 Ok(self.arena.auto_proof())
             }
             Some(Token::Ident(_)) => self.parse_var(),
+            Some(Token::Dollar) => self.parse_splice(),
             Some(Token::Backslash) | Some(Token::Lambda) => self.parse_lam(),
             Some(Token::KwFun) => self.parse_fun_lam(),
             Some(Token::KwDo) => self.parse_do_expr(),
@@ -843,6 +845,12 @@ impl<'a, 'bump> Parser<'a, 'bump> {
 
     fn parse_var(&mut self) -> Result<&'bump Term<'bump>, ParseError> {
         let name = self.parse_path_ident()?;
+        if name == "quote" {
+            self.expect(&Token::LBrace)?;
+            let inner = self.parse_expr_until(|tokens, i| matches!(tokens[i].0, Token::RBrace))?;
+            self.expect(&Token::RBrace)?;
+            return Ok(self.arena.quote(inner));
+        }
         if KEYWORDS.contains(&name)
             && !matches!(
                 name,
@@ -860,7 +868,15 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         }
     }
 
-    fn parse_path_ident(&mut self) -> Result<Name<'bump>, ParseError> {
+    fn parse_splice(&mut self) -> Result<&'bump Term<'bump>, ParseError> {
+        self.expect(&Token::Dollar)?;
+        self.expect(&Token::LParen)?;
+        let inner = self.parse_expr_until(|tokens, i| matches!(tokens[i].0, Token::RParen))?;
+        self.expect(&Token::RParen)?;
+        Ok(self.arena.splice(inner))
+    }
+
+    pub(super) fn parse_path_ident(&mut self) -> Result<Name<'bump>, ParseError> {
         let first = self.parse_decl_ident()?;
         let mut parts = vec![first];
         while self.try_expect(&Token::PathSep) {

@@ -33,18 +33,27 @@ Program     ::= { TopLevel }
 
 Entry       ::= "main.lig" must contain "pub" "def" "main" ":" "IO" "()" ":=" Expr
 
-TopLevel    ::= Def
+TopLevel    ::= { Attribute } ( Def
               | Instance
+              | Variable
               | Use
               | Mod
               | Check
               | Eval
-              | Expr
+              | Expr )
+
+Attribute   ::= "#[" AttrPath [ "(" AttrArgs ")" ] "]"
+
+AttrPath    ::= Ident { "::" Ident }
+
+AttrArgs    ::= Expr { "," Expr }
 
 Def         ::= [ "pub" ] "def" Ident Params [ ":" Expr ] ":=" Expr
               | [ "pub" ] "def" Ident                   ":=" Expr
 
 Instance    ::= [ "pub" ] "instance" Ident ":" Expr ":=" Expr
+
+Variable    ::= "variable" Params
 
 Use         ::= [ "pub" ] "use" UseItem { "," UseItem }
 
@@ -164,10 +173,33 @@ Tactic      ::= "exact" Expr
               | "apply" Expr
               | "intro" [ Ident ]
               | "have" Ident ":=" Expr
+              | Ident "(" [ AttrArgs ] ")"  (* custom #[tactic] call *)
               | Expr                    (* implicit "exact" *)
 
 Tactic terminators (tokens that end the tactic block):
   ":="  "in"  "then"  "else"  ")"  "}"  ":"  "def"  "#check"  "#eval"
+
+(* ── Built-in attributes ────────────────────────────────────────── *)
+
+(* #[global_allocator]
+     Marks one definition as the allocator instance used by codegen.
+     This attribute may only prefix `def`.
+
+   #[compiler_intrinsic]
+     Marks a std declaration whose implementation is supplied by the compiler.
+     The declaration documents and exports the symbol; codegen does not emit
+     the placeholder body.
+
+   #[compiler_builtin_attribute]
+     Marks std declarations for compiler-handled attributes.
+
+   #[tactic]
+     Marks a function as a custom tactic entry point.  The first parameter and
+     return type must both be Expr.
+
+   #[attr]
+     Marks a function as a custom attribute entry point.  The first parameter
+     must be Expr and the return type must be Definitions. *)
 
 (* ── Identifiers ────────────────────────────────────────────────── *)
 

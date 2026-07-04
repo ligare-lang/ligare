@@ -254,6 +254,9 @@ impl NameResolver {
             Term::Unsafe(inner) | Term::Pure(inner) => {
                 self.collect_names_in_term(inner, def_names, called)
             }
+            Term::Quote(inner) | Term::Splice(inner) => {
+                self.collect_names_in_term(inner, def_names, called)
+            }
             Term::StructCons(_, field_values) => {
                 for v in *field_values {
                     self.collect_names_in_term(v, def_names, called);
@@ -283,6 +286,11 @@ impl NameResolver {
                         }
                         crate::core::syntax::Tactic::Have(_, t) => {
                             self.collect_names_in_term(t, def_names, called);
+                        }
+                        crate::core::syntax::Tactic::Custom(_, args) => {
+                            for arg in *args {
+                                self.collect_names_in_term(arg, def_names, called);
+                            }
                         }
                         _ => {}
                     }

@@ -50,6 +50,8 @@ impl LanguageServer for Backend {
                     ..Default::default()
                 }),
                 definition_provider: Some(lsp::OneOf::Left(true)),
+                references_provider: Some(lsp::OneOf::Left(true)),
+                document_symbol_provider: Some(lsp::OneOf::Left(true)),
                 hover_provider: Some(lsp::HoverProviderCapability::Simple(true)),
                 semantic_tokens_provider: Some(
                     lsp::SemanticTokensServerCapabilities::SemanticTokensOptions(
@@ -126,6 +128,26 @@ impl LanguageServer for Backend {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         Ok(self.diagnostics.hover(&uri, position).await)
+    }
+
+    async fn document_symbol(
+        &self,
+        params: lsp::DocumentSymbolParams,
+    ) -> tower_lsp::jsonrpc::Result<Option<lsp::DocumentSymbolResponse>> {
+        let uri = params.text_document.uri;
+        Ok(self.diagnostics.document_symbols(&uri).await)
+    }
+
+    async fn references(
+        &self,
+        params: lsp::ReferenceParams,
+    ) -> tower_lsp::jsonrpc::Result<Option<Vec<lsp::Location>>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        Ok(self
+            .diagnostics
+            .references(&uri, position, params.context.include_declaration)
+            .await)
     }
 
     async fn semantic_tokens_full(

@@ -146,6 +146,8 @@ impl<'bump> WhnfEvaluator<'bump> {
             }
             Term::NamedMatch(..) => Err("NamedMatch reached WHNF before desugaring".into()),
             Term::MethodCall(..) => Err("MethodCall reached WHNF before resolution".into()),
+            Term::Quote(..) => Err("Quote reached WHNF before metaprogram expansion".into()),
+            Term::Splice(..) => Err("Splice reached WHNF before metaprogram expansion".into()),
         }
     }
 

@@ -1,0 +1,43 @@
+#[compiler_builtin_attribute]
+pub def compiler_builtin_attribute : prop := data
+
+#[compiler_builtin_attribute]
+pub def compiler_intrinsic : prop := data
+
+#[compiler_builtin_attribute]
+pub def global_allocator : prop := data
+
+#[compiler_builtin_attribute]
+pub def terminating : prop := data
+
+#[compiler_builtin_attribute]
+pub def derive : prop := data
+
+#[compiler_builtin_attribute]
+pub def tactic : prop := data
+
+#[compiler_builtin_attribute]
+pub def attr : prop := data
+
+pub def Expr : prop := enum
+  | Int of (value : int)
+  | Bool of (value : bool)
+  | Str of (value : str)
+  | Var of (index : int)
+  | Name of (name : str)
+  | Global of (name : str)
+  | Prim of (op : str)
+  | App of (fun : Expr) (arg : Expr)
+  | Lam of (body : Expr)
+  | Let of (name : str) (value : Expr) (body : Expr)
+  | If of (cond : Expr) (then_branch : Expr) (else_branch : Expr)
+  | Annot of (term : Expr) (constraint : Expr)
+  | Def of (name : str) (constraint : Expr) (body : Expr)
+  | Instance of (name : str) (constraint : Expr) (value : Expr)
+  | StructDef of (name : str)
+  | EnumDef of (name : str)
+  | Pi of (name : str) (domain : Expr) (codomain : Expr)
+
+pub def Definitions : prop := enum
+  | Nil
+  | Cons of (head : Expr) (tail : Definitions)

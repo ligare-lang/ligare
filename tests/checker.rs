@@ -5,7 +5,7 @@ use ligare::checker::check;
 use ligare::checker::context::{add_refine, empty_ctx, empty_table};
 use ligare::compiler::Compiler;
 use ligare::core::pool::TermArena;
-use ligare::core::syntax::{PrimOp, Tactic, Term};
+use ligare::core::syntax::{PrimOp, Tactic, Term, Universe, compute_level};
 
 fn a() -> (&'static bumpalo::Bump, TermArena<'static>) {
     let b = leak_bump();
@@ -26,6 +26,65 @@ fn int_literal() {
     assert_eq!(
         check_empty(&arena, &Term::LitInt(5), arena.builtin(s(&arena, "int"))),
         Ok(())
+    );
+}
+
+#[test]
+fn universe_levels_for_data_terms_and_builtin_constraints() {
+    let (_b, arena) = a();
+    assert_eq!(compute_level(arena.lit_int(5)), 0);
+    assert_eq!(compute_level(arena.lit_bool(true)), 0);
+    assert_eq!(compute_level(arena.var(0)), 0);
+    assert_eq!(compute_level(arena.builtin(s(&arena, "int"))), 1);
+    assert_eq!(compute_level(arena.builtin(s(&arena, "bool"))), 1);
+}
+
+#[test]
+fn universe_level_for_refinement_is_above_base_and_predicate() {
+    let (_b, arena) = a();
+    let int = arena.builtin(s(&arena, "int"));
+    let pred = bin(&arena, PrimOp::Ge, arena.ref_param(), arena.lit_int(0));
+    let nat = arena.refine(s(&arena, "Nat"), int, pred);
+
+    assert_eq!(
+        compute_level(nat),
+        compute_level(int).max(compute_level(pred)) + 1
+    );
+    assert!(compute_level(nat) > compute_level(int));
+}
+
+#[test]
+fn universe_level_check_allows_basic_and_refined_membership() {
+    let (_b, arena) = a();
+    let int = arena.builtin(s(&arena, "int"));
+    assert_eq!(check_empty(&arena, arena.lit_int(3), int), Ok(()));
+
+    let pred = bin(&arena, PrimOp::Ge, arena.ref_param(), arena.lit_int(0));
+    let table = add_refine(s(&arena, "Nat"), int, pred, &empty_table());
+    assert_eq!(
+        check(
+            &arena,
+            &table,
+            &empty_ctx(),
+            arena.lit_int(3),
+            arena.builtin(s(&arena, "Nat"))
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn universe_level_check_rejects_constraint_as_data_member() {
+    let (_b, arena) = a();
+    let fields = arena.alloc_slice(&[(s(&arena, "value"), arena.builtin(s(&arena, "int")))]);
+    let ty = arena.struct_def(s(&arena, "Mystery"), fields);
+    let err = check_empty(&arena, ty, arena.universe(Universe::UData))
+        .expect_err("constraint term should not check as runtime data");
+
+    assert!(
+        err.message.contains("宇宙层级错误"),
+        "unexpected error: {}",
+        err.message
     );
 }
 

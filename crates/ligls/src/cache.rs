@@ -261,7 +261,9 @@ impl LspCache {
         let bump = Bump::new();
         let arena = TermArena::new(&bump);
         let parsed = parse_file(&uri, &text, &bump, &arena);
-        let semantic_tokens = semantic_tokens_for_source(&text, &parsed.ast, &parsed.top_ranges);
+        let semantic_top_ranges =
+            crate::completion::expanded_top_level_ranges(&text, &parsed.ast, &bump, &arena);
+        let semantic_tokens = semantic_tokens_for_source(&text, &parsed.ast, &semantic_top_ranges);
         let project = self.project_context_for_cached_uri(&uri);
         let module_key = project
             .as_ref()
@@ -1163,6 +1165,16 @@ fn rewrite_top_for_module<'bump>(
                 span.clone(),
             )]
         }
+        TopLevel::TLVariable(params, span) => vec![TopLevel::TLVariable(
+            rewrite_params_for_module(
+                arena,
+                params,
+                imports,
+                own_names,
+                &mut RewriteScope::default(),
+            ),
+            span.clone(),
+        )],
         TopLevel::TLTheorem(name, prop, body, span) => {
             let qname = own_names.get(*name).map(String::as_str).unwrap_or(name);
             let qname = arena.alloc_str(qname);
@@ -1219,6 +1231,16 @@ fn rewrite_top_for_module<'bump>(
             ),
             span.clone(),
         )],
+        TopLevel::TLSplice(term, span) => vec![TopLevel::TLSplice(
+            rewrite_term_for_module(
+                arena,
+                term,
+                imports,
+                own_names,
+                &mut RewriteScope::default(),
+            ),
+            span.clone(),
+        )],
         TopLevel::TLNamespace(name, items, _) => {
             let mut rewritten = Vec::new();
             for item in *items {
@@ -1233,7 +1255,10 @@ fn rewrite_top_for_module<'bump>(
             }
             rewritten
         }
-        TopLevel::TLUse(..) | TopLevel::TLMod(..) | TopLevel::TLPublic(_) => Vec::new(),
+        TopLevel::TLUse(..)
+        | TopLevel::TLMod(..)
+        | TopLevel::TLPublic(_)
+        | TopLevel::TLAttributed(..) => Vec::new(),
     }
 }
 
@@ -1309,6 +1334,18 @@ fn rewrite_namespace_item_for_module<'bump>(
                 rewrite_term_for_module(
                     arena,
                     value,
+                    imports,
+                    own_names,
+                    &mut RewriteScope::default(),
+                ),
+                span.clone(),
+            ));
+        }
+        TopLevel::TLVariable(params, span) => {
+            out.push(TopLevel::TLVariable(
+                rewrite_params_for_module(
+                    arena,
+                    params,
                     imports,
                     own_names,
                     &mut RewriteScope::default(),
@@ -1594,6 +1631,12 @@ fn rewrite_term_for_module<'bump>(
         Term::Pure(inner) => arena.pure(rewrite_term_for_module(
             arena, inner, imports, own_names, scope,
         )),
+        Term::Quote(inner) => arena.quote(rewrite_term_for_module(
+            arena, inner, imports, own_names, scope,
+        )),
+        Term::Splice(inner) => arena.splice(rewrite_term_for_module(
+            arena, inner, imports, own_names, scope,
+        )),
         Term::Var(_)
         | Term::LitInt(_)
         | Term::LitBool(_)
@@ -1632,8 +1675,12 @@ fn item_name(top: &TopLevel<'_>) -> Option<String> {
             .first()
             .and_then(|tree| tree.alias.or_else(|| tree.path.last().copied()))
             .map(str::to_string),
-        TopLevel::TLCheck(..) | TopLevel::TLEval(..) | TopLevel::TLExpr(..) => None,
-        TopLevel::TLPublic(_) => unreachable!(),
+        TopLevel::TLVariable(..)
+        | TopLevel::TLCheck(..)
+        | TopLevel::TLEval(..)
+        | TopLevel::TLExpr(..)
+        | TopLevel::TLSplice(..) => None,
+        TopLevel::TLPublic(_) | TopLevel::TLAttributed(..) => unreachable!(),
     }
 }
 
@@ -1642,6 +1689,7 @@ fn item_kind(top: &TopLevel<'_>) -> &'static str {
         TopLevel::TLDef(..) => "def",
         TopLevel::TLExternDef(..) => "extern",
         TopLevel::TLInstance(..) => "instance",
+        TopLevel::TLVariable(..) => "variable",
         TopLevel::TLTheorem(..) => "theorem",
         TopLevel::TLUse(..) => "use",
         TopLevel::TLMod(..) => "mod",
@@ -1649,7 +1697,8 @@ fn item_kind(top: &TopLevel<'_>) -> &'static str {
         TopLevel::TLCheck(..) => "check",
         TopLevel::TLEval(..) => "eval",
         TopLevel::TLExpr(..) => "expr",
-        TopLevel::TLPublic(_) => unreachable!(),
+        TopLevel::TLSplice(..) => "splice",
+        TopLevel::TLPublic(_) | TopLevel::TLAttributed(..) => unreachable!(),
     }
 }
 
@@ -1668,6 +1717,7 @@ fn item_constraint(top: &TopLevel<'_>) -> Option<String> {
         TopLevel::TLInstance(_, constraint, _, _) => {
             Some(Constraint::from_term(constraint).display)
         }
+        TopLevel::TLVariable(..) => None,
         TopLevel::TLTheorem(_, prop, _, _) | TopLevel::TLCheck(_, prop, _) => {
             Some(Constraint::from_term(prop).display)
         }
@@ -1675,13 +1725,40 @@ fn item_constraint(top: &TopLevel<'_>) -> Option<String> {
         | TopLevel::TLMod(..)
         | TopLevel::TLNamespace(..)
         | TopLevel::TLEval(..)
-        | TopLevel::TLExpr(..) => None,
-        TopLevel::TLPublic(_) => unreachable!(),
+        | TopLevel::TLExpr(..)
+        | TopLevel::TLSplice(..) => None,
+        TopLevel::TLPublic(_) | TopLevel::TLAttributed(..) => unreachable!(),
     }
 }
 
 fn item_dependencies(top: &TopLevel<'_>) -> HashSet<String> {
     let mut names = HashSet::new();
+    if let TopLevel::TLAttributed(attrs, inner, _) = top {
+        for attr in *attrs {
+            if attr.is_name("derive") {
+                for arg in attr.args {
+                    if let Some(trait_name) = attr_arg_name(arg) {
+                        if let Some((prefix, leaf)) = trait_name.rsplit_once("::") {
+                            names.insert(format!("{prefix}::derive_{leaf}"));
+                        } else {
+                            names.insert(format!("derive_{trait_name}"));
+                        }
+                    }
+                    collect_term_names(arg, &mut names);
+                }
+            } else {
+                names.insert(attr.path.join("::"));
+                for arg in attr.args {
+                    collect_term_names(arg, &mut names);
+                }
+            }
+        }
+        names.extend(item_dependencies(inner));
+        if let Some(name) = item_name(top) {
+            names.remove(&name);
+        }
+        return names;
+    }
     match unwrap_public(top) {
         TopLevel::TLDef(_, params, ret, body, _) => {
             for (_, constraint) in *params {
@@ -1706,6 +1783,13 @@ fn item_dependencies(top: &TopLevel<'_>) -> HashSet<String> {
             collect_term_names(constraint, &mut names);
             collect_term_names(value, &mut names);
         }
+        TopLevel::TLVariable(params, _) => {
+            for (_, constraint) in *params {
+                if let Some(constraint) = constraint {
+                    collect_term_names(constraint, &mut names);
+                }
+            }
+        }
         TopLevel::TLTheorem(_, prop, body, _) => {
             collect_term_names(prop, &mut names);
             collect_term_names(body, &mut names);
@@ -1714,7 +1798,7 @@ fn item_dependencies(top: &TopLevel<'_>) -> HashSet<String> {
             collect_term_names(term, &mut names);
             collect_term_names(constraint, &mut names);
         }
-        TopLevel::TLEval(term, _) | TopLevel::TLExpr(term, _) => {
+        TopLevel::TLEval(term, _) | TopLevel::TLExpr(term, _) | TopLevel::TLSplice(term, _) => {
             collect_term_names(term, &mut names)
         }
         TopLevel::TLUse(..) | TopLevel::TLMod(..) => {}
@@ -1723,12 +1807,19 @@ fn item_dependencies(top: &TopLevel<'_>) -> HashSet<String> {
                 names.extend(item_dependencies(item));
             }
         }
-        TopLevel::TLPublic(_) => unreachable!(),
+        TopLevel::TLPublic(_) | TopLevel::TLAttributed(..) => unreachable!(),
     }
     if let Some(name) = item_name(top) {
         names.remove(&name);
     }
     names
+}
+
+fn attr_arg_name(term: &Term<'_>) -> Option<String> {
+    match term {
+        Term::Named(name) | Term::Global(name) | Term::Builtin(name) => Some((*name).to_string()),
+        _ => None,
+    }
 }
 
 fn collect_term_names(term: &Term<'_>, names: &mut HashSet<String>) {
@@ -1745,6 +1836,8 @@ fn collect_term_names(term: &Term<'_>, names: &mut HashSet<String>) {
         | Term::NamedLam(_, body)
         | Term::Unsafe(body)
         | Term::Pure(body)
+        | Term::Quote(body)
+        | Term::Splice(body)
         | Term::StructProj(body, _)
         | Term::MethodCall(body, _) => {
             collect_term_names(body, names);
@@ -1928,6 +2021,7 @@ fn resolve_module_imports_from_index(
 fn unwrap_public<'a, 'bump>(top: &'a TopLevel<'bump>) -> &'a TopLevel<'bump> {
     match top {
         TopLevel::TLPublic(inner) => unwrap_public(inner),
+        TopLevel::TLAttributed(_, inner, _) => unwrap_public(inner),
         other => other,
     }
 }

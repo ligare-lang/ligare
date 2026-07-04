@@ -1,0 +1,33 @@
+#[compiler_intrinsic]
+pub def int : prop := data
+#[compiler_intrinsic]
+pub def i8 : prop := data
+#[compiler_intrinsic]
+pub def i16 : prop := data
+#[compiler_intrinsic]
+pub def i32 : prop := data
+#[compiler_intrinsic]
+pub def i64 : prop := data
+#[compiler_intrinsic]
+pub def u8 : prop := data
+#[compiler_intrinsic]
+pub def u16 : prop := data
+#[compiler_intrinsic]
+pub def u32 : prop := data
+#[compiler_intrinsic]
+pub def u64 : prop := data
+#[compiler_intrinsic]
+pub def c_int : prop := data
+#[compiler_intrinsic]
+pub def c_uint : prop := data
+#[compiler_intrinsic]
+pub def bool : prop := data
+#[compiler_intrinsic]
+pub def str : prop := data
+#[compiler_intrinsic]
+pub def IO {A : prop} : prop := data
+#[compiler_intrinsic]
+pub def ptr {A : prop} : prop := data
+#[compiler_intrinsic]
+pub def ptr_cast {A : prop} {B : prop} (p : ptr A) : ptr B := data
+

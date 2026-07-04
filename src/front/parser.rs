@@ -27,6 +27,18 @@ pub enum Visibility {
     Public,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Attribute<'bump> {
+    pub path: &'bump [Name<'bump>],
+    pub args: &'bump [&'bump Term<'bump>],
+}
+
+impl Attribute<'_> {
+    pub fn is_name(&self, name: &str) -> bool {
+        self.path.len() == 1 && self.path[0] == name
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TopLevel<'bump> {
     /// name, params, ret-annotation, desugared-body (Annot(Lam(...), Pi(...))), span
@@ -46,6 +58,8 @@ pub enum TopLevel<'bump> {
     ),
     /// Compile-time implicit instance: name, constraint, value, span.
     TLInstance(Name<'bump>, &'bump Term<'bump>, &'bump Term<'bump>, Span),
+    /// Current-scope implicit parameters.
+    TLVariable(&'bump [(Name<'bump>, Option<&'bump Term<'bump>>)], Span),
     TLTheorem(Name<'bump>, &'bump Term<'bump>, &'bump Term<'bump>, Span),
     TLUse(&'bump [UseTree<'bump>], Visibility, Span),
     TLMod(Name<'bump>, Span),
@@ -54,6 +68,20 @@ pub enum TopLevel<'bump> {
     TLCheck(&'bump Term<'bump>, &'bump Term<'bump>, Span),
     TLEval(&'bump Term<'bump>, Span),
     TLExpr(&'bump Term<'bump>, Span),
+    TLSplice(&'bump Term<'bump>, Span),
+    TLAttributed(&'bump [Attribute<'bump>], &'bump TopLevel<'bump>, Span),
+}
+
+impl<'bump> TopLevel<'bump> {
+    pub fn has_attribute(&self, name: &str) -> bool {
+        match self {
+            TopLevel::TLAttributed(attrs, inner, _) => {
+                attrs.iter().any(|attr| attr.is_name(name)) || inner.has_attribute(name)
+            }
+            TopLevel::TLPublic(inner) => inner.has_attribute(name),
+            _ => false,
+        }
+    }
 }
 
 pub(super) const KEYWORDS: &[&str] = &[
@@ -72,6 +100,7 @@ pub(super) const KEYWORDS: &[&str] = &[
     "do",
     "extern",
     "instance",
+    "variable",
     "unsafe",
     "pure",
     "auto",

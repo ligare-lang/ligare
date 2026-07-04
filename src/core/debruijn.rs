@@ -214,6 +214,15 @@ impl<'arena, 'bump> Desugarer<'arena, 'bump> {
                                 n,
                                 self.try_desugar_with_env(t, env, resolver, effect)?,
                             ),
+                            Tactic::Custom(n, args) => {
+                                let args = args
+                                    .iter()
+                                    .map(|arg| {
+                                        self.try_desugar_with_env(arg, env, resolver, effect)
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()?;
+                                Tactic::Custom(n, self.arena.alloc_slice(&args))
+                            }
                         })
                     })
                     .collect::<Result<Vec<_>, String>>()?;
@@ -359,6 +368,12 @@ impl<'arena, 'bump> Desugarer<'arena, 'bump> {
             Term::Pure(inner) => self
                 .arena
                 .pure(self.try_desugar_with_env(inner, env, resolver, effect)?),
+            Term::Quote(inner) => self
+                .arena
+                .quote(self.try_desugar_with_env(inner, env, resolver, effect)?),
+            Term::Splice(inner) => self
+                .arena
+                .splice(self.try_desugar_with_env(inner, env, resolver, effect)?),
 
             // ── Leaf / no-name-binding nodes ──
             Term::Var(_)
@@ -558,6 +573,13 @@ impl<'bump> SubstitutionContext<'bump> {
                         Tactic::Apply(t) => Tactic::Apply(recurse(t, cutoff)),
                         Tactic::Intro(_) => *tac,
                         Tactic::Have(n, t) => Tactic::Have(n, recurse(t, cutoff)),
+                        Tactic::Custom(n, args) => {
+                            let args = args
+                                .iter()
+                                .map(|arg| recurse(arg, cutoff))
+                                .collect::<Vec<_>>();
+                            Tactic::Custom(n, self.arena.alloc_slice(&args))
+                        }
                     })
                     .collect();
                 self.arena
@@ -624,6 +646,8 @@ impl<'bump> SubstitutionContext<'bump> {
             }
             Term::Unsafe(inner) => self.arena.unsafe_(recurse(inner, cutoff)),
             Term::Pure(inner) => self.arena.pure(recurse(inner, cutoff)),
+            Term::Quote(inner) => self.arena.quote(recurse(inner, cutoff)),
+            Term::Splice(inner) => self.arena.splice(recurse(inner, cutoff)),
             // Leaf nodes — returned unchanged (Var handled by callers)
             _ => t,
         }
@@ -762,6 +786,8 @@ fn shift_term<'bump>(
         Term::MethodCall(receiver, method) => {
             arena.method_call(shift_term(arena, d, cutoff, receiver), method)
         }
+        Term::Quote(inner) => arena.quote(shift_term(arena, d, cutoff, inner)),
+        Term::Splice(inner) => arena.splice(shift_term(arena, d, cutoff, inner)),
         // All other nodes: return unchanged (no Var children that need shifting
         // beyond what's already covered by recursive cases, or leaf nodes).
         _ => t,

@@ -140,6 +140,13 @@ impl<'bump> TermArena<'bump> {
                         Tactic::Apply(t) => Tactic::Apply(self.map_mut(t, f)),
                         Tactic::Intro(_) => *tac,
                         Tactic::Have(n, t) => Tactic::Have(n, self.map_mut(t, f)),
+                        Tactic::Custom(n, args) => {
+                            let args = args
+                                .iter()
+                                .map(|arg| self.map_mut(arg, f))
+                                .collect::<Vec<_>>();
+                            Tactic::Custom(n, self.alloc_slice(&args))
+                        }
                     })
                     .collect();
                 self.by_proof(inner_mapped, self.alloc_slice(&mapped))
@@ -220,6 +227,8 @@ impl<'bump> TermArena<'bump> {
             Term::MethodCall(receiver, method) => {
                 self.method_call(self.map_mut(receiver, f), method)
             }
+            Term::Quote(inner) => self.quote(self.map_mut(inner, f)),
+            Term::Splice(inner) => self.splice(self.map_mut(inner, f)),
             _ => t,
         }
     }
@@ -359,6 +368,11 @@ impl<'bump> TermArena<'bump> {
                 Tactic::Exact(_) => {
                     return Err("`exact` must be the last tactic".into());
                 }
+                Tactic::Custom(name, _) => {
+                    return Err(format!(
+                        "custom tactic `{name}` reached proof eval before metaprogram expansion"
+                    ));
+                }
                 _ => {
                     return Err(
                         "Only `intro`+`exact` tactics are supported in standalone proof eval"
@@ -445,6 +459,14 @@ impl<'bump> TermArena<'bump> {
         method: Name<'bump>,
     ) -> &'bump Term<'bump> {
         self.alloc(Term::MethodCall(receiver, method))
+    }
+
+    pub fn quote(&self, inner: &'bump Term<'bump>) -> &'bump Term<'bump> {
+        self.alloc(Term::Quote(inner))
+    }
+
+    pub fn splice(&self, inner: &'bump Term<'bump>) -> &'bump Term<'bump> {
+        self.alloc(Term::Splice(inner))
     }
 }
 
