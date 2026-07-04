@@ -1,7 +1,8 @@
 use tower_lsp::lsp_types as lsp;
 use tower_lsp::{Client, LanguageServer};
 
-use crate::{DiagnosticPublisher, DiagnosticService, semantic_tokens_legend};
+use super::service::{DiagnosticPublisher, DiagnosticService};
+use crate::semantic::semantic_tokens_legend;
 
 #[derive(Clone)]
 struct TowerDiagnosticPublisher {

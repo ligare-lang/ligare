@@ -1,7 +1,7 @@
 use ligare::format::format_source;
 use tower_lsp::lsp_types as lsp;
 
-use crate::text::offset_to_position;
+use super::text::offset_to_position;
 
 pub fn formatting_edits(source: &str) -> Option<Vec<lsp::TextEdit>> {
     let formatted = format_source(source).ok()?;

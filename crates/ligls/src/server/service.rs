@@ -5,13 +5,12 @@ use tower_lsp::lsp_types as lsp;
 
 use crate::cache::LspCache;
 use crate::completion::completion_items_for_source_with_module_paths;
-use crate::formatting::formatting_edits;
+use crate::document::{apply_content_changes, formatting_edits};
 use crate::navigation::{
     SourceDocument, definition_for_documents, document_symbols_for_documents, hover_for_documents,
     references_for_documents,
 };
-use crate::project::project_context_for_uri;
-use crate::text::apply_content_changes;
+use crate::workspace::project_context_for_uri;
 
 #[derive(Debug, Clone)]
 struct CheckJob {

@@ -5,7 +5,7 @@ use ligare::core::pool::TermArena;
 use ligare::diagnostic::{Diagnostic as CompilerDiagnostic, Span};
 use tower_lsp::lsp_types as lsp;
 
-use crate::text::offset_to_position;
+use super::text::offset_to_position;
 use crate::{ParseError, parse_program_lsp};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
