@@ -483,8 +483,6 @@ case 1: { int64_t val = opt.data.Some.val; return val + 1; }
 
 ## 11. Compile-Time Metaprogramming *(planned)*
 
-> ⚠️ This feature is not yet implemented. The syntax below represents the intended design.
-
 The `proof` universe also serves the role of metaprogramming.
 Any program used solely for generating `data` code can be written as a `proof` term, evaluated at compile time and spliced in.
 

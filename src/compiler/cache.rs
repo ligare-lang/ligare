@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::diagnostic::Diagnostic;
 use crate::package::find_manifest_root;
 
-const CACHE_VERSION: u32 = 1;
+const CACHE_VERSION: u32 = 2;
 const CACHE_DIR: &str = "target";
 const CACHE_SUBDIR: &str = "ligare";
 pub const FALLBACK_ROOT_PACKAGE: &str = "root";
@@ -41,9 +41,9 @@ pub struct PackageCompilerCache {
 impl PackageCompilerCache {
     pub fn load(target_root: &Path, package_root: &Path, package: &str) -> Self {
         let path = cache_file_path(target_root, package);
-        let cache = fs::read_to_string(&path)
+        let cache = fs::read(&path)
             .ok()
-            .and_then(|content| serde_json::from_str::<FileCompilerCache>(&content).ok())
+            .and_then(|content| rmp_serde::from_slice::<FileCompilerCache>(&content).ok())
             .filter(|cache| cache.version == CACHE_VERSION)
             .unwrap_or_else(|| FileCompilerCache {
                 version: CACHE_VERSION,
@@ -90,7 +90,7 @@ impl PackageCompilerCache {
                 ))
             })?;
         }
-        let content = serde_json::to_string_pretty(&self.cache).map_err(|e| {
+        let content = rmp_serde::to_vec(&self.cache).map_err(|e| {
             Diagnostic::new(format!(
                 "cannot encode compiler cache `{}`: {e}",
                 path.display()
@@ -109,7 +109,7 @@ pub fn cache_file_path(target_root: &Path, package: &str) -> PathBuf {
     target_root
         .join(CACHE_DIR)
         .join(CACHE_SUBDIR)
-        .join(format!("{}.json", cache_file_stem(package)))
+        .join(format!("{}.bin", cache_file_stem(package)))
 }
 
 pub fn source_hash(source: &str) -> u64 {
