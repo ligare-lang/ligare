@@ -30,10 +30,7 @@ impl<'bump> Compiler<'bump> {
             let eraser =
                 crate::checker::erase::Eraser::new(self.arena, self.checker.builtins.clone());
             let erased = self.erase_and_collect_tops(monomorphized.tops, &eraser)?;
-            self.raw_defs.extend(monomorphized.codegen.raw_defs);
-            self.fun_sigs.extend(monomorphized.codegen.fun_sigs);
-            self.enum_types.extend(monomorphized.codegen.enum_types);
-            self.struct_types.extend(monomorphized.codegen.struct_types);
+            self.extend_codegen_state(monomorphized.codegen);
             self.tops.extend(erased.tops);
             if let Some(record) = env.cache_records.get(&id) {
                 checked_records.push(record.clone());
@@ -87,10 +84,7 @@ impl<'bump> Compiler<'bump> {
             let eraser =
                 crate::checker::erase::Eraser::new(self.arena, self.checker.builtins.clone());
             let erased = self.erase_and_collect_tops(monomorphized.tops, &eraser)?;
-            self.raw_defs.extend(monomorphized.codegen.raw_defs);
-            self.fun_sigs.extend(monomorphized.codegen.fun_sigs);
-            self.enum_types.extend(monomorphized.codegen.enum_types);
-            self.struct_types.extend(monomorphized.codegen.struct_types);
+            self.extend_codegen_state(monomorphized.codegen);
             self.tops.extend(erased.tops);
             if let Some(record) = env.cache_records.get(&id) {
                 checked_records.push(record.clone());
@@ -120,10 +114,7 @@ impl<'bump> Compiler<'bump> {
             let eraser =
                 crate::checker::erase::Eraser::new(self.arena, self.checker.builtins.clone());
             let erased = self.erase_and_collect_tops(monomorphized.tops, &eraser)?;
-            self.raw_defs.extend(monomorphized.codegen.raw_defs);
-            self.fun_sigs.extend(monomorphized.codegen.fun_sigs);
-            self.enum_types.extend(monomorphized.codegen.enum_types);
-            self.struct_types.extend(monomorphized.codegen.struct_types);
+            self.extend_codegen_state(monomorphized.codegen);
             self.tops.extend(erased.tops);
             if let Some(record) = env.cache_records.get(&id) {
                 checked_records.push(record.clone());
@@ -141,6 +132,13 @@ impl<'bump> Compiler<'bump> {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
         self.load_project_module_graph(&root, &entry_path, PackageModuleGraph::default(), true)
+    }
+
+    fn extend_codegen_state(&mut self, codegen: crate::compiler::CodegenState<'bump>) {
+        self.raw_defs.extend(codegen.raw_defs);
+        extend_named_unique(&mut self.fun_sigs, codegen.fun_sigs);
+        extend_named_unique(&mut self.enum_types, codegen.enum_types);
+        extend_named_unique(&mut self.struct_types, codegen.struct_types);
     }
 
     fn load_project_module_graph(
@@ -428,5 +426,17 @@ impl<'bump> Compiler<'bump> {
             return Err(Diagnostic::new("entry module must define `main : IO ()`"));
         }
         Ok(())
+    }
+}
+
+fn extend_named_unique<'a, T>(target: &mut Vec<(&'a str, T)>, source: Vec<(&'a str, T)>) {
+    let mut seen = target
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect::<HashSet<_>>();
+    for (name, value) in source {
+        if seen.insert(name.to_string()) {
+            target.push((name, value));
+        }
     }
 }

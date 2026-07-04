@@ -37,12 +37,17 @@ fn write_std(root: &Path, rel: &str, content: &str) {
     write(root, &format!("src/{rel}"), content);
 }
 
-fn collect(root: &Path) -> Result<Compiler<'static>, ligare::diagnostic::Diagnostic> {
+fn collect_unlocked(root: &Path) -> Result<Compiler<'static>, ligare::diagnostic::Diagnostic> {
     let bump = Box::leak(Box::new(Bump::new()));
     let arena = Box::leak(Box::new(TermArena::new(bump)));
     let mut compiler = Compiler::new(bump, arena);
     compiler.collect_file(&root.join("main.lig").to_string_lossy())?;
     Ok(compiler)
+}
+
+fn collect(root: &Path) -> Result<Compiler<'static>, ligare::diagnostic::Diagnostic> {
+    let _guard = env_lock().lock().unwrap();
+    collect_unlocked(root)
 }
 
 fn assert_module_error(root: &Path, needle: &str) {
@@ -430,7 +435,7 @@ fn std_import_uses_ligare_std_path() {
     );
 
     let compiler = with_ligare_std_path(Some(std_root.to_string_lossy().into_owned()), || {
-        collect(&root)
+        collect_unlocked(&root)
     })
     .unwrap();
 
@@ -454,7 +459,7 @@ fn std_prelude_is_implicitly_imported_for_root_modules() {
     );
 
     with_ligare_std_path(Some(std_root.to_string_lossy().into_owned()), || {
-        collect(&root)
+        collect_unlocked(&root)
     })
     .unwrap();
 }
@@ -473,7 +478,7 @@ fn std_package_modules_do_not_implicitly_import_prelude() {
     );
 
     with_ligare_std_path(Some(std_root.to_string_lossy().into_owned()), || {
-        collect(&root)
+        collect_unlocked(&root)
     })
     .unwrap();
 }
@@ -494,7 +499,7 @@ fn std_prelude_primitives_are_compiler_intrinsics() {
 
     let std_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("libs/std");
     let compiler = with_ligare_std_path(Some(std_root.to_string_lossy().into_owned()), || {
-        collect(&root)
+        collect_unlocked(&root)
     })
     .unwrap();
     let c = emit_c(
@@ -527,7 +532,7 @@ fn real_std_vec_import_checks() {
 
     let std_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("libs/std");
     with_ligare_std_path(Some(std_root.to_string_lossy().into_owned()), || {
-        collect(&root)
+        collect_unlocked(&root)
     })
     .unwrap();
 }
@@ -548,7 +553,7 @@ fn real_std_vec_codegen_uses_layout_type_only() {
 
     let std_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("libs/std");
     let compiler = with_ligare_std_path(Some(std_root.to_string_lossy().into_owned()), || {
-        collect(&root)
+        collect_unlocked(&root)
     })
     .unwrap();
     let c = emit_c(
@@ -587,7 +592,7 @@ fn qualified_std_call_without_use_resolves_public_symbol() {
     );
 
     let compiler = with_ligare_std_path(Some(std_root.to_string_lossy().into_owned()), || {
-        collect(&root)
+        collect_unlocked(&root)
     })
     .unwrap();
 
@@ -605,7 +610,7 @@ fn std_import_reports_default_path_when_env_is_unset() {
         "use std::missing::value\npub def main : IO () := value\n",
     );
 
-    let err = match with_ligare_std_path(None, || collect(&root)) {
+    let err = match with_ligare_std_path(None, || collect_unlocked(&root)) {
         Ok(_) => panic!("expected missing standard library module to fail"),
         Err(err) => err,
     };
@@ -638,7 +643,7 @@ fn missing_std_module_lists_all_attempted_search_paths() {
     let joined = std::env::join_paths([first.clone(), second.clone()]).unwrap();
 
     let err = match with_ligare_std_path(Some(joined.to_string_lossy().into_owned()), || {
-        collect(&root)
+        collect_unlocked(&root)
     }) {
         Ok(_) => panic!("expected missing standard library module to fail"),
         Err(err) => err,
@@ -681,7 +686,7 @@ fn std_path_searches_multiple_roots_in_order() {
     let joined = std::env::join_paths([first, second]).unwrap();
 
     let compiler = with_ligare_std_path(Some(joined.to_string_lossy().into_owned()), || {
-        collect(&root)
+        collect_unlocked(&root)
     })
     .unwrap();
     let c = emit_c(
