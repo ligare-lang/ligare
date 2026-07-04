@@ -1,9 +1,110 @@
-# Ligare 语言设计文档
+# Ligare
 
 > **一切皆项，一切皆约束。**  
 > 文件后缀：`.lig`
 
 [English version](README.md)
+
+Ligare 是一个用 Rust 编写的实验性编程语言与编译器。它探索一个极简核心：值、类型、命题、证明、函数、数据声明和宏都表示为项，并由其他项约束。
+
+当前仓库包含：
+
+- 面向 `.lig` 源文件的词法器、解析器、类型检查器、求值器、格式化器和 C 后端。
+- 基于 `ligare.toml` 的包模式，支持 build、update、test 和 fmt 命令。
+- 对精化约束、证明块、结构体、和类型、模式匹配、模块、泛型和 C 代码生成的实验性支持。
+- 位于 `crates/ligls` 的小型 `ligls` 语言服务器 crate。
+
+Ligare 仍在活跃开发中。下方部分内容描述的是语言设计意图；明确标注为“计划中”的特性尚未实现。
+
+## 快速开始
+
+### 环境要求
+
+- Rust 工具链。仓库包含 `rust-toolchain.toml`，使用 `rustup` 时会自动选择固定的工具链。
+- 使用 `-o` 或包构建生成原生可执行文件时，需要系统中有可用的 `cc` C 编译器。
+
+### 构建与测试
+
+```bash
+cargo build
+cargo test
+```
+
+### 运行源文件
+
+```bash
+cargo run -- tests/fixtures/test.lig
+cargo run -- tests/fixtures/test.lig --eval "1 + 2"
+```
+
+### 生成或编译 C
+
+```bash
+cargo run -- --emit-c tests/fixtures/test.lig
+cargo run -- -o /tmp/ligare-test tests/fixtures/test.lig
+```
+
+### 构建包
+
+```bash
+cargo run -- build examples/test
+./examples/test/target/test
+```
+
+### 格式化源码
+
+```bash
+cargo run -- fmt .
+cargo run -- fmt --check .
+```
+
+## CLI 参考
+
+```text
+Usage: ligare [OPTIONS] [FILES]... [COMMAND]
+```
+
+| 命令或选项 | 描述 |
+|------------|------|
+| `ligare <files>` | 处理一个或多个 `.lig` 文件，并运行顶层检查/求值。 |
+| `--eval <EXPR>` | 在处理输入文件后求值一个表达式。 |
+| `--emit-c` | 输出 C 源码，而不是运行求值器。 |
+| `-o, --output <PATH>` | 将生成的 C 编译为指定路径的原生可执行文件。 |
+| `build [PATH]` | 构建 `PATH` 或当前目录中的包。 |
+| `update [NAME] [VERSION]` | 刷新 `ligare.lock`，也可以固定某个依赖版本。 |
+| `test [PATH]` | 运行包中名称以 `_test.lig` 结尾的测试文件。 |
+| `fmt [--check] [PATH]` | 格式化 `.lig` 文件，或检查是否需要格式化。 |
+
+## 包清单
+
+包构建使用 `ligare.toml`：
+
+```toml
+[package]
+name = "test"
+version = "0.1.0"
+type = "binary"
+
+[dependencies]
+```
+
+支持的包类型是 `binary` 和 `lib`。如果省略 `entry`，Ligare 会使用该包的默认源文件入口。依赖可以指向 Git 仓库或本地路径。
+
+## 仓库结构
+
+```text
+src/front/        词法器与解析器
+src/core/         核心项语法、arena 分配、求值、去糖化
+src/checker/      约束检查、推导、证明搜索、擦除
+src/compiler/     文件/模块流水线、项目加载、单态化
+src/backend/      IR 与 C 代码生成
+src/package/      manifest、lockfile 与依赖解析
+crates/ligls/     实验性语言服务器 crate
+tests/            集成与回归测试
+tests/fixtures/   测试使用的 .lig 示例程序
+examples/test/    Ligare 包示例
+docs/             语法说明
+```
 
 ## 1. 核心哲学
 

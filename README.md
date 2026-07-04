@@ -1,9 +1,110 @@
-# Ligare Language Design Document
+# Ligare
 
 > **Everything is a term. Everything is a constraint.**  
 > File extension: `.lig`
 
 [中文版](README_zh.md)
+
+Ligare is an experimental programming language and compiler written in Rust. It explores a minimal core where values, types, propositions, proofs, functions, data declarations, and macros are all represented as terms constrained by other terms.
+
+The current repository contains:
+
+- A lexer, parser, type checker, evaluator, formatter, and C backend for `.lig` source files.
+- A package mode driven by `ligare.toml`, with build, update, test, and format commands.
+- Experimental support for refinement constraints, proof blocks, structs, enums, pattern matching, modules, generics, and code generation to C.
+- A small `ligls` language-server crate under `crates/ligls`.
+
+Ligare is still under active development. Some sections below describe intended language design; features explicitly marked as planned are not implemented yet.
+
+## Quick Start
+
+### Requirements
+
+- Rust toolchain. The repository includes `rust-toolchain.toml`, so `rustup` will select the pinned toolchain automatically.
+- A C compiler available as `cc` when using native output with `-o` or package builds.
+
+### Build and Test
+
+```bash
+cargo build
+cargo test
+```
+
+### Run a Source File
+
+```bash
+cargo run -- tests/fixtures/test.lig
+cargo run -- tests/fixtures/test.lig --eval "1 + 2"
+```
+
+### Emit or Compile C
+
+```bash
+cargo run -- --emit-c tests/fixtures/test.lig
+cargo run -- -o /tmp/ligare-test tests/fixtures/test.lig
+```
+
+### Build a Package
+
+```bash
+cargo run -- build examples/test
+./examples/test/target/test
+```
+
+### Format Source
+
+```bash
+cargo run -- fmt .
+cargo run -- fmt --check .
+```
+
+## CLI Reference
+
+```text
+Usage: ligare [OPTIONS] [FILES]... [COMMAND]
+```
+
+| Command or option | Description |
+|-------------------|-------------|
+| `ligare <files>` | Process one or more `.lig` files and run top-level checks/evaluations. |
+| `--eval <EXPR>` | Evaluate an expression after processing the input files. |
+| `--emit-c` | Emit C source code instead of running the evaluator. |
+| `-o, --output <PATH>` | Compile generated C into a native executable at `PATH`. |
+| `build [PATH]` | Build the package found at `PATH` or the current directory. |
+| `update [NAME] [VERSION]` | Refresh `ligare.lock`, optionally pinning one dependency. |
+| `test [PATH]` | Run package files whose names end in `_test.lig`. |
+| `fmt [--check] [PATH]` | Format `.lig` files, or check whether formatting is needed. |
+
+## Package Manifest
+
+Package builds use `ligare.toml`:
+
+```toml
+[package]
+name = "test"
+version = "0.1.0"
+type = "binary"
+
+[dependencies]
+```
+
+Supported package types are `binary` and `lib`. If `entry` is omitted, Ligare uses the default source entry for the package. Dependencies may point to Git repositories or local paths.
+
+## Repository Layout
+
+```text
+src/front/        lexer and parser
+src/core/         core term syntax, arena allocation, evaluation, desugaring
+src/checker/      constraint checking, inference, proof search, erasure
+src/compiler/     file/module pipeline, project loading, monomorphization
+src/backend/      IR and C code generation
+src/package/      manifest, lockfile, and dependency resolution
+crates/ligls/     experimental language server crate
+tests/            integration and regression tests
+tests/fixtures/   sample .lig programs used by tests
+examples/test/    example Ligare package
+docs/             grammar notes
+```
 
 ## 1. Core Philosophy
 
