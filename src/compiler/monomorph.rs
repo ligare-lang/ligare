@@ -351,9 +351,7 @@ impl<'bump> Compiler<'bump> {
             state.generic_fns.insert(base, def);
         }
         let def = state.generic_fns.get(base)?;
-        let Some(max_erased) = def.erased_param_indices.iter().copied().max() else {
-            return None;
-        };
+        let max_erased = def.erased_param_indices.iter().copied().max()?;
         if args.len() <= max_erased {
             return None;
         }

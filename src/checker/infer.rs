@@ -576,7 +576,8 @@ impl<'bump> TypeChecker<'bump> {
         let inferred = self.infer_binding_constraint(ctx, pointer)?;
         let inferred_nf = self.evaluator.whnf(inferred)?;
         match inferred_nf {
-            Term::App(head, _) if matches!(head, Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_PTR)) =>
+            Term::App(Term::Builtin(name) | Term::Global(name), _)
+                if is_builtin_name(name, BUILTIN_PTR) =>
             {
                 self.check(ctx, pointer, inferred)?;
                 Ok(self.ptr_constraint(target))
@@ -778,10 +779,7 @@ impl<'bump> TypeChecker<'bump> {
         }
     }
 
-    fn is_data_top_constraint(
-        &self,
-        constraint: &'bump Term<'bump>,
-    ) -> Result<bool, Diagnostic> {
+    fn is_data_top_constraint(&self, constraint: &'bump Term<'bump>) -> Result<bool, Diagnostic> {
         let constraint = Self::implicit_inner(constraint);
         if Self::is_data_like(constraint) {
             return Ok(true);
@@ -887,7 +885,8 @@ impl<'bump> TypeChecker<'bump> {
             }
             Term::App(..) => {
                 if let Some((name, args)) = self.constraint_app_name_and_args(constraint)
-                    && let Some((def, _)) = self.lookup_enum(name).or_else(|| self.lookup_struct(name))
+                    && let Some((def, _)) =
+                        self.lookup_enum(name).or_else(|| self.lookup_struct(name))
                 {
                     let arg_level = args.iter().map(|arg| compute_level(arg)).max().unwrap_or(0);
                     return Ok(compute_level(def).max(arg_level.saturating_add(1)));
@@ -945,7 +944,8 @@ impl<'bump> TypeChecker<'bump> {
             }
             Term::App(..) => {
                 if let Some((name, args)) = self.constraint_app_name_and_args(constraint)
-                    && let Some((def, _)) = self.lookup_enum(name).or_else(|| self.lookup_struct(name))
+                    && let Some((def, _)) =
+                        self.lookup_enum(name).or_else(|| self.lookup_struct(name))
                 {
                     let arg_level = args.iter().map(|arg| compute_level(arg)).max().unwrap_or(0);
                     Ok(compute_level(def).max(arg_level.saturating_add(1)))

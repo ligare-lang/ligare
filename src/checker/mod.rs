@@ -153,7 +153,7 @@ impl<'bump> TypeChecker<'bump> {
         let mut matches = Vec::new();
         for (name, have, value) in &self.instance_table {
             if let Some(candidate) =
-                self.lookup_method_on_instance(method, receiver_constraint, *name, have, value)
+                self.lookup_method_on_instance(method, receiver_constraint, name, have, value)
             {
                 matches.push(candidate);
             }

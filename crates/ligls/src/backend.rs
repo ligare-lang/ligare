@@ -53,6 +53,7 @@ impl LanguageServer for Backend {
                 references_provider: Some(lsp::OneOf::Left(true)),
                 document_symbol_provider: Some(lsp::OneOf::Left(true)),
                 hover_provider: Some(lsp::HoverProviderCapability::Simple(true)),
+                document_formatting_provider: Some(lsp::OneOf::Left(true)),
                 semantic_tokens_provider: Some(
                     lsp::SemanticTokensServerCapabilities::SemanticTokensOptions(
                         lsp::SemanticTokensOptions {
@@ -156,5 +157,13 @@ impl LanguageServer for Backend {
     ) -> tower_lsp::jsonrpc::Result<Option<lsp::SemanticTokensResult>> {
         let uri = params.text_document.uri;
         Ok(self.diagnostics.semantic_tokens(&uri).await)
+    }
+
+    async fn formatting(
+        &self,
+        params: lsp::DocumentFormattingParams,
+    ) -> tower_lsp::jsonrpc::Result<Option<Vec<lsp::TextEdit>>> {
+        let uri = params.text_document.uri;
+        Ok(self.diagnostics.formatting(&uri).await)
     }
 }

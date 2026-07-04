@@ -288,7 +288,7 @@ impl<'bump> Compiler<'bump> {
         term = self.arena.app(term, quoted_target);
         for (idx, arg) in attr.args.iter().enumerate() {
             let param_ty = entry.params.get(idx + 1).and_then(|ty| *ty);
-            term = self.arena.app(term, self.meta_call_arg(*arg, param_ty)?);
+            term = self.arena.app(term, self.meta_call_arg(arg, param_ty)?);
         }
         Ok(term)
     }
@@ -558,7 +558,7 @@ impl<'bump> Compiler<'bump> {
                                         "custom tactic `{name}` requires a known goal"
                                     ))
                                 })?;
-                                let proof = self.eval_tactic_call(*name, args, goal)?;
+                                let proof = self.eval_tactic_call(name, args, goal)?;
                                 Tactic::Exact(proof)
                             }
                         })
@@ -685,7 +685,7 @@ impl<'bump> Compiler<'bump> {
         call = self.arena.app(call, quoted_goal);
         for (idx, arg) in args.iter().enumerate() {
             let param_ty = entry.params.get(idx + 1).and_then(|ty| *ty);
-            call = self.arena.app(call, self.meta_call_arg(*arg, param_ty)?);
+            call = self.arena.app(call, self.meta_call_arg(arg, param_ty)?);
         }
         let expanded = self.expand_meta(call)?;
         let resolved = self.try_resolve_meta_eval(expanded)?;

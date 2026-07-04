@@ -440,6 +440,45 @@ fn std_import_uses_ligare_std_path() {
 }
 
 #[test]
+fn std_prelude_is_implicitly_imported_for_root_modules() {
+    let root = temp_project();
+    let std_root = root.join("custom_std");
+    write_std(&std_root, "lib.lig", "pub mod prelude\npub mod answer\n");
+    write_std(&std_root, "prelude.lig", "pub use std::answer::value\n");
+    write_std(&std_root, "answer.lig", "pub def value : int := 41 + 1\n");
+    write(&root, "helper.lig", "pub def run : int := value\n");
+    write(
+        &root,
+        "main.lig",
+        "mod helper\nuse helper::run\npub def main : IO () := let _ := value in let _ := run in ()\n",
+    );
+
+    with_ligare_std_path(Some(std_root.to_string_lossy().into_owned()), || {
+        collect(&root)
+    })
+    .unwrap();
+}
+
+#[test]
+fn std_package_modules_do_not_implicitly_import_prelude() {
+    let root = temp_project();
+    let std_root = root.join("custom_std");
+    write_std(&std_root, "lib.lig", "pub mod prelude\npub mod primitive\n");
+    write_std(&std_root, "prelude.lig", "pub use std::primitive::*\n");
+    write_std(&std_root, "primitive.lig", "pub def value : int := 1\n");
+    write(
+        &root,
+        "main.lig",
+        "pub def main : IO () := let _ := value in ()\n",
+    );
+
+    with_ligare_std_path(Some(std_root.to_string_lossy().into_owned()), || {
+        collect(&root)
+    })
+    .unwrap();
+}
+
+#[test]
 fn std_prelude_primitives_are_compiler_intrinsics() {
     let root = temp_project();
     write(

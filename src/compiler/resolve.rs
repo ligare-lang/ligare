@@ -325,7 +325,7 @@ impl<'bump> Compiler<'bump> {
             }
             Term::Unsafe(inner) => Ok(self.arena.unsafe_(self.rewrite_method_calls(inner, scope)?)),
             Term::Pure(inner) => Ok(self.arena.pure(self.rewrite_method_calls(inner, scope)?)),
-            Term::Quote(inner) => Ok(self.arena.quote(*inner)),
+            Term::Quote(inner) => Ok(self.arena.quote(inner)),
             Term::Splice(inner) => Ok(self.arena.splice(self.rewrite_method_calls(inner, scope)?)),
             _ => Ok(term),
         }
@@ -788,7 +788,7 @@ impl<'bump> Compiler<'bump> {
                     .collect::<Result<Vec<_>, Diagnostic>>()?;
                 Ok(self.arena.match_(scrut, self.arena.alloc_slice(&branches)))
             }
-            Term::Quote(inner) => Ok(self.arena.quote(*inner)),
+            Term::Quote(inner) => Ok(self.arena.quote(inner)),
             Term::Splice(inner) => Ok(self.arena.splice(self.elaborate_implicit_apps(inner)?)),
             _ => Ok(term),
         }

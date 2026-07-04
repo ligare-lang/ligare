@@ -160,7 +160,7 @@ impl SemanticModel {
         namespace: Option<&str>,
     ) {
         let (is_public, top) = unwrap_public(top);
-        let modifiers = MOD_DEFINITION | u32::from(is_public) * MOD_PUBLIC;
+        let modifiers = MOD_DEFINITION | (u32::from(is_public) * MOD_PUBLIC);
         let mut scope = LocalScope {
             range: range.clone(),
             constraints: HashSet::new(),
@@ -199,7 +199,7 @@ impl SemanticModel {
             }
             TopLevel::TLUse(uses, visibility, _) => {
                 let is_public = matches!(visibility, Visibility::Public) || is_public;
-                let modifiers = MOD_DEFINITION | u32::from(is_public) * MOD_PUBLIC;
+                let modifiers = MOD_DEFINITION | (u32::from(is_public) * MOD_PUBLIC);
                 for tree in *uses {
                     for part in tree.path {
                         self.namespaces.insert((*part).to_string());
@@ -366,12 +366,12 @@ impl SemanticModel {
                     self.collect_match_branch_binds(tokens, idx, range, scope);
                 }
                 _ => {
-                    if is_do_bind_name(tokens, idx, range) {
-                        if let Token::Ident(name) = &token.token {
-                            scope.variables.insert(name.clone());
-                            self.declarations
-                                .insert(token.span.start, (SemanticKind::Variable, MOD_DEFINITION));
-                        }
+                    if is_do_bind_name(tokens, idx, range)
+                        && let Token::Ident(name) = &token.token
+                    {
+                        scope.variables.insert(name.clone());
+                        self.declarations
+                            .insert(token.span.start, (SemanticKind::Variable, MOD_DEFINITION));
                     }
                 }
             }

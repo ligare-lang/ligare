@@ -614,10 +614,9 @@ impl<'a> ExpressionEmitter<'a> {
             _ => {
                 let raw_function = match term {
                     Term::Builtin(name) | Term::Global(name) => Some((*name).to_string()),
-                    Term::Annot(inner, _) => match inner {
-                        Term::Builtin(name) | Term::Global(name) => Some((*name).to_string()),
-                        _ => None,
-                    },
+                    Term::Annot(Term::Builtin(name) | Term::Global(name), _) => {
+                        Some((*name).to_string())
+                    }
                     _ => None,
                 };
                 let value = self.emit_expr(term, ctx, enum_map, struct_map)?;

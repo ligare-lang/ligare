@@ -277,7 +277,7 @@ pub(crate) fn collect_top_level_symbols(top: &TopLevel<'_>, symbols: &mut Vec<Sy
                 kind,
                 imported_path: None,
             });
-            collect_type_members(*name, body, symbols);
+            collect_type_members(name, body, symbols);
         }
         TopLevel::TLExternDef(name, params, ret, _) => {
             let signature = signature_from_parts(params, ret);
@@ -500,9 +500,7 @@ fn signature_from_constraint(term: &Term<'_>) -> Signature {
 
 pub(crate) fn type_or_value_kind(term: &Term<'_>) -> SymbolKind {
     match term {
-        Term::Annot(inner, _) if matches!(inner, Term::EnumDef(..) | Term::StructDef(..)) => {
-            SymbolKind::Type
-        }
+        Term::Annot(Term::EnumDef(..) | Term::StructDef(..), _) => SymbolKind::Type,
         _ => SymbolKind::Value,
     }
 }

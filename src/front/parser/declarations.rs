@@ -2,6 +2,10 @@ use super::{ParseError, ParsedDef, ParsedFuncBody, Parser, SpannedToken};
 use crate::core::syntax::{Name, Tactic, Term};
 use crate::front::lexer::Token;
 
+type ParamList<'bump> = &'bump [(Name<'bump>, Option<&'bump Term<'bump>>)];
+type ExternDef<'bump> = (Name<'bump>, ParamList<'bump>, &'bump Term<'bump>);
+type ParamGroup<'bump> = Vec<(Name<'bump>, Option<&'bump Term<'bump>>)>;
+
 impl<'a, 'bump> Parser<'a, 'bump> {
     pub(super) fn parse_def(&mut self) -> Result<ParsedDef<'bump>, ParseError> {
         self.expect(&Token::KwDef)?;
@@ -11,16 +15,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         Ok((name, params_slice, m_ret, body))
     }
 
-    pub(super) fn parse_extern_def(
-        &mut self,
-    ) -> Result<
-        (
-            Name<'bump>,
-            &'bump [(Name<'bump>, Option<&'bump Term<'bump>>)],
-            &'bump Term<'bump>,
-        ),
-        ParseError,
-    > {
+    pub(super) fn parse_extern_def(&mut self) -> Result<ExternDef<'bump>, ParseError> {
         self.expect(&Token::KwDef)?;
         let name = self.parse_decl_ident()?;
         let params = self.parse_many_curried_params()?;
@@ -155,9 +150,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             && (i == 0 || matches!(tokens[i.saturating_sub(1)].0, Token::Newline))
     }
 
-    pub(super) fn parse_param_group(
-        &mut self,
-    ) -> Result<Option<Vec<(Name<'bump>, Option<&'bump Term<'bump>>)>>, ParseError> {
+    pub(super) fn parse_param_group(&mut self) -> Result<Option<ParamGroup<'bump>>, ParseError> {
         let implicit = if self.try_expect(&Token::LBrace) {
             true
         } else if self.try_expect(&Token::LParen) {

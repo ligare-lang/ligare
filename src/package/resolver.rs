@@ -41,7 +41,7 @@ pub fn resolve_project(root: &Path, update: UpdateMode) -> Result<ResolvedProjec
         packages: HashMap::new(),
         stack: Vec::new(),
     };
-    resolver.resolve_manifest_deps(&root.to_path_buf(), &manifest)?;
+    resolver.resolve_manifest_deps(root, &manifest)?;
     let root_deps = manifest
         .dependencies
         .iter()

@@ -296,14 +296,16 @@ impl LspCache {
         let item_diagnostics = check_dirty_items(
             &bump,
             &arena,
-            &uri,
-            &text,
             &parsed.top_ranges,
-            &dirty_indices,
-            check,
-            &self.files,
-            project.as_ref(),
-            &module_key,
+            DirtyCheckContext {
+                uri: &uri,
+                text: &text,
+                dirty: &dirty_indices,
+                check,
+                files: &self.files,
+                project: project.as_ref(),
+                module_key: &module_key,
+            },
         );
         for (idx, diagnostics) in item_diagnostics {
             if let Some(item) = items.get_mut(idx) {
@@ -621,20 +623,25 @@ fn merge_item_cache(
         .collect()
 }
 
+struct DirtyCheckContext<'a> {
+    uri: &'a lsp::Url,
+    text: &'a str,
+    dirty: &'a HashSet<usize>,
+    check: DiagnosticCheck,
+    files: &'a HashMap<lsp::Url, FileCache>,
+    project: Option<&'a ProjectContext>,
+    module_key: &'a ModuleKey,
+}
+
 fn check_dirty_items<'bump>(
     bump: &'bump Bump,
     arena: &'bump TermArena<'bump>,
-    uri: &lsp::Url,
-    text: &str,
     top_ranges: &[(usize, usize, TopLevel<'bump>)],
-    dirty: &HashSet<usize>,
-    check: DiagnosticCheck,
-    files: &HashMap<lsp::Url, FileCache>,
-    project: Option<&ProjectContext>,
-    module_key: &ModuleKey,
+    ctx: DirtyCheckContext<'_>,
 ) -> HashMap<usize, Vec<lsp::Diagnostic>> {
     let mut compiler = Compiler::new(bump, arena);
-    let module_index = files
+    let module_index = ctx
+        .files
         .iter()
         .map(|(uri, file)| (file.module_key.clone(), uri.clone()))
         .collect::<Vec<_>>();
@@ -642,13 +649,13 @@ fn check_dirty_items<'bump>(
 
     for dep_uri in dependency_check_order(
         &module_imports_from_ranges(top_ranges),
-        module_key,
-        files,
+        ctx.module_key,
+        ctx.files,
         &module_index,
-        uri,
-        project,
+        ctx.uri,
+        ctx.project,
     ) {
-        let Some(file) = files.get(&dep_uri) else {
+        let Some(file) = ctx.files.get(&dep_uri) else {
             continue;
         };
         let (dep_ast, _) = parse_program_lsp(&file.text, bump, arena);
@@ -656,10 +663,10 @@ fn check_dirty_items<'bump>(
         let dep_imports = imported_symbol_aliases(
             &file.module_key,
             &dep_ranges,
-            files,
+            ctx.files,
             &module_index,
             &dep_uri,
-            project,
+            ctx.project,
         );
         let dep_own =
             declared_symbol_aliases(dep_ranges.iter().map(|(_, _, top)| top), &file.module_key);
@@ -670,9 +677,15 @@ fn check_dirty_items<'bump>(
         }
     }
 
-    let imports =
-        imported_symbol_aliases(module_key, top_ranges, files, &module_index, uri, project);
-    let own = declared_symbol_aliases(top_ranges.iter().map(|(_, _, top)| top), module_key);
+    let imports = imported_symbol_aliases(
+        ctx.module_key,
+        top_ranges,
+        ctx.files,
+        &module_index,
+        ctx.uri,
+        ctx.project,
+    );
+    let own = declared_symbol_aliases(top_ranges.iter().map(|(_, _, top)| top), ctx.module_key);
     work.extend(
         top_ranges
             .iter()
@@ -680,15 +693,15 @@ fn check_dirty_items<'bump>(
             .flat_map(|(idx, (_, _, top))| {
                 rewrite_top_for_module(arena, top, &imports, &own)
                     .into_iter()
-                    .map(move |top| (idx, top, dirty.contains(&idx)))
+                    .map(move |top| (idx, top, ctx.dirty.contains(&idx)))
             }),
     );
 
     let diagnostics = compiler.check_top_levels_incremental_for_diagnostics(
         work,
         "<lsp>",
-        text,
-        CheckMode::from(check),
+        ctx.text,
+        CheckMode::from(ctx.check),
     );
     let mut by_item = HashMap::<usize, Vec<lsp::Diagnostic>>::new();
     for (idx, diagnostic) in diagnostics {
@@ -698,18 +711,18 @@ fn check_dirty_items<'bump>(
         by_item
             .entry(idx)
             .or_default()
-            .push(compiler_diagnostic_to_lsp(text, diagnostic));
+            .push(compiler_diagnostic_to_lsp(ctx.text, diagnostic));
     }
-    for (idx, diagnostic) in use_module_diagnostics(
-        text,
-        top_ranges,
-        dirty,
-        module_key,
-        files,
-        &module_index,
-        uri,
-        project,
-    ) {
+    let module_diagnostics = ModuleDiagnosticContext {
+        current_module: ctx.module_key,
+        files: ctx.files,
+        module_index: &module_index,
+        uri: ctx.uri,
+        project: ctx.project,
+    };
+    for (idx, diagnostic) in
+        use_module_diagnostics(ctx.text, top_ranges, ctx.dirty, &module_diagnostics)
+    {
         by_item.entry(idx).or_default().push(diagnostic);
     }
     by_item
@@ -723,24 +736,29 @@ fn dependency_check_order(
     source_uri: &lsp::Url,
     project: Option<&ProjectContext>,
 ) -> Vec<lsp::Url> {
+    struct DepVisitContext<'a> {
+        files: &'a HashMap<lsp::Url, FileCache>,
+        module_index: &'a [(ModuleKey, lsp::Url)],
+        source_uri: &'a lsp::Url,
+        project: Option<&'a ProjectContext>,
+    }
+
     fn visit(
         imports: &[Vec<String>],
         current_module: &ModuleKey,
-        files: &HashMap<lsp::Url, FileCache>,
-        module_index: &[(ModuleKey, lsp::Url)],
-        source_uri: &lsp::Url,
-        project: Option<&ProjectContext>,
+        ctx: &DepVisitContext<'_>,
         seen: &mut HashSet<lsp::Url>,
         out: &mut Vec<lsp::Url>,
     ) {
         for module in imports.iter().flat_map(|path| {
-            project
+            ctx.project
                 .map(|project| project.imported_module_keys(current_module, path))
                 .unwrap_or_else(|| fallback_imported_module_keys(current_module, path))
         }) {
-            let Some(dep_uri) = module_index
+            let Some(dep_uri) = ctx
+                .module_index
                 .iter()
-                .find(|(module_key, uri)| module_key == &module && uri != source_uri)
+                .find(|(module_key, uri)| module_key == &module && uri != ctx.source_uri)
                 .map(|(_, uri)| uri.clone())
             else {
                 continue;
@@ -748,17 +766,8 @@ fn dependency_check_order(
             if !seen.insert(dep_uri.clone()) {
                 continue;
             }
-            if let Some(file) = files.get(&dep_uri) {
-                visit(
-                    &file.module_imports,
-                    &file.module_key,
-                    files,
-                    module_index,
-                    source_uri,
-                    project,
-                    seen,
-                    out,
-                );
+            if let Some(file) = ctx.files.get(&dep_uri) {
+                visit(&file.module_imports, &file.module_key, ctx, seen, out);
             }
             out.push(dep_uri);
         }
@@ -766,16 +775,13 @@ fn dependency_check_order(
 
     let mut seen = HashSet::new();
     let mut out = Vec::new();
-    visit(
-        imports,
-        current_module,
+    let ctx = DepVisitContext {
         files,
         module_index,
         source_uri,
         project,
-        &mut seen,
-        &mut out,
-    );
+    };
+    visit(imports, current_module, &ctx, &mut seen, &mut out);
     out
 }
 
@@ -889,17 +895,21 @@ fn collect_declared_symbol_aliases(
     }
 }
 
+struct ModuleDiagnosticContext<'a> {
+    current_module: &'a ModuleKey,
+    files: &'a HashMap<lsp::Url, FileCache>,
+    module_index: &'a [(ModuleKey, lsp::Url)],
+    uri: &'a lsp::Url,
+    project: Option<&'a ProjectContext>,
+}
+
 fn use_module_diagnostics<'bump>(
     source: &str,
     top_ranges: &[(usize, usize, TopLevel<'bump>)],
     dirty: &HashSet<usize>,
-    current_module: &ModuleKey,
-    files: &HashMap<lsp::Url, FileCache>,
-    module_index: &[(ModuleKey, lsp::Url)],
-    uri: &lsp::Url,
-    project: Option<&ProjectContext>,
+    ctx: &ModuleDiagnosticContext<'_>,
 ) -> Vec<(usize, lsp::Diagnostic)> {
-    let root = workspace_root_for_uris(std::iter::once(uri));
+    let root = workspace_root_for_uris(std::iter::once(ctx.uri));
     let mut diagnostics = Vec::new();
     let mut imports = Vec::<ImportDiagnosticInfo>::new();
     for (idx, (_, _, top)) in top_ranges.iter().enumerate() {
@@ -945,8 +955,15 @@ fn use_module_diagnostics<'bump>(
                 }
             }
             TopLevel::TLMod(name, span) if dirty.contains(&idx) => {
-                let module = current_module.child((*name).to_string());
-                if module_file_exists(&module, files, module_index, uri, project, root.as_deref()) {
+                let module = ctx.current_module.child((*name).to_string());
+                if module_file_exists(
+                    &module,
+                    ctx.files,
+                    ctx.module_index,
+                    ctx.uri,
+                    ctx.project,
+                    root.as_deref(),
+                ) {
                     continue;
                 }
                 diagnostics.push((
@@ -974,12 +991,12 @@ fn use_module_diagnostics<'bump>(
             continue;
         }
         if module_exists(
-            current_module,
+            ctx.current_module,
             &import.module_path,
-            files,
-            module_index,
-            uri,
-            project,
+            ctx.files,
+            ctx.module_index,
+            ctx.uri,
+            ctx.project,
             root.as_deref(),
         ) {
             continue;
@@ -1483,6 +1500,15 @@ fn rewrite_term_for_module<'bump>(
                         name,
                         rewrite_term_for_module(arena, term, imports, own_names, scope),
                     ),
+                    Tactic::Custom(name, args) => {
+                        let args = args
+                            .iter()
+                            .map(|arg| {
+                                rewrite_term_for_module(arena, arg, imports, own_names, scope)
+                            })
+                            .collect::<Vec<_>>();
+                        Tactic::Custom(name, arena.alloc_slice(&args))
+                    }
                 })
                 .collect::<Vec<_>>();
             arena.by_proof(inner, arena.alloc_slice(&tactics))
@@ -1867,6 +1893,11 @@ fn collect_term_names(term: &Term<'_>, names: &mut HashSet<String>) {
                     Tactic::Exact(term) | Tactic::Apply(term) | Tactic::Have(_, term) => {
                         collect_term_names(term, names);
                     }
+                    Tactic::Custom(_, args) => {
+                        for arg in *args {
+                            collect_term_names(arg, names);
+                        }
+                    }
                     Tactic::Intro(_) => {}
                 }
             }
@@ -1934,9 +1965,7 @@ fn collect_term_names(term: &Term<'_>, names: &mut HashSet<String>) {
 fn exported_names(top: &TopLevel<'_>) -> Vec<String> {
     match top {
         TopLevel::TLPublic(inner) => item_name(inner).into_iter().collect(),
-        TopLevel::TLUse(_, visibility, _)
-            if matches!(visibility, ligare::front::parser::Visibility::Public) =>
-        {
+        TopLevel::TLUse(_, ligare::front::parser::Visibility::Public, _) => {
             item_name(top).into_iter().collect()
         }
         _ => Vec::new(),

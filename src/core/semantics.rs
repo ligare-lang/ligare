@@ -110,7 +110,9 @@ impl<'a> SemanticQueries<'a> {
             {
                 ConstraintKind::BuiltinDataConstraint
             }
-            Term::App(head, _) if matches!(head, Term::Builtin(name) | Term::Global(name) if is_builtin_name(name, BUILTIN_PTR)) => {
+            Term::App(Term::Builtin(name) | Term::Global(name), _)
+                if is_builtin_name(name, BUILTIN_PTR) =>
+            {
                 ConstraintKind::BuiltinDataConstraint
             }
             Term::Builtin(name) | Term::Global(name)

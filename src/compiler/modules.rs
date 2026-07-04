@@ -16,6 +16,7 @@ use super::cache::{
 use super::{Compiler, read_source_file};
 
 const STANDARD_LIBRARY_PACKAGE: &str = "std";
+const STANDARD_PRELUDE_MODULE: &str = "prelude";
 const STANDARD_LIBRARY_PATH_ENV: &str = "LIGARE_STD_PATH";
 const DEFAULT_STANDARD_LIBRARY_PATH: &str = "/usr/lib/ligare/std";
 
@@ -125,7 +126,7 @@ impl ModuleId {
         path: &[Name<'_>],
         graph: &PackageModuleGraph,
     ) -> Option<String> {
-        let parts = path.iter().map(|p| *p).collect::<Vec<_>>();
+        let parts = path.to_vec();
         self.symbol_from_import_path_parts(&parts, graph)
     }
 
@@ -144,7 +145,7 @@ impl ModuleId {
         path: &[Name<'_>],
         graph: &PackageModuleGraph,
     ) -> Result<(Self, String), Diagnostic> {
-        let parts = path.iter().map(|p| *p).collect::<Vec<_>>();
+        let parts = path.to_vec();
         if parts.len() >= 3 && is_namespace_segment(parts[parts.len() - 2]) {
             let dep = self.resolve_namespace_module_parts(&parts, 2, graph)?;
             let logical = format!("{}::{}", parts[parts.len() - 2], parts[parts.len() - 1]);
@@ -167,7 +168,7 @@ impl ModuleId {
                 "namespace wildcard use path must include a module and namespace",
             ));
         }
-        let parts = path.iter().map(|p| *p).collect::<Vec<_>>();
+        let parts = path.to_vec();
         let dep = self.resolve_namespace_module_parts(&parts, 1, graph)?;
         let namespace = parts
             .last()
@@ -180,7 +181,7 @@ impl ModuleId {
         path: &[Name<'_>],
         graph: &PackageModuleGraph,
     ) -> Result<Self, Diagnostic> {
-        let parts = path.iter().map(|p| *p).collect::<Vec<_>>();
+        let parts = path.to_vec();
         self.resolve_import_module_path_parts(&parts, graph)
     }
 
@@ -192,7 +193,7 @@ impl ModuleId {
         if path.len() < 2 {
             return Ok(None);
         }
-        let parts = path.iter().map(|p| *p).collect::<Vec<_>>();
+        let parts = path.to_vec();
         let Some(namespace) = parts.last() else {
             return Ok(None);
         };
@@ -228,7 +229,7 @@ impl ModuleId {
         path: &[Name<'_>],
         graph: &PackageModuleGraph,
     ) -> Result<Self, Diagnostic> {
-        let parts = path.iter().map(|p| *p).collect::<Vec<_>>();
+        let parts = path.to_vec();
         self.resolve_import_module_parts(&parts, graph)
     }
 
@@ -377,6 +378,12 @@ struct ModuleEnv<'bump> {
     rewritten: HashMap<ModuleId, Vec<TopLevel<'bump>>>,
     cache_records: HashMap<ModuleId, ModuleCacheRecord>,
     order: Vec<ModuleId>,
+}
+
+struct ModuleVisitContext<'a, 'bump> {
+    root: &'a Path,
+    graph: &'a PackageModuleGraph,
+    parsed: &'a HashMap<ModuleId, ParsedModule<'bump>>,
 }
 
 #[derive(Default)]
@@ -600,15 +607,12 @@ impl<'bump> Compiler<'bump> {
         };
         let mut visiting = Vec::new();
         let mut done = HashSet::new();
-        self.visit_module(
-            &entry_id,
-            &module_root,
-            &graph,
-            &parsed,
-            &mut env,
-            &mut visiting,
-            &mut done,
-        )?;
+        let visit = ModuleVisitContext {
+            root: &module_root,
+            graph: &graph,
+            parsed: &parsed,
+        };
+        self.visit_module(&entry_id, &visit, &mut env, &mut visiting, &mut done)?;
         Ok(env)
     }
 
@@ -640,6 +644,9 @@ impl<'bump> Compiler<'bump> {
                 tops: tops.clone(),
             },
         );
+        if should_auto_import_std_prelude(&id, graph) {
+            self.ensure_declared_module_loaded(root, &standard_prelude_module(), graph, parsed)?;
+        }
         for module in declared_module_deps(&id, &tops) {
             self.ensure_declared_module_loaded(root, &module, graph, parsed)?;
         }
@@ -794,9 +801,7 @@ impl<'bump> Compiler<'bump> {
     fn visit_module(
         &self,
         id: &ModuleId,
-        root: &Path,
-        graph: &PackageModuleGraph,
-        parsed: &HashMap<ModuleId, ParsedModule<'bump>>,
+        visit: &ModuleVisitContext<'_, 'bump>,
         env: &mut ModuleEnv<'bump>,
         visiting: &mut Vec<ModuleId>,
         done: &mut HashSet<ModuleId>,
@@ -807,7 +812,7 @@ impl<'bump> Compiler<'bump> {
         if let Some(pos) = visiting.iter().position(|m| m == id) {
             let mut cycle = visiting[pos..]
                 .iter()
-                .map(|m| display_module(m))
+                .map(display_module)
                 .collect::<Vec<_>>();
             cycle.push(display_module(id));
             return Err(Diagnostic::new(format!(
@@ -816,26 +821,27 @@ impl<'bump> Compiler<'bump> {
             )));
         }
         visiting.push(id.clone());
-        let module = parsed
+        let module = visit
+            .parsed
             .get(id)
             .ok_or_else(|| Diagnostic::new(format!("module not found: {}", display_module(id))))?;
         for dep in declared_module_deps(id, &module.tops)
             .into_iter()
-            .chain(import_deps(id, &module.tops, graph)?)
-            .chain(qualified_term_deps(id, &module.tops, graph)?)
+            .chain(import_deps(id, &module.tops, visit.graph)?)
+            .chain(qualified_term_deps(id, &module.tops, visit.graph)?)
         {
-            let (_dep_root, dep_file) = module_file(root, &dep, graph)?;
-            if !parsed.contains_key(&dep) || !dep_file.exists() {
+            let (_dep_root, dep_file) = module_file(visit.root, &dep, visit.graph)?;
+            if !visit.parsed.contains_key(&dep) || !dep_file.exists() {
                 return Err(Diagnostic::new(format!(
                     "module not found: {} at {}",
                     display_module(&dep),
                     dep_file.display()
                 )));
             }
-            self.visit_module(&dep, root, graph, parsed, env, visiting, done)?;
+            self.visit_module(&dep, visit, env, visiting, done)?;
         }
         visiting.pop();
-        let rewritten = self.rewrite_module(module, &env.exports, graph)?;
+        let rewritten = self.rewrite_module(module, &env.exports, visit.graph)?;
         env.rewritten.insert(id.clone(), rewritten);
         env.order.push(id.clone());
         done.insert(id.clone());
@@ -849,6 +855,19 @@ impl<'bump> Compiler<'bump> {
         graph: &PackageModuleGraph,
     ) -> Result<Vec<TopLevel<'bump>>, Diagnostic> {
         let mut imports = HashMap::new();
+        if should_auto_import_std_prelude(&module.id, graph) {
+            let prelude = standard_prelude_module();
+            let prelude_exports = exports.get(&prelude).ok_or_else(|| {
+                Diagnostic::new(format!("module not found: {}", display_module(&prelude)))
+            })?;
+            for (exported, target) in prelude_exports {
+                insert_import(
+                    &mut imports,
+                    prelude.local_symbol_name(exported),
+                    target.clone(),
+                )?;
+            }
+        }
         for import in module_imports(&module.tops) {
             for tree in import.trees {
                 if tree.wildcard {
@@ -1070,15 +1089,9 @@ impl<'bump> Compiler<'bump> {
                 | TopLevel::TLMod(..)
                 | TopLevel::TLPublic(_)
                 | TopLevel::TLAttributed(..) => {}
-                TopLevel::TLNamespace(name, items, span) => {
+                TopLevel::TLNamespace(name, items, _) => {
                     self.rewrite_namespace_items(
-                        &module.id,
-                        name,
-                        items,
-                        span.clone(),
-                        &imports,
-                        &own_names,
-                        &mut out,
+                        &module.id, name, items, &imports, &own_names, &mut out,
                     )?;
                 }
             }
@@ -1091,7 +1104,6 @@ impl<'bump> Compiler<'bump> {
         module_id: &ModuleId,
         namespace: Name<'bump>,
         items: &'bump [TopLevel<'bump>],
-        _span: std::ops::Range<usize>,
         imports: &HashMap<String, String>,
         own_names: &HashMap<String, String>,
         out: &mut Vec<TopLevel<'bump>>,
@@ -1194,7 +1206,7 @@ impl<'bump> Compiler<'bump> {
         scope: &mut RewriteScope,
     ) -> &'bump Term<'bump> {
         match term {
-            Term::Named(name) | Term::Builtin(name) | Term::Global(name) => {
+            Term::Named(name) | Term::Global(name) => {
                 if scope.contains(name) {
                     return term;
                 }
@@ -1203,6 +1215,7 @@ impl<'bump> Compiler<'bump> {
                 }
                 term
             }
+            Term::Builtin(_) => term,
             Term::App(f, a) => self.arena.app(
                 self.rewrite_module_term(f, imports, own_names, scope),
                 self.rewrite_module_term(a, imports, own_names, scope),
@@ -1439,6 +1452,12 @@ fn import_deps<'bump>(
 ) -> Result<Vec<ModuleId>, Diagnostic> {
     let mut deps = Vec::new();
     let mut seen = HashSet::new();
+    if should_auto_import_std_prelude(current, graph) {
+        let prelude = standard_prelude_module();
+        if seen.insert(prelude.clone()) {
+            deps.push(prelude);
+        }
+    }
     for import in module_imports(tops) {
         for tree in import.trees {
             if tree.path.len() < 2 && !tree.wildcard {
@@ -1451,10 +1470,10 @@ fn import_deps<'bump>(
                     current.wildcard_module_import(tree.path, graph)?
                 }
             } else if tree.path.len() >= 3 && is_namespace_segment(tree.path[tree.path.len() - 2]) {
-                let parts = tree.path.iter().map(|p| *p).collect::<Vec<_>>();
+                let parts = tree.path.to_vec();
                 current.resolve_namespace_module_parts(&parts, 2, graph)?
             } else if tree.path.len() >= 2 && is_namespace_segment(tree.path[tree.path.len() - 1]) {
-                let parts = tree.path.iter().map(|p| *p).collect::<Vec<_>>();
+                let parts = tree.path.to_vec();
                 current.resolve_namespace_module_parts(&parts, 1, graph)?
             } else {
                 current.resolve_import_module(tree.path, graph)?
@@ -1988,10 +2007,8 @@ fn collect_declared_symbols<'bump>(
 ) {
     for top in tops {
         let (top, public) = unwrap_public(top);
-        if public_only && !public {
-            if !matches!(top, TopLevel::TLNamespace(..)) {
-                continue;
-            }
+        if public_only && !public && !matches!(top, TopLevel::TLNamespace(..)) {
+            continue;
         }
         match top {
             TopLevel::TLDef(name, ..) | TopLevel::TLTheorem(name, ..) => {
@@ -2216,11 +2233,37 @@ fn display_module(module: &ModuleId) -> String {
     }
 }
 
+fn standard_prelude_module() -> ModuleId {
+    ModuleId::package(
+        STANDARD_LIBRARY_PACKAGE,
+        vec![STANDARD_PRELUDE_MODULE.to_string()],
+    )
+}
+
+fn should_auto_import_std_prelude(module: &ModuleId, graph: &PackageModuleGraph) -> bool {
+    module.package.as_deref() != Some(STANDARD_LIBRARY_PACKAGE) && standard_prelude_available(graph)
+}
+
+fn standard_prelude_available(graph: &PackageModuleGraph) -> bool {
+    if let Some(info) = graph.packages.get(STANDARD_LIBRARY_PACKAGE) {
+        return info
+            .public_modules
+            .contains(&vec![STANDARD_PRELUDE_MODULE.to_string()]);
+    }
+    standard_library_module_file(&standard_prelude_module()).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DEFAULT_STANDARD_LIBRARY_PATH, standard_library_search_roots_from};
+    use crate::compiler::Compiler;
+    use crate::core::pool::TermArena;
+    use bumpalo::Bump;
     use std::ffi::OsString;
+    use std::fs;
     use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn unset_standard_library_path_uses_default_root() {
@@ -2251,5 +2294,171 @@ mod tests {
             "{}",
             err.message
         );
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn temp_project() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ligare_modules_unit_{}_{}",
+            std::process::id(),
+            nonce
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write(root: &std::path::Path, rel: &str, content: &str) {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn implicit_std_prelude_reexports_are_available_before_root_processing() {
+        let _guard = env_lock().lock().unwrap();
+        let root = temp_project();
+        let std_root = root.join("custom_std");
+        write(
+            &std_root,
+            "src/lib.lig",
+            "pub mod prelude\npub mod answer\n",
+        );
+        write(&std_root, "src/prelude.lig", "pub use std::answer::value\n");
+        write(
+            &std_root,
+            "src/answer.lig",
+            "pub def value : int := 41 + 1\n",
+        );
+        write(
+            &root,
+            "main.lig",
+            "pub def main : IO () := let _ := value in ()\n",
+        );
+
+        let old = std::env::var_os("LIGARE_STD_PATH");
+        unsafe {
+            std::env::set_var("LIGARE_STD_PATH", &std_root);
+        }
+
+        let bump = Bump::new();
+        let arena = TermArena::new(&bump);
+        let mut compiler = Compiler::new(&bump, &arena);
+        let env = compiler
+            .load_module_graph(&root.join("main.lig").to_string_lossy())
+            .unwrap();
+
+        let order = env
+            .order
+            .iter()
+            .map(super::display_module)
+            .collect::<Vec<_>>();
+        assert!(
+            order.contains(&"std::answer".to_string()),
+            "order: {order:?}"
+        );
+        assert!(
+            order.iter().position(|name| name == "std::answer")
+                < order.iter().position(|name| name == "main"),
+            "order: {order:?}"
+        );
+
+        for id in env.order.clone() {
+            let tops = env.rewritten.get(&id).cloned().unwrap_or_default();
+            for top in tops {
+                compiler.process_top_level(top).unwrap();
+            }
+        }
+        assert!(compiler.env.contains_key("std::answer::value"));
+
+        unsafe {
+            match old {
+                Some(old) => std::env::set_var("LIGARE_STD_PATH", old),
+                None => std::env::remove_var("LIGARE_STD_PATH"),
+            }
+        }
+    }
+
+    #[test]
+    fn implicit_std_prelude_survives_collect_pipeline_with_sibling_module() {
+        let _guard = env_lock().lock().unwrap();
+        let root = temp_project();
+        let std_root = root.join("custom_std");
+        write(
+            &std_root,
+            "src/lib.lig",
+            "pub mod prelude\npub mod answer\n",
+        );
+        write(&std_root, "src/prelude.lig", "pub use std::answer::value\n");
+        write(
+            &std_root,
+            "src/answer.lig",
+            "pub def value : int := 41 + 1\n",
+        );
+        write(&root, "helper.lig", "pub def run : int := value\n");
+        write(
+            &root,
+            "main.lig",
+            "mod helper\nuse helper::run\npub def main : IO () := let _ := value in let _ := run in ()\n",
+        );
+
+        let old = std::env::var_os("LIGARE_STD_PATH");
+        unsafe {
+            std::env::set_var("LIGARE_STD_PATH", &std_root);
+        }
+
+        let bump = Bump::new();
+        let arena = TermArena::new(&bump);
+        let mut compiler = Compiler::new(&bump, &arena);
+        let env = compiler
+            .load_module_graph(&root.join("main.lig").to_string_lossy())
+            .unwrap();
+
+        for id in env.order.clone() {
+            if super::display_module(&id) == "main" {
+                assert!(
+                    compiler.env.contains_key("std::answer::value"),
+                    "env missing std::answer::value before main: {:?}",
+                    compiler.env.keys().collect::<Vec<_>>()
+                );
+            }
+            let content = env.rewritten.get(&id).cloned().unwrap_or_default();
+            for top in &content {
+                compiler.process_top_level(top.clone()).unwrap();
+            }
+            let codegen = compiler.collect_codegen_state(&content).unwrap();
+            let monomorphized = compiler.monomorphize_for_codegen(content, codegen).unwrap();
+            let eraser = crate::checker::erase::Eraser::new(
+                compiler.arena,
+                compiler.checker.builtins.clone(),
+            );
+            let erased = compiler
+                .erase_and_collect_tops(monomorphized.tops, &eraser)
+                .unwrap();
+            compiler.raw_defs.extend(monomorphized.codegen.raw_defs);
+            compiler.fun_sigs.extend(monomorphized.codegen.fun_sigs);
+            compiler.enum_types.extend(monomorphized.codegen.enum_types);
+            compiler
+                .struct_types
+                .extend(monomorphized.codegen.struct_types);
+            compiler.tops.extend(erased.tops);
+        }
+
+        unsafe {
+            match old {
+                Some(old) => std::env::set_var("LIGARE_STD_PATH", old),
+                None => std::env::remove_var("LIGARE_STD_PATH"),
+            }
+        }
     }
 }

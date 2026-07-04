@@ -5,6 +5,7 @@ use tower_lsp::lsp_types as lsp;
 
 use crate::cache::LspCache;
 use crate::completion::completion_items_for_source_with_module_paths;
+use crate::formatting::formatting_edits;
 use crate::navigation::{
     SourceDocument, definition_for_documents, document_symbols_for_documents, hover_for_documents,
     references_for_documents,
@@ -182,6 +183,14 @@ where
             result_id: None,
             data: tokens,
         }))
+    }
+
+    pub async fn formatting(&self, uri: &lsp::Url) -> Option<Vec<lsp::TextEdit>> {
+        let text = {
+            let cache = self.cache.lock().await;
+            cache.text(uri)
+        }?;
+        formatting_edits(&text)
     }
 
     async fn update_document(&self, uri: lsp::Url, version: Option<i32>, text: String) {

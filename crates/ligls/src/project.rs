@@ -405,13 +405,10 @@ fn standard_library_search_roots() -> Vec<PathBuf> {
 
 fn standard_library_search_roots_from(value: Option<&OsStr>) -> Vec<PathBuf> {
     match value {
-        Some(value) if !value.is_empty() => {
-            let roots = std::env::split_paths(&value)
-                .filter(|path| path.is_absolute())
-                .filter(|path| !path.as_os_str().is_empty())
-                .collect::<Vec<_>>();
-            roots
-        }
+        Some(value) if !value.is_empty() => std::env::split_paths(value)
+            .filter(|path| path.is_absolute())
+            .filter(|path| !path.as_os_str().is_empty())
+            .collect::<Vec<_>>(),
         _ => vec![PathBuf::from(DEFAULT_STANDARD_LIBRARY_PATH)],
     }
 }

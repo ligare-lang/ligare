@@ -8,6 +8,7 @@ use ligare::backend::c::{emit_c, emit_eval_c};
 use ligare::backend::compile::{compile_and_run_c, compile_c};
 use ligare::compiler::Compiler;
 use ligare::core::pool::TermArena;
+use ligare::format::format_source;
 use ligare::package::{PackageType, UpdateMode, find_manifest_root, resolve_project, write_lock};
 
 #[derive(Parser)]
@@ -60,6 +61,15 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
+    /// Format Ligare source files
+    Fmt {
+        /// File or directory to format
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Check whether formatting changes are needed
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 fn main() {
@@ -74,6 +84,7 @@ fn main() {
                 path,
             } => run_update(path, name.clone(), version.clone()),
             Command::Test { path } => run_tests(path),
+            Command::Fmt { path, check } => run_fmt(path, *check),
         }
         return;
     }
@@ -93,7 +104,7 @@ fn main() {
     }
 }
 
-fn run_build(path: &PathBuf, cli: &Cli) {
+fn run_build(path: &Path, cli: &Cli) {
     let root = project_root_or_exit(path);
     let project = match resolve_project(&root, UpdateMode::Locked) {
         Ok(project) => project,
@@ -130,7 +141,7 @@ fn run_build(path: &PathBuf, cli: &Cli) {
     }
 }
 
-fn run_update(path: &PathBuf, name: Option<String>, version: Option<String>) {
+fn run_update(path: &Path, name: Option<String>, version: Option<String>) {
     let root = project_root_or_exit(path);
     let mode = match (name, version) {
         (Some(name), Some(version)) => UpdateMode::Version { name, version },
@@ -157,7 +168,7 @@ fn run_update(path: &PathBuf, name: Option<String>, version: Option<String>) {
     }
 }
 
-fn run_tests(path: &PathBuf) {
+fn run_tests(path: &Path) {
     let root = project_root_or_exit(path);
     let tests = match find_tests(&root) {
         Ok(tests) => tests,
@@ -186,6 +197,96 @@ fn run_tests(path: &PathBuf) {
     if had_error {
         process::exit(1);
     }
+}
+
+fn run_fmt(path: &Path, check: bool) {
+    let files = match collect_format_targets(path) {
+        Ok(files) => files,
+        Err(e) => {
+            eprintln!("{e}");
+            process::exit(1);
+        }
+    };
+    if files.is_empty() {
+        eprintln!("no .lig files found under `{}`", path.display());
+        process::exit(1);
+    }
+
+    let mut changed = Vec::new();
+    let mut had_error = false;
+
+    for file in files {
+        let source = match std::fs::read_to_string(&file) {
+            Ok(source) => source,
+            Err(err) => {
+                eprintln!("cannot read `{}`: {err}", file.display());
+                had_error = true;
+                continue;
+            }
+        };
+        let formatted = match format_source(&source) {
+            Ok(formatted) => formatted,
+            Err(err) => {
+                eprintln!("{}: {}", file.display(), err);
+                had_error = true;
+                continue;
+            }
+        };
+        if source == formatted {
+            continue;
+        }
+        changed.push(file.clone());
+        if check {
+            continue;
+        }
+        if let Err(err) = std::fs::write(&file, formatted) {
+            eprintln!("cannot write `{}`: {err}", file.display());
+            had_error = true;
+        }
+    }
+
+    if check && !changed.is_empty() {
+        for file in &changed {
+            eprintln!("needs formatting: {}", file.display());
+        }
+        process::exit(1);
+    }
+
+    if had_error {
+        process::exit(1);
+    }
+}
+
+fn collect_format_targets(path: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
+    fn visit(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), std::io::Error> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                let skip = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| matches!(name, ".git" | "target"));
+                if !skip {
+                    visit(&path, out)?;
+                }
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) == Some("lig") {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    if path.is_file() {
+        files.push(path.to_path_buf());
+    } else {
+        visit(path, &mut files)?;
+    }
+    files.sort();
+    Ok(files)
 }
 
 fn emit_or_compile(compiler: &Compiler<'_>, cli: &Cli) {
@@ -316,7 +417,7 @@ fn package_binary_name(package_name: &str) -> String {
     }
 }
 
-fn project_root_or_exit(path: &PathBuf) -> PathBuf {
+fn project_root_or_exit(path: &Path) -> PathBuf {
     match find_manifest_root(path) {
         Ok(root) => root,
         Err(e) => {

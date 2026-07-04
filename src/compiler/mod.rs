@@ -54,10 +54,20 @@ pub struct CodegenInput<'a, 'bump> {
     pub struct_types: &'a [(&'bump str, &'bump Term<'bump>)],
 }
 
+pub type ExpandedTopLevels<'bump> = Vec<(usize, TopLevel<'bump>)>;
+pub type IndexedDiagnostics = Vec<(usize, Diagnostic)>;
+
 #[derive(Clone)]
 pub(crate) struct MetaCallable<'bump> {
     pub(crate) name: Name<'bump>,
     pub(crate) params: Vec<Option<&'bump Term<'bump>>>,
+}
+
+struct MetaSignatureSpec<'a> {
+    marker: &'a str,
+    first: &'a str,
+    output: &'a str,
+    span: std::ops::Range<usize>,
 }
 
 /// The compiler orchestrator — owns the bump allocator, term arena, and
@@ -196,7 +206,7 @@ impl<'bump> Compiler<'bump> {
         file: &str,
         source: &str,
         mode: CheckMode,
-    ) -> (Vec<(usize, TopLevel<'bump>)>, Vec<(usize, Diagnostic)>) {
+    ) -> (ExpandedTopLevels<'bump>, IndexedDiagnostics) {
         let previous_quiet = self.quiet;
         self.quiet = true;
         let previous_mode = self.checker.mode();
@@ -643,10 +653,12 @@ impl<'bump> Compiler<'bump> {
                 name,
                 params,
                 ret,
-                TACTIC_ATTR,
-                crate::compiler::meta::EXPR_TYPE,
-                crate::compiler::meta::EXPR_TYPE,
-                span.clone(),
+                MetaSignatureSpec {
+                    marker: TACTIC_ATTR,
+                    first: crate::compiler::meta::EXPR_TYPE,
+                    output: crate::compiler::meta::EXPR_TYPE,
+                    span: span.clone(),
+                },
             )?;
             self.tactics.insert(
                 name,
@@ -661,10 +673,12 @@ impl<'bump> Compiler<'bump> {
                 name,
                 params,
                 ret,
-                CUSTOM_ATTRIBUTE_ATTR,
-                crate::compiler::meta::EXPR_TYPE,
-                crate::compiler::meta::DEFINITIONS_TYPE,
-                span,
+                MetaSignatureSpec {
+                    marker: CUSTOM_ATTRIBUTE_ATTR,
+                    first: crate::compiler::meta::EXPR_TYPE,
+                    output: crate::compiler::meta::DEFINITIONS_TYPE,
+                    span,
+                },
             )?;
             self.attributes.insert(
                 name,
@@ -682,26 +696,25 @@ impl<'bump> Compiler<'bump> {
         name: Name<'bump>,
         params: &'bump [(Name<'bump>, Option<&'bump Term<'bump>>)],
         ret: Option<&'bump Term<'bump>>,
-        marker: &str,
-        first: &str,
-        output: &str,
-        span: std::ops::Range<usize>,
+        spec: MetaSignatureSpec<'_>,
     ) -> Result<(), Diagnostic> {
         let first_param = params.first().and_then(|(_, c)| *c);
-        if !first_param.is_some_and(|ty| Self::is_meta_type_name(ty, first)) {
+        if !first_param.is_some_and(|ty| Self::is_meta_type_name(ty, spec.first)) {
             return Err(Diagnostic::with_span(
                 format!(
-                    "function `{name}` cannot be used as {marker}: first parameter must be {first}"
+                    "function `{name}` cannot be used as {}: first parameter must be {}",
+                    spec.marker, spec.first
                 ),
-                span,
+                spec.span,
             ));
         }
-        if !ret.is_some_and(|ty| Self::is_meta_type_name(ty, output)) {
+        if !ret.is_some_and(|ty| Self::is_meta_type_name(ty, spec.output)) {
             return Err(Diagnostic::with_span(
                 format!(
-                    "function `{name}` cannot be used as {marker}: return value must be {output}"
+                    "function `{name}` cannot be used as {}: return value must be {}",
+                    spec.marker, spec.output
                 ),
-                span,
+                spec.span,
             ));
         }
         Ok(())
@@ -772,7 +785,12 @@ impl<'bump> Compiler<'bump> {
         }
         self.verify_termination_claim(termination_claim, span.clone())?;
         self.record_data_termination(name, body, termination_claim);
-        self.env.insert(name, body);
+        let stored_body = if body.is_constant() {
+            self.subst_top_level(body)
+        } else {
+            body
+        };
+        self.env.insert(name, stored_body);
         Ok(())
     }
 

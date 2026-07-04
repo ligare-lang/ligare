@@ -398,20 +398,20 @@ fn validate_header(tokens: &[SpannedToken], eof_span: Span) -> Vec<ParseError> {
 }
 
 fn starts_with_header(tokens: &[SpannedToken]) -> bool {
-    match tokens.first().map(|(token, _)| token) {
-        Some(Token::KwPub) => true,
-        Some(
-            Token::KwDef
-            | Token::KwExtern
-            | Token::KwTheorem
-            | Token::KwUse
-            | Token::KwMod
-            | Token::HashLBracket
-            | Token::HashCheck
-            | Token::HashEval,
-        ) => true,
-        _ => false,
-    }
+    matches!(
+        tokens.first().map(|(token, _)| token),
+        Some(Token::KwPub)
+            | Some(
+                Token::KwDef
+                    | Token::KwExtern
+                    | Token::KwTheorem
+                    | Token::KwUse
+                    | Token::KwMod
+                    | Token::HashLBracket
+                    | Token::HashCheck
+                    | Token::HashEval,
+            )
+    )
 }
 
 fn header_parser() -> impl Parser<TokKind, HeaderKind, Error = Simple<TokKind>> {

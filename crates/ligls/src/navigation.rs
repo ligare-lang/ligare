@@ -184,10 +184,10 @@ impl NavIndex {
             }
         }
 
-        if reference.name.contains('.') {
-            if let Some(symbol) = self.visible_symbol(doc, &reference.name, reference.offset) {
-                return Some(symbol);
-            }
+        if reference.name.contains('.')
+            && let Some(symbol) = self.visible_symbol(doc, &reference.name, reference.offset)
+        {
+            return Some(symbol);
         }
 
         if let Some(local) = self.local_symbol(doc, &reference.name, reference.offset) {
@@ -201,7 +201,7 @@ impl NavIndex {
         }
 
         self.visible_symbol(doc, &reference.name, reference.offset)
-            .or_else(|| self.module_for_path(&[reference.name.clone()]))
+            .or_else(|| self.module_for_path(std::slice::from_ref(&reference.name)))
             .or_else(|| self.builtin_symbol(doc, &reference.name))
     }
 
@@ -258,9 +258,7 @@ impl NavIndex {
             .unwrap_or_else(|| fallback_imported_module_keys(&doc.module_key, module_path));
         self.symbols.iter().find(|symbol| {
             symbol.scope.is_none()
-                && module_keys
-                    .iter()
-                    .any(|module_key| symbol.module_key == *module_key)
+                && module_keys.contains(&symbol.module_key)
                 && (symbol.name == *item || symbol.name.ends_with(&format!(".{item}")))
         })
     }
@@ -535,7 +533,7 @@ impl IndexedDocument {
                         scope: None,
                     });
                 }
-                self.collect_type_members(*name, body, start, end);
+                self.collect_type_members(name, body, start, end);
             }
             TopLevel::TLExternDef(name, params, ret, _) => {
                 let signature = signature_from_parts(params, ret);
