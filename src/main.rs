@@ -39,6 +39,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Create a new Ligare package
+    New {
+        /// Package directory to create
+        path: PathBuf,
+        /// Create a library package
+        #[arg(long, conflicts_with = "bin")]
+        lib: bool,
+        /// Create a binary package
+        #[arg(long)]
+        bin: bool,
+    },
     /// Build the current Ligare package
     Build {
         /// Project directory
@@ -77,6 +88,7 @@ fn main() {
 
     if let Some(command) = &cli.command {
         match command {
+            Command::New { path, lib, bin } => run_new(path, *lib, *bin),
             Command::Build { path } => run_build(path, &cli),
             Command::Update {
                 name,
@@ -102,6 +114,159 @@ fn main() {
     } else {
         run_eval(&cli, &bump, &arena);
     }
+}
+
+fn run_new(path: &Path, lib: bool, _bin: bool) {
+    let package_type = if lib {
+        PackageType::Lib
+    } else {
+        PackageType::Binary
+    };
+    if let Err(e) = create_package(path, package_type) {
+        eprintln!("{e}");
+        process::exit(1);
+    }
+}
+
+fn create_package(path: &Path, package_type: PackageType) -> Result<(), String> {
+    if path.exists() {
+        if !path.is_dir() {
+            return Err(format!(
+                "`{}` already exists and is not a directory",
+                path.display()
+            ));
+        }
+        let mut entries = std::fs::read_dir(path)
+            .map_err(|e| format!("cannot read `{}`: {e}", path.display()))?;
+        if entries.next().is_some() {
+            return Err(format!(
+                "`{}` already exists and is not empty; use an empty directory",
+                path.display()
+            ));
+        }
+    } else {
+        std::fs::create_dir_all(path)
+            .map_err(|e| format!("cannot create `{}`: {e}", path.display()))?;
+    }
+
+    let name = package_name_from_path(path)?;
+    let src = path.join("src");
+    std::fs::create_dir_all(&src).map_err(|e| format!("cannot create `{}`: {e}", src.display()))?;
+
+    let manifest = package_manifest(&name, package_type);
+    write_new_file(&path.join("ligare.toml"), &manifest)?;
+
+    let (entry_name, entry_source) = package_entry(package_type);
+    write_new_file(&src.join(entry_name), entry_source)?;
+
+    eprintln!(
+        "Created {} package `{}`",
+        package_kind(package_type),
+        path.display()
+    );
+    Ok(())
+}
+
+fn package_name_from_path(path: &Path) -> Result<String, String> {
+    let raw = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("cannot infer package name from `{}`", path.display()))?;
+    let mut name = String::new();
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            name.push(ch);
+        } else {
+            name.push('_');
+        }
+    }
+    if name
+        .chars()
+        .next()
+        .is_none_or(|ch| !ch.is_ascii_alphabetic() && ch != '_')
+    {
+        name.insert(0, '_');
+    }
+    if name.chars().all(|ch| ch == '_') {
+        return Err(format!(
+            "cannot infer a valid package name from `{}`",
+            path.display()
+        ));
+    }
+    if is_ligare_keyword(&name) {
+        name.push('_');
+    }
+    Ok(name)
+}
+
+fn is_ligare_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "as" | "auto"
+            | "by"
+            | "def"
+            | "do"
+            | "else"
+            | "enum"
+            | "exact"
+            | "extern"
+            | "false"
+            | "func"
+            | "fun"
+            | "have"
+            | "if"
+            | "in"
+            | "instance"
+            | "intro"
+            | "let"
+            | "match"
+            | "mod"
+            | "namespace"
+            | "of"
+            | "pub"
+            | "pure"
+            | "struct"
+            | "then"
+            | "theorem"
+            | "true"
+            | "unsafe"
+            | "use"
+            | "variable"
+            | "where"
+            | "with"
+    )
+}
+
+fn package_manifest(name: &str, package_type: PackageType) -> String {
+    match package_type {
+        PackageType::Binary => format!(
+            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\ntype = \"binary\"\n\n[dependencies]\n"
+        ),
+        PackageType::Lib => format!(
+            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\ntype = \"lib\"\nentry = \"src/lib.lig\"\n\n[dependencies]\n"
+        ),
+    }
+}
+
+fn package_entry(package_type: PackageType) -> (&'static str, &'static str) {
+    match package_type {
+        PackageType::Binary => ("main.lig", "pub def main : IO () := ()\n"),
+        PackageType::Lib => ("lib.lig", "pub def hello : str := \"hello\"\n"),
+    }
+}
+
+fn package_kind(package_type: PackageType) -> &'static str {
+    match package_type {
+        PackageType::Binary => "binary",
+        PackageType::Lib => "library",
+    }
+}
+
+fn write_new_file(path: &Path, content: &str) -> Result<(), String> {
+    if path.exists() {
+        return Err(format!("`{}` already exists", path.display()));
+    }
+    std::fs::write(path, content).map_err(|e| format!("cannot write `{}`: {e}", path.display()))
 }
 
 fn run_build(path: &Path, cli: &Cli) {

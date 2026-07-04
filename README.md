@@ -47,6 +47,7 @@ cargo run -- -o /tmp/ligare-test tests/fixtures/test.lig
 ### Build a Package
 
 ```bash
+cargo run -- new hello
 cargo run -- build examples/test
 ./examples/test/target/test
 ```
@@ -70,6 +71,7 @@ Usage: ligare [OPTIONS] [FILES]... [COMMAND]
 | `--eval <EXPR>` | Evaluate an expression after processing the input files. |
 | `--emit-c` | Emit C source code instead of running the evaluator. |
 | `-o, --output <PATH>` | Compile generated C into a native executable at `PATH`. |
+| `new [--bin\|--lib] PATH` | Create a new package directory with `ligare.toml` and a `src` entry file. |
 | `build [PATH]` | Build the package found at `PATH` or the current directory. |
 | `update [NAME] [VERSION]` | Refresh `ligare.lock`, optionally pinning one dependency. |
 | `test [PATH]` | Run package files whose names end in `_test.lig`. |

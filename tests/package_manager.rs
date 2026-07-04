@@ -280,6 +280,77 @@ fn non_exported_dependency_module_is_rejected() {
 }
 
 #[test]
+fn cli_new_creates_binary_package() {
+    let root = temp_project();
+    let package = root.join("hello-world");
+
+    let bin = env!("CARGO_BIN_EXE_ligare");
+    let status = Command::new(bin)
+        .args(["new", package.to_str().unwrap()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let manifest = fs::read_to_string(package.join("ligare.toml")).unwrap();
+    assert!(manifest.contains("name = \"hello_world\""), "{manifest}");
+    assert!(manifest.contains("type = \"binary\""), "{manifest}");
+    let main = fs::read_to_string(package.join("src/main.lig")).unwrap();
+    assert_eq!(main, "pub def main : IO () := ()\n");
+
+    let status = Command::new(bin)
+        .args(["build", package.to_str().unwrap()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(package.join("target").join("hello_world").exists());
+}
+
+#[test]
+fn cli_new_creates_library_package() {
+    let root = temp_project();
+    let package = root.join("math");
+
+    let bin = env!("CARGO_BIN_EXE_ligare");
+    let status = Command::new(bin)
+        .args(["new", "--lib", package.to_str().unwrap()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let manifest = fs::read_to_string(package.join("ligare.toml")).unwrap();
+    assert!(manifest.contains("name = \"math\""), "{manifest}");
+    assert!(manifest.contains("type = \"lib\""), "{manifest}");
+    assert!(manifest.contains("entry = \"src/lib.lig\""), "{manifest}");
+    let lib = fs::read_to_string(package.join("src/lib.lig")).unwrap();
+    assert_eq!(lib, "pub def hello : str := \"hello\"\n");
+
+    let status = Command::new(bin)
+        .args(["build", package.to_str().unwrap()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(package.join("target").join("math.c").exists());
+}
+
+#[test]
+fn cli_new_rejects_non_empty_directory() {
+    let root = temp_project();
+    write(&root, "README.md", "keep me\n");
+
+    let bin = env!("CARGO_BIN_EXE_ligare");
+    let status = Command::new(bin)
+        .args(["new", root.to_str().unwrap()])
+        .status()
+        .unwrap();
+    assert!(!status.success());
+    assert_eq!(
+        fs::read_to_string(root.join("README.md")).unwrap(),
+        "keep me\n"
+    );
+    assert!(!root.join("ligare.toml").exists());
+}
+
+#[test]
 fn cli_test_scans_lig_test_files() {
     let root = temp_project();
     manifest(&root, "app", "");
