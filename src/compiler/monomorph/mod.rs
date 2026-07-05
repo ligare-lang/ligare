@@ -216,9 +216,8 @@ impl<'bump> Compiler<'bump> {
                 let params = self.rewrite_params(p, state);
                 let ret = r.map(|t| self.rewrite_type_constraint(t, state));
                 let body = self
-                    .checker
-                    .desugar_with_context(b)
-                    .map(|b| self.subst_top_level(b))
+                    .desugar_checked_def(p, r, b)
+                    .map(|body| self.subst_top_level(body))
                     .unwrap_or(b);
                 let body = match ret {
                     Some(ret) => self.rewrite_term_for_constraint(body, ret, state),

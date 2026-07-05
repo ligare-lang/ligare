@@ -366,6 +366,13 @@ impl<'bump> Compiler<'bump> {
                 if let Some(full) = imports.get(*name).or_else(|| own_names.get(*name)) {
                     return self.arena.named(self.arena.alloc_str(full));
                 }
+                if let Some((prefix, suffix)) = name.split_once('.')
+                    && let Some(full_prefix) = imports.get(prefix).or_else(|| own_names.get(prefix))
+                {
+                    return self
+                        .arena
+                        .named(self.arena.alloc_str(&format!("{full_prefix}.{suffix}")));
+                }
                 term
             }
             Term::Builtin(_) => term,

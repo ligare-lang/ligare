@@ -115,6 +115,10 @@ pub(super) fn qualified_term_names<'bump>(
             Diagnostic::new(format!("module not found: {}", display_module(&dep)))
         })?;
         let Some(target) = dep_exports.get(&requested) else {
+            if crate::config::is_std_internal_primitive_helper(&requested) {
+                resolved.insert(name, requested);
+                continue;
+            }
             return Err(Diagnostic::new(format!(
                 "cannot reference private or unknown symbol `{requested}`"
             )));

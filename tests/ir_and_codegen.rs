@@ -113,6 +113,15 @@ fn funsig_with_str_param() {
 }
 
 #[test]
+fn funsig_variant_body_infers_enum_return_type() {
+    let (_b, arena) = setup();
+    let body = arena.variant(s(&arena, "Nat"), 0, arena.alloc_slice(&[]));
+    let enum_names: HashSet<String> = ["Nat".into()].into();
+    let sig = FunSig::from_func(&[], None, body, &enum_names, &HashSet::new()).unwrap();
+    assert_eq!(sig.ret_type, CType::Enum("Nat".into()));
+}
+
+#[test]
 fn funsig_with_unmappable_param_errors() {
     let (_b, arena) = setup();
     let params: &[(&str, Option<&Term>)] =

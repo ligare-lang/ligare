@@ -740,9 +740,13 @@ impl<'bump> Compiler<'bump> {
             | Term::Quote(inner)
             | Term::Splice(inner)
             | Term::StructProj(inner, _) => self.contains_resolvable_global(inner),
-            Term::Pi(_, a, b) | Term::Annot(a, b) | Term::Refine(_, a, b) => {
+            Term::Pi(_, a, b) | Term::Refine(_, a, b) => {
                 self.contains_resolvable_global(a) || self.contains_resolvable_global(b)
             }
+            // Meta eval only needs value-level globals to keep reducing; repeatedly
+            // expanding annotation constraints can blow up on recursive meta types
+            // like `Expr` and `Definitions`.
+            Term::Annot(inner, _) => self.contains_resolvable_global(inner),
             Term::Let(_, value, body, constraint) => {
                 self.contains_resolvable_global(value)
                     || self.contains_resolvable_global(body)

@@ -167,3 +167,54 @@ def render (x : int) : str := x.show
     assert!(err.message.contains("showA"), "{}", err.message);
     assert!(err.message.contains("showB"), "{}", err.message);
 }
+
+#[test]
+fn of_nat_uses_expected_argument_type() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    let result = compiler.process_file_str(
+        r#"
+def OfNat (A : prop) : prop := struct
+  of_nat : int -> A
+
+def Peano : prop := enum
+  | Zero
+  | Succ of (pred : Peano)
+
+#[terminating]
+def from_int (n : int) : Peano :=
+  if n <= 0 then Zero else Succ (from_int (n - 1))
+
+instance of_nat_peano : OfNat Peano := OfNat.mk from_int
+
+def accept_peano (x : Peano) : Peano := x
+#check accept_peano 2 : Peano
+"#,
+    );
+    assert!(result.is_ok(), "Error: {:?}", result.err());
+}
+
+#[test]
+fn add_instance_drives_infix_plus_for_user_struct() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    let result = compiler.process_file_str(
+        r#"
+def Add (A : prop) : prop := struct
+  add : A -> A -> A
+
+def Point : prop := struct
+  x : int
+  y : int
+
+def point_add (a : Point) (b : Point) : Point :=
+  Point.mk (std::primitive::int_add (Point.x a) (Point.x b)) (std::primitive::int_add (Point.y a) (Point.y b))
+
+instance add_point : Add Point := Add.mk point_add
+
+def sum (a : Point) (b : Point) : Point := a + b
+#check sum (Point.mk 1 2) (Point.mk 3 4) : Point
+"#,
+    );
+    assert!(result.is_ok(), "Error: {:?}", result.err());
+}

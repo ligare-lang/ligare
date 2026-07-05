@@ -305,6 +305,11 @@ impl<'bump> TypeChecker<'bump> {
         self.enum_table
             .iter()
             .find(|(n, _, _)| *n == name)
+            .or_else(|| {
+                self.enum_table
+                    .iter()
+                    .find(|(n, _, _)| n.rsplit("::").next().is_some_and(|leaf| leaf == name))
+            })
             .map(|(_, def, params)| (*def, *params))
     }
 
@@ -313,6 +318,11 @@ impl<'bump> TypeChecker<'bump> {
         self.struct_table
             .iter()
             .find(|(n, _, _)| *n == name)
+            .or_else(|| {
+                self.struct_table
+                    .iter()
+                    .find(|(n, _, _)| n.rsplit("::").next().is_some_and(|leaf| leaf == name))
+            })
             .map(|(_, def, params)| (*def, *params))
     }
 
@@ -324,12 +334,10 @@ impl<'bump> TypeChecker<'bump> {
     ) -> Option<(Name<'bump>, &'bump [(Name<'bump>, &'bump Term<'bump>)])> {
         // Check if name ends with ".mk"
         if let Some(struct_name) = ctor_name.strip_suffix(".mk") {
-            for (sname, sdef, _) in &self.struct_table {
-                if *sname == struct_name
-                    && let Term::StructDef(_, fields) = sdef
-                {
-                    return Some((*sname, *fields));
-                }
+            if let Some((sdef, _)) = self.lookup_struct(struct_name)
+                && let Term::StructDef(name, fields) = sdef
+            {
+                return Some((*name, *fields));
             }
         }
         None
@@ -341,12 +349,10 @@ impl<'bump> TypeChecker<'bump> {
         if let Some(dot_pos) = proj_name.rfind('.') {
             let struct_name = &proj_name[..dot_pos];
             let field_name = &proj_name[dot_pos + 1..];
-            for (sname, sdef, _) in &self.struct_table {
-                if *sname == struct_name
-                    && let Term::StructDef(_, fields) = sdef
-                {
-                    return fields.iter().position(|(fnm, _)| *fnm == field_name);
-                }
+            if let Some((sdef, _)) = self.lookup_struct(struct_name)
+                && let Term::StructDef(_, fields) = sdef
+            {
+                return fields.iter().position(|(fnm, _)| *fnm == field_name);
             }
         }
         None

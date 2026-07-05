@@ -30,4 +30,3 @@ pub def IO {A : prop} : prop := data
 pub def ptr {A : prop} : prop := data
 #[compiler_intrinsic]
 pub def ptr_cast {A : prop} {B : prop} (p : ptr A) : ptr B := data
-

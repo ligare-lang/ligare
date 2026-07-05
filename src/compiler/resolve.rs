@@ -4,7 +4,9 @@
 //! to their definitions, convert variant/struct constructor applications,
 //! and perform top-level substitution.
 
-use crate::core::syntax::{DoStmt, Name, Tactic, Term};
+use crate::checker::context::Context;
+use crate::config::BUILTIN_INT;
+use crate::core::syntax::{DoStmt, Name, PrimOp, Tactic, Term};
 use crate::diagnostic::Diagnostic;
 
 /// Result of collecting variant constructor args: (enum_name, variant_index, field_specs, args).
@@ -46,6 +48,14 @@ impl<'bump> Compiler<'bump> {
         &self,
         term: &'bump Term<'bump>,
     ) -> Result<&'bump Term<'bump>, Diagnostic> {
+        self.try_resolve_all_with_expected(term, None)
+    }
+
+    pub(crate) fn try_resolve_all_with_expected(
+        &self,
+        term: &'bump Term<'bump>,
+        expected: Option<&'bump Term<'bump>>,
+    ) -> Result<&'bump Term<'bump>, Diagnostic> {
         let term = self.rewrite_method_calls(term, &mut Vec::new())?;
         let term = self.checker.desugar_with_context(term)?;
         let t = self.arena.map(term, &|t| {
@@ -83,7 +93,23 @@ impl<'bump> Compiler<'bump> {
             }
             None
         });
-        Ok(self.fold_struct_projections(t))
+        let t = self.fold_struct_projections(t);
+        self.elaborate_of_nat_literals(t, &Context::empty(), expected)
+    }
+
+    pub(crate) fn resolve_instance_value(
+        &self,
+        term: &'bump Term<'bump>,
+        expected: &'bump Term<'bump>,
+    ) -> Result<&'bump Term<'bump>, Diagnostic> {
+        let term = self.rewrite_method_calls(term, &mut Vec::new())?;
+        let term = self.checker.desugar_with_context(term)?;
+        let term = self.elaborate_implicit_apps(term)?;
+        let term = self.resolve_variant_apps(term);
+        let term = self.resolve_struct_ctors(term);
+        let term = self.resolve_struct_projs(term);
+        let term = self.fold_struct_projections(term);
+        self.elaborate_of_nat_literals(term, &Context::empty(), Some(expected))
     }
 
     pub(crate) fn rewrite_method_calls(
@@ -96,6 +122,26 @@ impl<'bump> Compiler<'bump> {
                 self.rewrite_method_call(receiver, method, &[], scope)
             }
             Term::App(f, a) => {
+                if let Some((op, receiver, rhs)) = Self::operator_app_spine(term) {
+                    let rhs = self.rewrite_method_calls(rhs, scope)?;
+                    let method = self.primop_method_name(op);
+                    match self.rewrite_interface_method_call(receiver, method, scope) {
+                        Ok(call) => return Ok(self.arena.app(call, rhs)),
+                        Err(err)
+                            if err.message.starts_with(
+                                "no interface instance or function provides method",
+                            ) || err
+                                .message
+                                .starts_with("cannot infer receiver constraint for method") =>
+                        {
+                            return Ok(self.arena.app(
+                                self.rewrite_method_calls(f, scope)?,
+                                self.rewrite_method_calls(a, scope)?,
+                            ));
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
                 if let Some((receiver, method, args)) = Self::method_call_app_spine(term) {
                     let args = args
                         .iter()
@@ -401,6 +447,64 @@ impl<'bump> Compiler<'bump> {
         }
     }
 
+    fn rewrite_interface_method_call(
+        &self,
+        receiver: &'bump Term<'bump>,
+        method: Name<'bump>,
+        scope: &mut Vec<MethodScopeEntry<'bump>>,
+    ) -> Result<&'bump Term<'bump>, Diagnostic> {
+        let receiver = self.rewrite_method_calls(receiver, scope)?;
+        let Some(receiver_constraint) = self.infer_parser_receiver_constraint(receiver, scope)?
+        else {
+            return Err(Diagnostic::new(format!(
+                "cannot infer receiver constraint for method `{method}`"
+            )));
+        };
+
+        let mut candidates = self
+            .checker
+            .lookup_method_instances(method, receiver_constraint);
+        let env = self.method_scope_names(scope);
+        for entry in scope.iter().rev() {
+            let Some(constraint) = entry.constraint else {
+                continue;
+            };
+            let constraint = self.checker.desugar_with_names_context(constraint, &env)?;
+            let value = self.arena.named(entry.name);
+            if let Some(candidate) = self.checker.lookup_method_on_instance(
+                method,
+                receiver_constraint,
+                entry.name,
+                constraint,
+                value,
+            ) {
+                candidates.push(candidate);
+            }
+        }
+        if candidates.len() > 1 {
+            let names = candidates
+                .iter()
+                .map(|candidate| candidate.name.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(Diagnostic::new(format!(
+                "ambiguous method `{method}` for receiver: {names}"
+            )));
+        }
+        let Some(candidate) = candidates.first().copied() else {
+            return Err(Diagnostic::new(format!(
+                "no interface instance or function provides method `{method}` for receiver"
+            )));
+        };
+        let projector = self.arena.named(
+            self.arena
+                .alloc_str(&format!("{}.{}", candidate.interface_name, method)),
+        );
+        Ok(self
+            .arena
+            .app(self.arena.app(projector, candidate.value), receiver))
+    }
+
     fn rewrite_plain_function_method(
         &self,
         receiver: &'bump Term<'bump>,
@@ -604,6 +708,37 @@ impl<'bump> Compiler<'bump> {
         } else {
             None
         }
+    }
+
+    fn operator_app_spine(
+        term: &'bump Term<'bump>,
+    ) -> Option<(PrimOp, &'bump Term<'bump>, &'bump Term<'bump>)> {
+        let Term::App(f, rhs) = term else {
+            return None;
+        };
+        let Term::App(head, lhs) = f else {
+            return None;
+        };
+        let Term::PrimOp(op) = head else {
+            return None;
+        };
+        Some((*op, *lhs, *rhs))
+    }
+
+    fn primop_method_name(&self, op: PrimOp) -> Name<'bump> {
+        self.arena.alloc_str(match op {
+            PrimOp::Add => "add",
+            PrimOp::Sub => "sub",
+            PrimOp::Mul => "mul",
+            PrimOp::Div => "div",
+            PrimOp::Mod_ => "mod_",
+            PrimOp::Eq => "eq",
+            PrimOp::Lt => "lt",
+            PrimOp::Gt => "gt",
+            PrimOp::Le => "le",
+            PrimOp::Ge => "ge",
+            PrimOp::Neq => "neq",
+        })
     }
 
     fn infer_parser_receiver_constraint(
@@ -919,6 +1054,292 @@ impl<'bump> Compiler<'bump> {
                 }
             }),
             _ => None,
+        }
+    }
+
+    fn elaborate_of_nat_literals(
+        &self,
+        term: &'bump Term<'bump>,
+        ctx: &Context<'bump>,
+        expected: Option<&'bump Term<'bump>>,
+    ) -> Result<&'bump Term<'bump>, Diagnostic> {
+        match term {
+            Term::LitInt(n) => {
+                if let Some(expected) = expected
+                    && let Some(lowered) = self.lower_of_nat_literal(*n, expected)?
+                {
+                    return Ok(lowered);
+                }
+                Ok(term)
+            }
+            Term::App(f, a) => {
+                let f = self.elaborate_of_nat_literals(f, ctx, None)?;
+                let arg_expected = self.explicit_app_domain(ctx, f);
+                let a = self.elaborate_of_nat_literals(a, ctx, arg_expected)?;
+                Ok(self.arena.app(f, a))
+            }
+            Term::Annot(inner, constraint) => {
+                let constraint = self.elaborate_of_nat_literals(constraint, ctx, None)?;
+                let inner = self.elaborate_of_nat_literals(inner, ctx, Some(constraint))?;
+                Ok(self.arena.annot(inner, constraint))
+            }
+            Term::Lam(body) => {
+                let (next_ctx, body_expected) = if let Some(expected) = expected {
+                    match self.checker.evaluator.whnf(expected)? {
+                        Term::Pi(_, domain, codomain) => (ctx.extend_term(domain), Some(*codomain)),
+                        _ => (ctx.clone(), None),
+                    }
+                } else {
+                    (ctx.clone(), None)
+                };
+                Ok(self.arena.lam(self.elaborate_of_nat_literals(
+                    body,
+                    &next_ctx,
+                    body_expected,
+                )?))
+            }
+            Term::Pi(name, domain, codomain) => {
+                let domain = self.elaborate_of_nat_literals(domain, ctx, None)?;
+                let next_ctx = ctx.extend(name, domain);
+                let codomain = self.elaborate_of_nat_literals(codomain, &next_ctx, None)?;
+                Ok(self.arena.pi(name, domain, codomain))
+            }
+            Term::Let(name, value, body, constraint) => {
+                let constraint = constraint
+                    .map(|c| self.elaborate_of_nat_literals(c, ctx, None))
+                    .transpose()?;
+                let value = self.elaborate_of_nat_literals(value, ctx, constraint)?;
+                let binding_constraint =
+                    constraint.or_else(|| self.checker.infer_binding_constraint(ctx, value).ok());
+                let next_ctx = binding_constraint
+                    .map(|c| ctx.extend(name, c))
+                    .unwrap_or_else(|| ctx.clone());
+                let body = self.elaborate_of_nat_literals(body, &next_ctx, expected)?;
+                Ok(self.arena.let_(name, value, body, constraint))
+            }
+            Term::IfThenElse(cond, then_branch, else_branch) => Ok(self.arena.if_then_else(
+                self.elaborate_of_nat_literals(cond, ctx, None)?,
+                self.elaborate_of_nat_literals(then_branch, ctx, expected)?,
+                self.elaborate_of_nat_literals(else_branch, ctx, expected)?,
+            )),
+            Term::ByProof(inner, tactics) => {
+                let inner = inner
+                    .map(|t| self.elaborate_of_nat_literals(t, ctx, expected))
+                    .transpose()?;
+                let tactics = tactics
+                    .iter()
+                    .map(|tactic| {
+                        Ok(match tactic {
+                            Tactic::Exact(t) => {
+                                Tactic::Exact(self.elaborate_of_nat_literals(t, ctx, None)?)
+                            }
+                            Tactic::Apply(t) => {
+                                Tactic::Apply(self.elaborate_of_nat_literals(t, ctx, None)?)
+                            }
+                            Tactic::Intro(n) => Tactic::Intro(*n),
+                            Tactic::Have(n, t) => {
+                                Tactic::Have(n, self.elaborate_of_nat_literals(t, ctx, None)?)
+                            }
+                            Tactic::Custom(n, args) => {
+                                let args = args
+                                    .iter()
+                                    .map(|arg| self.elaborate_of_nat_literals(arg, ctx, None))
+                                    .collect::<Result<Vec<_>, Diagnostic>>()?;
+                                Tactic::Custom(n, self.arena.alloc_slice(&args))
+                            }
+                        })
+                    })
+                    .collect::<Result<Vec<_>, Diagnostic>>()?;
+                Ok(self.arena.by_proof(inner, self.arena.alloc_slice(&tactics)))
+            }
+            Term::Refine(name, parent, predicate) => {
+                let parent = self.elaborate_of_nat_literals(parent, ctx, None)?;
+                let predicate =
+                    self.elaborate_of_nat_literals(predicate, &ctx.extend(name, parent), None)?;
+                Ok(self.arena.refine(name, parent, predicate))
+            }
+            Term::StructCons(name, fields) => {
+                let field_constraints =
+                    self.checker
+                        .lookup_struct(name)
+                        .and_then(|(def, _)| match def {
+                            Term::StructDef(_, fields) => Some(*fields),
+                            _ => None,
+                        });
+                let fields = fields
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, field)| {
+                        let expected = field_constraints.and_then(|constraints| {
+                            constraints.get(idx).map(|(_, constraint)| *constraint)
+                        });
+                        self.elaborate_of_nat_literals(field, ctx, expected)
+                    })
+                    .collect::<Result<Vec<_>, Diagnostic>>()?;
+                Ok(self
+                    .arena
+                    .struct_cons(name, self.arena.alloc_slice(&fields)))
+            }
+            Term::Variant(name, idx, payloads) => {
+                let payload_constraints =
+                    self.checker
+                        .lookup_enum(name)
+                        .and_then(|(def, _)| match def {
+                            Term::EnumDef(_, variants) => {
+                                variants.get(*idx).map(|(_, fields)| *fields)
+                            }
+                            _ => None,
+                        });
+                let payloads = payloads
+                    .iter()
+                    .enumerate()
+                    .map(|(payload_idx, payload)| {
+                        let expected = payload_constraints.and_then(|fields| {
+                            fields.get(payload_idx).map(|(_, constraint)| *constraint)
+                        });
+                        self.elaborate_of_nat_literals(payload, ctx, expected)
+                    })
+                    .collect::<Result<Vec<_>, Diagnostic>>()?;
+                Ok(self
+                    .arena
+                    .variant(name, *idx, self.arena.alloc_slice(&payloads)))
+            }
+            Term::Match(scrutinee, branches) => {
+                let scrutinee = self.elaborate_of_nat_literals(scrutinee, ctx, None)?;
+                let branches = branches
+                    .iter()
+                    .map(|(idx, binds, body)| {
+                        let mut branch_ctx = ctx.clone();
+                        for (name, constraint) in binds.iter().rev() {
+                            branch_ctx = branch_ctx.extend(name, constraint);
+                        }
+                        Ok((
+                            *idx,
+                            *binds,
+                            self.elaborate_of_nat_literals(body, &branch_ctx, expected)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, Diagnostic>>()?;
+                Ok(self
+                    .arena
+                    .match_(scrutinee, self.arena.alloc_slice(&branches)))
+            }
+            Term::StructProj(subject, idx) => Ok(self
+                .arena
+                .struct_proj(self.elaborate_of_nat_literals(subject, ctx, None)?, *idx)),
+            Term::Unsafe(inner) => Ok(self
+                .arena
+                .unsafe_(self.elaborate_of_nat_literals(inner, ctx, expected)?)),
+            Term::Pure(inner) => Ok(self
+                .arena
+                .pure(self.elaborate_of_nat_literals(inner, ctx, expected)?)),
+            Term::Implicit(inner) => Ok(self
+                .arena
+                .implicit(self.elaborate_of_nat_literals(inner, ctx, None)?)),
+            Term::EnumDef(name, variants) => {
+                let variants = variants
+                    .iter()
+                    .map(|(variant, fields)| {
+                        let fields = fields
+                            .iter()
+                            .map(|(field, constraint)| {
+                                Ok((
+                                    *field,
+                                    self.elaborate_of_nat_literals(constraint, ctx, None)?,
+                                ))
+                            })
+                            .collect::<Result<Vec<_>, Diagnostic>>()?;
+                        Ok((*variant, self.arena.alloc_slice(&fields)))
+                    })
+                    .collect::<Result<Vec<_>, Diagnostic>>()?;
+                Ok(self.arena.enum_def(name, self.arena.alloc_slice(&variants)))
+            }
+            Term::StructDef(name, fields) => {
+                let fields = fields
+                    .iter()
+                    .map(|(field, constraint)| {
+                        Ok((
+                            *field,
+                            self.elaborate_of_nat_literals(constraint, ctx, None)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, Diagnostic>>()?;
+                Ok(self.arena.struct_def(name, self.arena.alloc_slice(&fields)))
+            }
+            Term::Quote(_) | Term::Splice(_) | Term::AutoProof | Term::RefParam => Ok(term),
+            _ => Ok(term),
+        }
+    }
+
+    fn explicit_app_domain(
+        &self,
+        ctx: &Context<'bump>,
+        f: &'bump Term<'bump>,
+    ) -> Option<&'bump Term<'bump>> {
+        let constraint = self.checker.infer_binding_constraint(ctx, f).ok()?;
+        match self.checker.evaluator.whnf(constraint).ok()? {
+            Term::Pi(_, domain, _) => Some(domain),
+            _ => None,
+        }
+    }
+
+    fn lower_of_nat_literal(
+        &self,
+        value: i64,
+        expected: &'bump Term<'bump>,
+    ) -> Result<Option<&'bump Term<'bump>>, Diagnostic> {
+        let expected = self
+            .checker
+            .evaluator
+            .whnf(crate::checker::TypeChecker::implicit_inner(expected))?;
+        if self.constraint_accepts_raw_int(expected) {
+            return Ok(None);
+        }
+        let Some(interface_name) = self.of_nat_interface_name() else {
+            return Ok(None);
+        };
+        let wanted = self.arena.app(self.arena.global(interface_name), expected);
+        let Some((_, instance)) = self.checker.lookup_instance(wanted)? else {
+            return Ok(None);
+        };
+        let Some(field) = self.instance_field(instance, interface_name, "of_nat") else {
+            return Ok(None);
+        };
+        Ok(Some(self.arena.app(field, self.arena.lit_int(value))))
+    }
+
+    fn constraint_accepts_raw_int(&self, expected: &'bump Term<'bump>) -> bool {
+        let int = self.arena.builtin(self.arena.alloc_str("int"));
+        matches!(expected, Term::Builtin(name) | Term::Global(name) if crate::config::is_builtin_name(name, BUILTIN_INT))
+            || expected == int
+            || self.checker.is_refinement_of(expected, int)
+    }
+
+    fn of_nat_interface_name(&self) -> Option<Name<'bump>> {
+        self.checker
+            .struct_table
+            .iter()
+            .find(|(name, _, _)| name.rsplit("::").next().unwrap_or(name) == "OfNat")
+            .map(|(name, _, _)| *name)
+    }
+
+    fn instance_field(
+        &self,
+        instance: &'bump Term<'bump>,
+        interface_name: Name<'bump>,
+        field_name: &str,
+    ) -> Option<&'bump Term<'bump>> {
+        let proj_name = self
+            .arena
+            .alloc_str(&format!("{interface_name}.{field_name}"));
+        let idx = self.checker.lookup_struct_proj(proj_name)?;
+        let instance = match instance {
+            Term::Annot(inner, _) => *inner,
+            _ => instance,
+        };
+        match instance {
+            Term::StructCons(_, values) => values.get(idx).copied(),
+            _ => Some(self.arena.struct_proj(instance, idx)),
         }
     }
 

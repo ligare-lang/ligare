@@ -26,7 +26,7 @@ use crate::config::{
 use crate::core::eval::Evaluator;
 use crate::core::pool::TermArena;
 use crate::core::semantics::SemanticQueries;
-use crate::core::syntax::{Name, Term, Universe};
+use crate::core::syntax::{Name, PrimOp, Term, Universe};
 use crate::diagnostic::Diagnostic;
 use crate::front::parser::{TopLevel, parse_expr_top, parse_program};
 use crate::pretty::PrettyPrinter;
@@ -122,6 +122,7 @@ impl<'bump> Compiler<'bump> {
             quiet: false,
         };
         compiler.register_builtin_meta();
+        compiler.register_operator_intrinsics();
         compiler
     }
 
@@ -765,10 +766,15 @@ impl<'bump> Compiler<'bump> {
         } else {
             self.env.insert(name, self.definition_signature(body))
         };
-        if !has_erased_parameter
+        let resolved_body = if has_erased_parameter {
+            None
+        } else {
+            Some(self.try_resolve_all(body)?)
+        };
+        if let Some(resolved_body) = resolved_body
             && let Err(err) = self.checker.check(
                 &empty_ctx(),
-                self.try_resolve_all(body)?,
+                resolved_body,
                 self.arena.builtin(self.arena.alloc_str(BUILTIN_DATA)),
             )
         {
@@ -786,7 +792,7 @@ impl<'bump> Compiler<'bump> {
         self.verify_termination_claim(termination_claim, span.clone())?;
         self.record_data_termination(name, body, termination_claim);
         let stored_body = if body.is_constant() {
-            self.subst_top_level(body)
+            resolved_body.unwrap_or_else(|| self.subst_top_level(body))
         } else {
             body
         };
@@ -842,20 +848,15 @@ impl<'bump> Compiler<'bump> {
         span: std::ops::Range<usize>,
     ) -> Result<(), Diagnostic> {
         let resolved_constraint = self.checker.desugar_with_context(constraint)?;
-        let resolved_value = self.try_resolve_all(value)?;
+        let resolved_value = self.resolve_instance_value(value, resolved_constraint)?;
+        let resolved_value = self.attach_global_signatures(resolved_value);
         self.checker
             .check(&empty_ctx(), resolved_value, resolved_constraint)
             .map_err(|err| {
                 Self::wrap_diagnostic(format!("instance {name} failed"), err, span.clone())
             })?;
-        let registered_value = self.checker.desugar_with_context(value)?;
-        let registered_value = self.resolve_variant_apps(registered_value);
-        let registered_value = self.resolve_struct_ctors(registered_value);
-        let registered_value = self.resolve_struct_projs(registered_value);
-        let registered_value = self.fold_struct_projections(registered_value);
-        let registered_value = self.attach_global_signatures(registered_value);
         self.checker
-            .add_instance(name, resolved_constraint, registered_value);
+            .add_instance(name, resolved_constraint, resolved_value);
         if !self.quiet {
             println!("[instance] {}", name);
         }
@@ -887,8 +888,8 @@ impl<'bump> Compiler<'bump> {
         constraint: &'bump Term<'bump>,
         span: std::ops::Range<usize>,
     ) -> Result<(), Diagnostic> {
-        let resolved = self.try_resolve_all(term)?;
         let resolved_constraint = self.try_resolve_all(constraint)?;
+        let resolved = self.try_resolve_all_with_expected(term, Some(resolved_constraint))?;
         if self.is_erased_universe_constraint(constraint)? {
             let logical_term = self.checker.desugar_with_context(term)?;
             self.ensure_logic_data_refs_terminate(logical_term, span.clone())?;
@@ -918,8 +919,8 @@ impl<'bump> Compiler<'bump> {
         let logical_body = self.checker.desugar_with_context(body)?;
         self.ensure_logic_data_refs_terminate(logical_prop, span.clone())?;
         self.ensure_logic_data_refs_terminate(logical_body, span.clone())?;
-        let resolved_body = self.try_resolve_all(body)?;
         let resolved_prop = self.try_resolve_all(prop)?;
+        let resolved_body = self.try_resolve_all_with_expected(body, Some(resolved_prop))?;
         match self
             .checker
             .check(&empty_ctx(), resolved_body, resolved_prop)
@@ -1026,6 +1027,43 @@ impl<'bump> Compiler<'bump> {
             }
             _ => false,
         }
+    }
+
+    fn register_operator_intrinsics(&mut self) {
+        self.register_intrinsic_binop("std::primitive::int_add", PrimOp::Add, "int", "int", "int");
+        self.register_intrinsic_binop("std::primitive::int_sub", PrimOp::Sub, "int", "int", "int");
+        self.register_intrinsic_binop("std::primitive::int_mul", PrimOp::Mul, "int", "int", "int");
+        self.register_intrinsic_binop("std::primitive::int_div", PrimOp::Div, "int", "int", "int");
+        self.register_intrinsic_binop("std::primitive::int_mod", PrimOp::Mod_, "int", "int", "int");
+        self.register_intrinsic_binop("std::primitive::int_eq", PrimOp::Eq, "int", "int", "bool");
+        self.register_intrinsic_binop("std::primitive::int_lt", PrimOp::Lt, "int", "int", "bool");
+        self.register_intrinsic_binop("std::primitive::int_gt", PrimOp::Gt, "int", "int", "bool");
+        self.register_intrinsic_binop("std::primitive::int_le", PrimOp::Le, "int", "int", "bool");
+        self.register_intrinsic_binop("std::primitive::int_ge", PrimOp::Ge, "int", "int", "bool");
+        self.register_intrinsic_binop("std::primitive::int_neq", PrimOp::Neq, "int", "int", "bool");
+        self.register_intrinsic_binop("std::primitive::str_add", PrimOp::Add, "str", "str", "str");
+    }
+
+    fn register_intrinsic_binop(
+        &mut self,
+        name: &'static str,
+        op: PrimOp,
+        left: &str,
+        right: &str,
+        ret: &str,
+    ) {
+        let left = self.arena.builtin(self.arena.alloc_str(left));
+        let right = self.arena.builtin(self.arena.alloc_str(right));
+        let ret = self.arena.builtin(self.arena.alloc_str(ret));
+        let sig = self.arena.pi(
+            self.arena.alloc_str(""),
+            left,
+            self.arena.pi(self.arena.alloc_str(""), right, ret),
+        );
+        self.env.insert(
+            self.arena.alloc_str(name),
+            self.arena.annot(self.arena.prim_op(op), sig),
+        );
     }
 
     fn validate_runtime_members_are_data(

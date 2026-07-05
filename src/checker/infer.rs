@@ -1591,23 +1591,34 @@ impl<'bump> TypeChecker<'bump> {
         term: &'bump Term<'bump>,
         type_args: &[&'bump Term<'bump>],
     ) -> &'bump Term<'bump> {
+        self.replace_generic_constraint_vars_at(term, type_args, 0)
+    }
+
+    fn replace_generic_constraint_vars_at(
+        &self,
+        term: &'bump Term<'bump>,
+        type_args: &[&'bump Term<'bump>],
+        depth: usize,
+    ) -> &'bump Term<'bump> {
         match term {
-            Term::Var(i) if *i < type_args.len() => type_args[type_args.len() - 1 - *i],
+            Term::Var(i) if *i >= depth && (*i - depth) < type_args.len() => {
+                type_args[type_args.len() - 1 - (*i - depth)]
+            }
             Term::App(f, a) => self.arena.app(
-                self.replace_generic_constraint_vars(f, type_args),
-                self.replace_generic_constraint_vars(a, type_args),
+                self.replace_generic_constraint_vars_at(f, type_args, depth),
+                self.replace_generic_constraint_vars_at(a, type_args, depth),
             ),
             Term::Implicit(inner) => self
                 .arena
-                .implicit(self.replace_generic_constraint_vars(inner, type_args)),
+                .implicit(self.replace_generic_constraint_vars_at(inner, type_args, depth)),
             Term::Pi(name, a, b) => self.arena.pi(
                 name,
-                self.replace_generic_constraint_vars(a, type_args),
-                self.replace_generic_constraint_vars(b, type_args),
+                self.replace_generic_constraint_vars_at(a, type_args, depth),
+                self.replace_generic_constraint_vars_at(b, type_args, depth + 1),
             ),
             Term::Annot(inner, c) => self.arena.annot(
-                self.replace_generic_constraint_vars(inner, type_args),
-                self.replace_generic_constraint_vars(c, type_args),
+                self.replace_generic_constraint_vars_at(inner, type_args, depth),
+                self.replace_generic_constraint_vars_at(c, type_args, depth),
             ),
             _ => term,
         }

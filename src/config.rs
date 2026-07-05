@@ -93,6 +93,24 @@ pub fn is_std_intrinsic_name(name: &str) -> bool {
     )
 }
 
+pub fn is_std_internal_primitive_helper(name: &str) -> bool {
+    matches!(
+        name,
+        "std::primitive::int_add"
+            | "std::primitive::int_sub"
+            | "std::primitive::int_mul"
+            | "std::primitive::int_div"
+            | "std::primitive::int_mod"
+            | "std::primitive::int_eq"
+            | "std::primitive::int_lt"
+            | "std::primitive::int_gt"
+            | "std::primitive::int_le"
+            | "std::primitive::int_ge"
+            | "std::primitive::int_neq"
+            | "std::primitive::str_add"
+    )
+}
+
 // ── Logic intro / elim names ──
 
 pub const AND_INTRO: &str = "∧-intro";

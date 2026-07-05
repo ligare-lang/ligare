@@ -2,6 +2,54 @@ pub use convert::*
 
 mod convert
 
-pub def Eq (Self : prop) := struct
-    eq: Self -> bool
+pub def OfNat (Self : prop) : prop := struct
+    of_nat : int -> Self
 
+pub def Add (Self : prop) : prop := struct
+    add : Self -> Self -> Self
+
+pub def Sub (Self : prop) : prop := struct
+    sub : Self -> Self -> Self
+
+pub def Mul (Self : prop) : prop := struct
+    mul : Self -> Self -> Self
+
+pub def Div (Self : prop) : prop := struct
+    div : Self -> Self -> Self
+
+pub def Mod (Self : prop) : prop := struct
+    mod_ : Self -> Self -> Self
+
+pub def Eq (Self : prop) : prop := struct
+    eq : Self -> Self -> bool
+
+pub def Lt (Self : prop) : prop := struct
+    lt : Self -> Self -> bool
+
+pub def Gt (Self : prop) : prop := struct
+    gt : Self -> Self -> bool
+
+pub def Le (Self : prop) : prop := struct
+    le : Self -> Self -> bool
+
+pub def Ge (Self : prop) : prop := struct
+    ge : Self -> Self -> bool
+
+pub def Neq (Self : prop) : prop := struct
+    neq : Self -> Self -> bool
+
+instance of_nat_int : OfNat int := OfNat.mk (fun n => n)
+
+instance add_int : Add int := Add.mk std::primitive::int_add
+instance sub_int : Sub int := Sub.mk std::primitive::int_sub
+instance mul_int : Mul int := Mul.mk std::primitive::int_mul
+instance div_int : Div int := Div.mk std::primitive::int_div
+instance mod_int : Mod int := Mod.mk std::primitive::int_mod
+instance eq_int : Eq int := Eq.mk std::primitive::int_eq
+instance lt_int : Lt int := Lt.mk std::primitive::int_lt
+instance gt_int : Gt int := Gt.mk std::primitive::int_gt
+instance le_int : Le int := Le.mk std::primitive::int_le
+instance ge_int : Ge int := Ge.mk std::primitive::int_ge
+instance neq_int : Neq int := Neq.mk std::primitive::int_neq
+
+instance add_str : Add str := Add.mk std::primitive::str_add

@@ -492,12 +492,10 @@ impl<'a> ExpressionEmitter<'a> {
         let Term::App(f, a) = term else {
             unreachable!()
         };
-        if let Term::App(prim, left) = *f
-            && let Term::PrimOp(op) = *prim
-        {
+        if let Some((op, left, right)) = Self::primop_binop_parts(term) {
             let left = self.emit_expr(left, ctx, enum_map, struct_map)?;
-            let right = self.emit_expr(a, ctx, enum_map, struct_map)?;
-            if *op == PrimOp::Add && left.ctype == CType::Str && right.ctype == CType::Str {
+            let right = self.emit_expr(right, ctx, enum_map, struct_map)?;
+            if op == PrimOp::Add && left.ctype == CType::Str && right.ctype == CType::Str {
                 let left_code = self.value_code(left, enum_map)?;
                 let right_code = self.value_code(right, enum_map)?;
                 return Ok(CValue::code(
@@ -508,11 +506,11 @@ impl<'a> ExpressionEmitter<'a> {
             let left_code = self.value_code(left, enum_map)?;
             let right_code = self.value_code(right, enum_map)?;
             return Ok(CValue::code(
-                self.emit_binop(*op, left_code.as_str(), right_code.as_str()),
+                self.emit_binop(op, left_code.as_str(), right_code.as_str()),
                 CType::Int64,
             ));
         }
-        if matches!(*f, Term::PrimOp(_)) {
+        if matches!(Self::peel_expr_wrappers(f), Term::PrimOp(_)) {
             return self.emit_expr(a, ctx, enum_map, struct_map);
         }
         if let Some((target, pointer)) = Self::ptr_cast_parts(term) {
@@ -555,6 +553,28 @@ impl<'a> ExpressionEmitter<'a> {
             format!("{}({})", call.function.as_str(), args),
             ret_ty,
         ))
+    }
+
+    fn primop_binop_parts<'term>(
+        term: &'term Term<'term>,
+    ) -> Option<(PrimOp, &'term Term<'term>, &'term Term<'term>)> {
+        let Term::App(f, right) = term else {
+            return None;
+        };
+        let Term::App(prim, left) = Self::peel_expr_wrappers(f) else {
+            return None;
+        };
+        let Term::PrimOp(op) = Self::peel_expr_wrappers(prim) else {
+            return None;
+        };
+        Some((*op, left, right))
+    }
+
+    fn peel_expr_wrappers<'term>(mut term: &'term Term<'term>) -> &'term Term<'term> {
+        while let Term::Annot(inner, _) | Term::Unsafe(inner) | Term::Pure(inner) = term {
+            term = inner;
+        }
+        term
     }
 
     fn ptr_cast_parts<'term>(

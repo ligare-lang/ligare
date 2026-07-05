@@ -27,9 +27,11 @@ impl<'bump> Compiler<'bump> {
             }
             let codegen = self.collect_codegen_state(&content)?;
             let monomorphized = self.monomorphize_for_codegen(content, codegen)?;
+            let current_raw_defs = monomorphized.codegen.raw_defs.clone();
             let eraser =
                 crate::checker::erase::Eraser::new(self.arena, self.checker.builtins.clone());
-            let erased = self.erase_and_collect_tops(monomorphized.tops, &eraser)?;
+            let erased =
+                self.erase_and_collect_tops(monomorphized.tops, &current_raw_defs, &eraser)?;
             self.extend_codegen_state(monomorphized.codegen);
             self.tops.extend(erased.tops);
             if let Some(record) = env.cache_records.get(&id) {
@@ -81,9 +83,11 @@ impl<'bump> Compiler<'bump> {
             }
             let codegen = self.collect_codegen_state(&content)?;
             let monomorphized = self.monomorphize_for_codegen(content, codegen)?;
+            let current_raw_defs = monomorphized.codegen.raw_defs.clone();
             let eraser =
                 crate::checker::erase::Eraser::new(self.arena, self.checker.builtins.clone());
-            let erased = self.erase_and_collect_tops(monomorphized.tops, &eraser)?;
+            let erased =
+                self.erase_and_collect_tops(monomorphized.tops, &current_raw_defs, &eraser)?;
             self.extend_codegen_state(monomorphized.codegen);
             self.tops.extend(erased.tops);
             if let Some(record) = env.cache_records.get(&id) {
@@ -111,9 +115,11 @@ impl<'bump> Compiler<'bump> {
             }
             let codegen = self.collect_codegen_state(&content)?;
             let monomorphized = self.monomorphize_for_codegen(content, codegen)?;
+            let current_raw_defs = monomorphized.codegen.raw_defs.clone();
             let eraser =
                 crate::checker::erase::Eraser::new(self.arena, self.checker.builtins.clone());
-            let erased = self.erase_and_collect_tops(monomorphized.tops, &eraser)?;
+            let erased =
+                self.erase_and_collect_tops(monomorphized.tops, &current_raw_defs, &eraser)?;
             self.extend_codegen_state(monomorphized.codegen);
             self.tops.extend(erased.tops);
             if let Some(record) = env.cache_records.get(&id) {

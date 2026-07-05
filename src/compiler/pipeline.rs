@@ -72,10 +72,11 @@ impl<'bump> Compiler<'bump> {
         let codegen_tops = self.expand_scoped_variable_params(&tops);
         let codegen = self.collect_codegen_state(&codegen_tops)?;
         let monomorphized = self.monomorphize_for_codegen(codegen_tops, codegen)?;
+        let current_raw_defs = monomorphized.codegen.raw_defs.clone();
         self.apply_codegen_state(monomorphized.codegen);
 
         let eraser = Eraser::new(self.arena, self.checker.builtins.clone());
-        let erased = self.erase_and_collect_tops(monomorphized.tops, &eraser)?;
+        let erased = self.erase_and_collect_tops(monomorphized.tops, &current_raw_defs, &eraser)?;
         self.tops.extend(erased.tops);
         Ok(())
     }
@@ -233,9 +234,7 @@ impl<'bump> Compiler<'bump> {
                 if matches!(body_term, Term::EnumDef(..) | Term::StructDef(..)) {
                     continue;
                 }
-                let actual_name = self.codegen_attribute_target_name(name);
-                let term = self.env.get(actual_name).copied().unwrap_or(*body_term);
-                let desugared = self.checker.desugar_with_context(term)?;
+                let desugared = self.desugar_checked_def(params, *m_ret, *body_term)?;
                 let resolved = self.subst_top_level(desugared);
                 let names: Vec<_> = params.iter().rev().map(|(pn, _)| *pn).collect();
                 let core_params = params
@@ -272,6 +271,7 @@ impl<'bump> Compiler<'bump> {
     pub(crate) fn erase_and_collect_tops(
         &self,
         tops: Vec<TopLevel<'bump>>,
+        raw_defs: &[TopLevel<'bump>],
         eraser: &Eraser<'bump>,
     ) -> Result<ErasedProgram<'bump>, Diagnostic> {
         let tops = tops
@@ -281,10 +281,10 @@ impl<'bump> Compiler<'bump> {
                     if top.has_attribute(COMPILER_INTRINSIC_ATTR) {
                         Ok(None)
                     } else {
-                        self.erase_top_for_codegen((*inner).clone(), eraser)
+                        self.erase_top_for_codegen((*inner).clone(), raw_defs, eraser)
                     }
                 }
-                other => self.erase_top_for_codegen(other, eraser),
+                other => self.erase_top_for_codegen(other, raw_defs, eraser),
             })
             .collect::<Result<Vec<_>, Diagnostic>>()?
             .into_iter()
@@ -304,6 +304,7 @@ impl<'bump> Compiler<'bump> {
     fn erase_top_for_codegen(
         &self,
         top: TopLevel<'bump>,
+        raw_defs: &[TopLevel<'bump>],
         eraser: &Eraser<'bump>,
     ) -> Result<Option<TopLevel<'bump>>, Diagnostic> {
         match top {
@@ -327,13 +328,27 @@ impl<'bump> Compiler<'bump> {
                 {
                     return Ok(None);
                 }
-                let desugared = self.checker.desugar_with_context(body_term).or_else(|_| {
-                    let term = self.env.get(name).copied().unwrap_or(body_term);
-                    self.checker.desugar_with_context(term)
-                })?;
-                let resolved = self.subst_top_level(desugared);
-                let desugared = self.checker.desugar_with_context(resolved)?;
-                let erased = eraser.erase(desugared);
+                let erased = if Self::contains_surface_codegen_syntax(body_term) {
+                    if let Some(raw_body) = raw_defs.iter().find_map(|top| match top {
+                        TopLevel::TLDef(raw_name, _, _, raw_body, _) if *raw_name == name => {
+                            Some(*raw_body)
+                        }
+                        _ => None,
+                    }) {
+                        eraser.erase(raw_body)
+                    } else {
+                        let desugared = self.desugar_checked_def(params, m_ret, body_term)?;
+                        let resolved = self.subst_top_level(desugared);
+                        eraser.erase(resolved)
+                    }
+                } else {
+                    let desugared = self.checker.desugar_with_context(body_term).or_else(|_| {
+                        let term = self.env.get(name).copied().unwrap_or(body_term);
+                        self.checker.desugar_with_context(term)
+                    })?;
+                    let resolved = self.subst_top_level(desugared);
+                    eraser.erase(resolved)
+                };
                 Ok(Some(TopLevel::TLDef(name, params, m_ret, erased, span)))
             }
             TopLevel::TLEval(term, span) => {
@@ -358,10 +373,12 @@ impl<'bump> Compiler<'bump> {
             | TopLevel::TLMod(..)
             | TopLevel::TLNamespace(..)
             | TopLevel::TLSplice(..) => Ok(None),
-            TopLevel::TLPublic(inner) => self.erase_top_for_codegen((*inner).clone(), eraser),
+            TopLevel::TLPublic(inner) => {
+                self.erase_top_for_codegen((*inner).clone(), raw_defs, eraser)
+            }
             TopLevel::TLCheck(_, _, _) => Ok(None),
             TopLevel::TLAttributed(_, inner, _) => {
-                self.erase_top_for_codegen((*inner).clone(), eraser)
+                self.erase_top_for_codegen((*inner).clone(), raw_defs, eraser)
             }
         }
     }
@@ -431,6 +448,70 @@ impl<'bump> Compiler<'bump> {
         fields
             .iter()
             .any(|(_, constraint)| Self::contains_pi_constraint(constraint))
+    }
+
+    fn contains_surface_codegen_syntax(term: &Term<'_>) -> bool {
+        match term {
+            Term::Named(_)
+            | Term::NamedLam(..)
+            | Term::NamedMatch(..)
+            | Term::MethodCall(..)
+            | Term::Do(_) => true,
+            Term::App(f, a) | Term::Annot(f, a) | Term::Pi(_, f, a) => {
+                Self::contains_surface_codegen_syntax(f) || Self::contains_surface_codegen_syntax(a)
+            }
+            Term::Implicit(inner)
+            | Term::Lam(inner)
+            | Term::Unsafe(inner)
+            | Term::Pure(inner)
+            | Term::Quote(inner)
+            | Term::Splice(inner) => Self::contains_surface_codegen_syntax(inner),
+            Term::Let(_, val, body, constraint) => {
+                Self::contains_surface_codegen_syntax(val)
+                    || Self::contains_surface_codegen_syntax(body)
+                    || constraint.is_some_and(Self::contains_surface_codegen_syntax)
+            }
+            Term::IfThenElse(cond, then_term, else_term) => {
+                Self::contains_surface_codegen_syntax(cond)
+                    || Self::contains_surface_codegen_syntax(then_term)
+                    || Self::contains_surface_codegen_syntax(else_term)
+            }
+            Term::ByProof(inner, tactics) => {
+                inner.is_some_and(Self::contains_surface_codegen_syntax)
+                    || tactics.iter().any(|tactic| match tactic {
+                        crate::core::syntax::Tactic::Exact(term)
+                        | crate::core::syntax::Tactic::Apply(term)
+                        | crate::core::syntax::Tactic::Have(_, term) => {
+                            Self::contains_surface_codegen_syntax(term)
+                        }
+                        crate::core::syntax::Tactic::Custom(_, args) => args
+                            .iter()
+                            .any(|arg| Self::contains_surface_codegen_syntax(arg)),
+                        crate::core::syntax::Tactic::Intro(_) => false,
+                    })
+            }
+            Term::EnumDef(_, variants) => variants.iter().any(|(_, fields)| {
+                fields
+                    .iter()
+                    .any(|(_, constraint)| Self::contains_surface_codegen_syntax(constraint))
+            }),
+            Term::Variant(_, _, payloads) | Term::StructCons(_, payloads) => payloads
+                .iter()
+                .any(|payload| Self::contains_surface_codegen_syntax(payload)),
+            Term::Match(scrutinee, branches) => {
+                Self::contains_surface_codegen_syntax(scrutinee)
+                    || branches.iter().any(|(_, binds, body)| {
+                        binds.iter().any(|(_, constraint)| {
+                            Self::contains_surface_codegen_syntax(constraint)
+                        }) || Self::contains_surface_codegen_syntax(body)
+                    })
+            }
+            Term::StructDef(_, fields) => fields
+                .iter()
+                .any(|(_, constraint)| Self::contains_surface_codegen_syntax(constraint)),
+            Term::StructProj(subject, _) => Self::contains_surface_codegen_syntax(subject),
+            _ => false,
+        }
     }
 
     fn contains_pi_constraint(term: &Term<'_>) -> bool {

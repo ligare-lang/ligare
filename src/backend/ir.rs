@@ -178,6 +178,8 @@ fn infer_ret_ctype(
         }),
         Term::LitInt(_) | Term::LitBool(_) => Ok(CType::Int64),
         Term::LitStr(_) => Ok(CType::Str),
+        Term::Variant(name, _, _) => Ok(CType::Enum(name.to_string())),
+        Term::StructCons(name, _) => Ok(CType::Struct(name.to_string())),
         Term::Annot(inner, c) => constraint_to_ctype(c, enum_names, struct_names)
             .or_else(|_| infer_ret_ctype(inner, param_types, enum_names, struct_names)),
         Term::Unsafe(inner) => infer_ret_ctype(inner, param_types, enum_names, struct_names),
