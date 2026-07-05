@@ -96,10 +96,10 @@ pub(super) fn collect_type_members(
     match inner {
         Term::EnumDef(_, variants) => {
             for (variant, _) in *variants {
-                let name = namespace
-                    .map(|namespace| format!("{namespace}::{variant}"))
-                    .unwrap_or_else(|| (*variant).to_string());
-                model.constructors.insert(name);
+                model
+                    .constructors
+                    .insert(format!("{qualified_type_name}::{variant}"));
+                model.constructors.insert((*variant).to_string());
             }
         }
         Term::StructDef(_, fields) => {
@@ -144,9 +144,7 @@ pub(super) fn dotted_kind(
         let parent_path =
             qualified_path_ending_at(tokens, idx - 2).unwrap_or_else(|| parent.clone());
         let dotted = format!("{parent_path}.{name}");
-        if model.constructors.contains(&dotted) || model.constructors.contains(name) {
-            Some(SemanticKind::Constructor)
-        } else if model.functions.contains(&dotted) {
+        if model.functions.contains(&dotted) {
             Some(SemanticKind::Function)
         } else {
             model.global_kind(name)
@@ -166,6 +164,19 @@ pub(super) fn qualified_path_kind(
         return None;
     }
     if path.part_index + 1 < path.parts.len() {
+        if path.part_index + 1 == path.parts.len() - 1
+            && model
+                .global_kind(&path.parts.join("::"))
+                .is_some_and(|kind| {
+                    matches!(kind, SemanticKind::Constructor | SemanticKind::Function)
+                })
+        {
+            let prefix = path.parts[..=path.part_index].join("::");
+            return model
+                .global_kind(&prefix)
+                .or_else(|| model.global_kind(path.parts[path.part_index].as_str()))
+                .or(Some(SemanticKind::Namespace));
+        }
         return Some(SemanticKind::Namespace);
     }
     let name = path.parts[path.part_index].as_str();

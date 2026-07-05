@@ -347,6 +347,16 @@ impl<'arena, 'bump> Desugarer<'arena, 'bump> {
                     .collect::<Result<Vec<_>, String>>()?;
                 self.arena.struct_cons(name, self.arena.alloc_slice(&fs))
             }
+            Term::NamedStructCons(name, fields) => {
+                let fields = fields
+                    .iter()
+                    .map(|(field, value)| {
+                        Ok((*field, self.try_desugar_with_env(value, env, resolver, effect)?))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                self.arena
+                    .named_struct_cons(*name, self.arena.alloc_slice(&fields))
+            }
             Term::StructProj(subject, idx) => self.arena.struct_proj(
                 self.try_desugar_with_env(subject, env, resolver, effect)?,
                 *idx,
@@ -638,6 +648,14 @@ impl<'bump> SubstitutionContext<'bump> {
                 self.arena
                     .struct_cons(name, self.arena.alloc_slice(&mapped))
             }
+            Term::NamedStructCons(name, fields) => {
+                let mapped: Vec<_> = fields
+                    .iter()
+                    .map(|(field, value)| (*field, recurse(value, cutoff)))
+                    .collect();
+                self.arena
+                    .named_struct_cons(*name, self.arena.alloc_slice(&mapped))
+            }
             Term::StructProj(subject, idx) => {
                 self.arena.struct_proj(recurse(subject, cutoff), *idx)
             }
@@ -781,6 +799,13 @@ fn shift_term<'bump>(
             shift_term(arena, d, cutoff, inner),
             shift_term(arena, d, cutoff, ct),
         ),
+        Term::NamedStructCons(name, fields) => {
+            let fields = fields
+                .iter()
+                .map(|(field, value)| (*field, shift_term(arena, d, cutoff, value)))
+                .collect::<Vec<_>>();
+            arena.named_struct_cons(*name, arena.alloc_slice(&fields))
+        }
         Term::Unsafe(inner) => arena.unsafe_(shift_term(arena, d, cutoff, inner)),
         Term::Pure(inner) => arena.pure(shift_term(arena, d, cutoff, inner)),
         Term::MethodCall(receiver, method) => {

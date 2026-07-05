@@ -3,6 +3,7 @@ use super::*;
 pub(super) fn parse_file<'bump>(
     uri: &lsp::Url,
     text: &str,
+    module_key: &ModuleKey,
     bump: &'bump Bump,
     arena: &'bump TermArena<'bump>,
 ) -> ParsedFile<'bump> {
@@ -11,6 +12,7 @@ pub(super) fn parse_file<'bump>(
     let mut module_imports = Vec::new();
     let mut symbols = Vec::new();
     let mut exports = Vec::new();
+    let mut export_targets = HashMap::new();
     let mut item_infos = Vec::new();
 
     for (idx, (start, end, top)) in top_ranges.iter().enumerate() {
@@ -19,6 +21,7 @@ pub(super) fn parse_file<'bump>(
         collect_top_level_symbols(top, &mut top_symbols);
         symbols.extend(top_symbols.iter().map(|symbol| symbol.name.clone()));
         exports.extend(exported_names(top));
+        export_targets.extend(exported_targets(top, module_key));
         module_imports.extend(module_imports_for_top(top));
         item_infos.push(ItemInfo {
             id: item_id(idx, top),
@@ -53,6 +56,7 @@ pub(super) fn parse_file<'bump>(
         module_imports,
         symbols,
         exports,
+        export_targets,
     }
 }
 
@@ -379,6 +383,14 @@ fn collect_term_names(term: &Term<'_>, names: &mut HashSet<String>) {
                 collect_term_names(payload, names);
             }
         }
+        Term::NamedStructCons(name, fields) => {
+            if let Some(name) = name {
+                names.insert((*name).to_string());
+            }
+            for (_, value) in *fields {
+                collect_term_names(value, names);
+            }
+        }
         Term::Match(scrutinee, branches) => {
             collect_term_names(scrutinee, names);
             for (_, binds, body) in *branches {
@@ -434,6 +446,58 @@ fn exported_names(top: &TopLevel<'_>) -> Vec<String> {
             item_name(top).into_iter().collect()
         }
         _ => Vec::new(),
+    }
+}
+
+fn exported_targets(top: &TopLevel<'_>, module: &ModuleKey) -> HashMap<String, String> {
+    let mut targets = HashMap::new();
+    collect_exported_targets(top, module, None, false, &mut targets);
+    targets
+}
+
+fn collect_exported_targets(
+    top: &TopLevel<'_>,
+    module: &ModuleKey,
+    namespace: Option<&str>,
+    public: bool,
+    targets: &mut HashMap<String, String>,
+) {
+    match top {
+        TopLevel::TLPublic(inner) => {
+            collect_exported_targets(inner, module, namespace, true, targets);
+        }
+        TopLevel::TLAttributed(_, inner, _) => {
+            collect_exported_targets(inner, module, namespace, public, targets);
+        }
+        TopLevel::TLDef(name, ..) | TopLevel::TLTheorem(name, ..) if public => {
+            let local = namespace
+                .map(|namespace| format!("{namespace}::{name}"))
+                .unwrap_or_else(|| (*name).to_string());
+            targets.insert(local.clone(), module.join_symbol(&local));
+        }
+        TopLevel::TLExternDef(name, ..) if public => {
+            let local = namespace
+                .map(|namespace| format!("{namespace}::{name}"))
+                .unwrap_or_else(|| (*name).to_string());
+            let target = namespace
+                .map(|_| module.join_symbol(&local))
+                .unwrap_or_else(|| (*name).to_string());
+            targets.insert(local, target);
+        }
+        TopLevel::TLUse(uses, ligare::front::parser::Visibility::Public, _) => {
+            for tree in *uses {
+                let Some(local) = tree.alias.or_else(|| tree.path.last().copied()) else {
+                    continue;
+                };
+                targets.insert(local.to_string(), module.join_symbol(local));
+            }
+        }
+        TopLevel::TLNamespace(name, items, _) => {
+            for item in *items {
+                collect_exported_targets(item, module, Some(name), public, targets);
+            }
+        }
+        _ => {}
     }
 }
 

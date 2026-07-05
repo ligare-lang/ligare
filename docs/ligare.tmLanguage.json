@@ -388,30 +388,6 @@
     "lambdas": {
       "patterns": [
         {
-          "name": "meta.lambda.ligare",
-          "begin": "(\\\\|λ)",
-          "beginCaptures": {
-            "1": {
-              "name": "storage.type.lambda.ligare"
-            }
-          },
-          "end": "(\\.)",
-          "endCaptures": {
-            "1": {
-              "name": "punctuation.separator.lambda.ligare"
-            }
-          },
-          "patterns": [
-            {
-              "include": "#parameterGroups"
-            },
-            {
-              "name": "variable.parameter.ligare",
-              "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
-            }
-          ]
-        },
-        {
           "name": "meta.lambda.fun.ligare",
           "begin": "\\bfun\\b",
           "beginCaptures": {
@@ -540,7 +516,7 @@
     },
     "matchBranches": {
       "name": "meta.match.branch.ligare",
-      "begin": "(\\|)(?=\\s+[A-Za-z_][A-Za-z0-9_]*(?:\\s+[A-Za-z_][A-Za-z0-9_]*)*\\s*=>)",
+      "begin": "(\\|)(?=\\s+[A-Za-z_][A-Za-z0-9_]*(?:(?:::)[A-Za-z_][A-Za-z0-9_]*)*(?:\\s+[A-Za-z_][A-Za-z0-9_]*)*\\s*=>)",
       "beginCaptures": {
         "1": {
           "name": "keyword.operator.pattern.ligare"
@@ -560,6 +536,12 @@
               "name": "entity.name.constructor.ligare"
             }
           }
+        },
+        {
+          "include": "#paths"
+        },
+        {
+          "include": "#fields"
         },
         {
           "match": "(?<=\\S)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
@@ -609,12 +591,20 @@
     "fields": {
       "patterns": [
         {
+          "match": "([\\{,])(\\s*)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*:=)",
+          "captures": {
+            "3": {
+              "name": "variable.other.member.ligare"
+            }
+          }
+        },
+        {
           "name": "entity.name.constructor.ligare",
           "match": "(?<=\\.)\\bmk\\b"
         },
         {
           "name": "variable.other.member.ligare",
-          "match": "(?<=\\.)\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+          "match": "(?<=\\.)\\b[a-z_][A-Za-z0-9_]*\\b"
         }
       ]
     },
@@ -659,10 +649,6 @@
         {
           "name": "keyword.operator.logical.ligare",
           "match": "∧|∨|¬|→"
-        },
-        {
-          "name": "keyword.operator.lambda.ligare",
-          "match": "\\\\|λ"
         },
         {
           "name": "keyword.operator.ligare",

@@ -6,7 +6,7 @@ impl PrettyPrinter {
     pub fn pretty(t: &Term<'_>) -> String {
         match t {
             Term::Var(i) => format!("${}", i),
-            Term::Lam(body) => format!("λ. {}", Self::pretty(body)),
+            Term::Lam(body) => format!("fun _ => {}", Self::pretty(body)),
             Term::NamedLam(name, body) => {
                 format!("fun {} => {}", name, Self::pretty(body))
             }
@@ -142,6 +142,17 @@ impl PrettyPrinter {
             Term::StructCons(name, field_values) => {
                 let vs: Vec<String> = field_values.iter().map(|v| Self::pretty(v)).collect();
                 format!("({}.mk {})", name, vs.join(" "))
+            }
+            Term::NamedStructCons(name, fields) => {
+                let fields = fields
+                    .iter()
+                    .map(|(field, value)| format!("{field} := {}", Self::pretty(value)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                match name {
+                    Some(name) => format!("{name}{{{fields}}}"),
+                    None => format!("{{{fields}}}"),
+                }
             }
             Term::StructProj(subject, idx) => {
                 format!("({}._{})", Self::pretty(subject), idx)

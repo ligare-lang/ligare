@@ -217,6 +217,26 @@ fn struct_show_projection() {
 }
 
 #[test]
+fn struct_initializer_uses_expected_type() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    let result = compiler.process_file_str(
+        "def Point : prop := struct\n  x : int\n  y : int\ndef p : Point := {x := 3, y := 4}\n#check p : Point\n#eval Point.y p\n",
+    );
+    assert!(result.is_ok(), "Error: {:?}", result.err());
+}
+
+#[test]
+fn struct_initializer_reorders_fields_by_name() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    let result = compiler.process_file_str(
+        "def Point : prop := struct\n  x : int\n  y : int\n#check Point{y := 4, x := 3} : Point\n#eval Point.x (Point{y := 4, x := 3})\n",
+    );
+    assert!(result.is_ok(), "Error: {:?}", result.err());
+}
+
+#[test]
 fn struct_named_value_projection() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
@@ -325,6 +345,33 @@ fn codegen_struct_construction() {
     )
     .unwrap_or_else(|e| panic!("{e}"));
     assert!(c.contains("const Point p"), "missing struct const:\n{c}");
+}
+
+#[test]
+fn codegen_struct_named_initializer() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    compiler
+        .collect_file_str(
+            "def Point : prop := struct\n  x : int\n  y : int\ndef p : Point := Point{y := 4, x := 3}\n#eval Point.x p\n",
+        )
+        .unwrap();
+    let eval_c = emit_eval_c(
+        compiler.tops(),
+        compiler.raw_defs(),
+        compiler.fun_sigs(),
+        &compiler.enum_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"))
+    .expect("program has #eval output");
+    match compile_and_run_c(&eval_c) {
+        Ok(stdout) => assert_eq!(stdout, "3\n"),
+        Err(CompileError::CompilerNotFound) => {
+            eprintln!("skipping named struct init native run: C compiler not found")
+        }
+        Err(err) => panic!("named struct init native run failed: {err}\n{eval_c}"),
+    }
 }
 
 #[test]

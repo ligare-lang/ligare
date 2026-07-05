@@ -13,7 +13,7 @@ pub def Option : prop := enum
 def Point : prop := struct
   x : int
 def add (x : int) (y : int) : int := x + y
-def opt : Option := Some 1
+def opt : Option := Option::Some 1
 #check let p : Point := Point.mk 1 in Point.x p : int
 "#;
 
@@ -51,7 +51,7 @@ namespace Ops {
     | On
 }
 #eval Ops::inc 1
-#check Ops::On : Ops::Flag
+#check Ops::Flag::On : Ops::Flag
 "#;
 
     cache.update_fast(uri.clone(), Some(1), source.to_string());
@@ -79,7 +79,7 @@ namespace Ops {
             .iter()
             .filter(|token| token.text == "Flag" && token.kind == "constraint")
             .count(),
-        2,
+        3,
         "{decoded:#?}"
     );
     assert_token(&decoded, "On", "constructor");

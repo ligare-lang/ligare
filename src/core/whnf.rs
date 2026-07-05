@@ -92,6 +92,9 @@ impl<'bump> WhnfEvaluator<'bump> {
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(self.arena.struct_cons(name, self.arena.alloc_slice(&ev)))
             }
+            Term::NamedStructCons(..) => {
+                Err("NamedStructCons reached WHNF before resolution".into())
+            }
             Term::StructProj(subject, idx) => {
                 let mut s = self.whnf(subject)?;
                 while let Term::Annot(inner, _) = s {

@@ -154,7 +154,7 @@ fn theorem_names_remain_available_to_later_terms() {
     process_ok(
         "def Nat := int where (x => x >= 0)\n\
          theorem zero_is_nat : Nat := 0 by\n  exact true\n\
-         theorem identity : int -> int := \\x. x\n\
+         theorem identity : int -> int := fun x => x\n\
          #check zero_is_nat : Nat\n\
          #check identity 5 : int\n",
     );

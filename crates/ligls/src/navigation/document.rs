@@ -61,9 +61,18 @@ impl IndexedDocument {
 
         if token_index >= 2
             && self.tokens[token_index - 1].token == Token::Dot
-            && let Token::Ident(parent) = &self.tokens[token_index - 2].token
         {
-            return format!("{parent}.{name}");
+            let parent = self
+                .qualified_path_at(token_index - 2)
+                .map(|parts| parts.join("::"))
+                .or_else(|| match &self.tokens[token_index - 2].token {
+                    Token::Ident(parent) => Some(parent.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            if !parent.is_empty() {
+                return format!("{parent}.{name}");
+            }
         }
 
         if self
@@ -75,7 +84,11 @@ impl IndexedDocument {
                 ..
             }) = self.tokens.get(token_index + 2)
         {
-            return format!("{name}.{child}");
+            let parent = self
+                .qualified_path_at(token_index)
+                .map(|parts| parts.join("::"))
+                .unwrap_or_else(|| name.clone());
+            return format!("{parent}.{child}");
         }
 
         name.clone()

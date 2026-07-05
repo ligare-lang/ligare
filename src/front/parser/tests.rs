@@ -79,10 +79,14 @@ fn struct_definition_ast() {
 #[test]
 fn lambda_application_ast() {
     let (bump, arena) = setup();
-    let term = parse_expr_top("\\x. x + 1", bump, &arena).expect("parse should succeed");
+    let term = parse_expr_top("fun x => x + 1", bump, &arena).expect("parse should succeed");
 
     match term {
-        Term::NamedLam(name, body) => {
+        Term::Annot(inner, constraint) => {
+            assert!(matches!(**constraint, Term::Pi(..)));
+            let Term::NamedLam(name, body) = inner else {
+                panic!("expected NamedLam inside fun annotation, got {:?}", inner);
+            };
             assert_eq!(name, &"x");
             match body {
                 Term::App(op_app, rhs) => {
@@ -98,7 +102,7 @@ fn lambda_application_ast() {
                 other => panic!("expected App in lam body, got {:?}", other),
             }
         }
-        other => panic!("expected NamedLam, got {:?}", other),
+        other => panic!("expected Annot for fun lambda, got {:?}", other),
     }
 }
 

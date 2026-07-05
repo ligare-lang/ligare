@@ -134,7 +134,7 @@ fn nat_is_subtype_of_int_variable_check() {
         check_with(
             &arena,
             &[nat],
-            parse("\\x. x", b, &arena),
+            parse("fun x => x", b, &arena),
             parse_constraint("Nat -> int", b, &arena)
         ),
         Ok(())
@@ -149,7 +149,7 @@ fn pos_is_subtype_of_int_parent_chain() {
         check_with(
             &arena,
             &[pos],
-            parse("\\x. x", b, &arena),
+            parse("fun x => x", b, &arena),
             parse_constraint("Pos -> int", b, &arena)
         ),
         Ok(())

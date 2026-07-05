@@ -363,17 +363,12 @@ impl<'bump> Compiler<'bump> {
                 if scope.contains(name) {
                     return term;
                 }
-                if let Some(full) = imports.get(*name).or_else(|| own_names.get(*name)) {
-                    return self.arena.named(self.arena.alloc_str(full));
+                let rewritten = self.rewrite_symbol_name(name, imports, own_names);
+                if rewritten == *name {
+                    term
+                } else {
+                    self.arena.named(rewritten)
                 }
-                if let Some((prefix, suffix)) = name.split_once('.')
-                    && let Some(full_prefix) = imports.get(prefix).or_else(|| own_names.get(prefix))
-                {
-                    return self
-                        .arena
-                        .named(self.arena.alloc_str(&format!("{full_prefix}.{suffix}")));
-                }
-                term
             }
             Term::Builtin(_) => term,
             Term::App(f, a) => self.arena.app(
@@ -485,12 +480,26 @@ impl<'bump> Compiler<'bump> {
                 self.arena
                     .struct_def(qname, self.arena.alloc_slice(&fields))
             }
+            Term::NamedStructCons(name, fields) => {
+                let name = name.map(|name| self.rewrite_symbol_name(name, imports, own_names));
+                let fields = fields
+                    .iter()
+                    .map(|(field, value)| {
+                        (
+                            *field,
+                            self.rewrite_module_term(value, imports, own_names, scope),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                self.arena
+                    .named_struct_cons(name, self.arena.alloc_slice(&fields))
+            }
             Term::NamedMatch(scrut, branches) => {
                 let scrut = self.rewrite_module_term(scrut, imports, own_names, scope);
                 let branches = branches
                     .iter()
                     .map(|(variant, binds, body)| {
-                        let variant = self.qualify_type_name(variant, own_names);
+                        let variant = self.rewrite_symbol_name(variant, imports, own_names);
                         for (name, _) in binds.iter().rev() {
                             scope.push(name);
                         }
@@ -562,5 +571,27 @@ impl<'bump> Compiler<'bump> {
             .get(name)
             .map(|q| self.arena.alloc_str(q))
             .unwrap_or(name)
+    }
+
+    fn rewrite_symbol_name(
+        &self,
+        name: Name<'bump>,
+        imports: &HashMap<String, String>,
+        own_names: &HashMap<String, String>,
+    ) -> Name<'bump> {
+        if let Some(full) = imports.get(name).or_else(|| own_names.get(name)) {
+            return self.arena.alloc_str(full);
+        }
+        if let Some((prefix, suffix)) = name.rsplit_once("::")
+            && let Some(full_prefix) = imports.get(prefix).or_else(|| own_names.get(prefix))
+        {
+            return self.arena.alloc_str(&format!("{full_prefix}::{suffix}"));
+        }
+        if let Some((prefix, suffix)) = name.split_once('.')
+            && let Some(full_prefix) = imports.get(prefix).or_else(|| own_names.get(prefix))
+        {
+            return self.arena.alloc_str(&format!("{full_prefix}.{suffix}"));
+        }
+        name
     }
 }

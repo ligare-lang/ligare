@@ -120,7 +120,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             if !self.try_expect(&Token::Bar) {
                 break;
             }
-            let variant_name = self.parse_ident()?;
+            let variant_name = self.parse_variant_name()?;
             let mut binds: Vec<(Name<'bump>, &'bump Term<'bump>)> = Vec::new();
             while self
                 .peek_token()
@@ -528,8 +528,6 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 | Token::True
                 | Token::False
                 | Token::Ident(_)
-                | Token::Backslash
-                | Token::Lambda
                 | Token::KwFun
                 | Token::LParen
                 | Token::Minus
@@ -544,6 +542,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 | Token::Not
                 | Token::Implies
                 | Token::KwBy
+                | Token::LBrace
                 | Token::Dollar
         )
     }
@@ -666,12 +665,29 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 if let Term::Builtin(base_name) | Term::Named(base_name) = t
                     && Self::is_namespace_like_prefix(base_name)
                 {
+                    if field
+                        .chars()
+                        .next()
+                        .is_some_and(|ch| ch.is_ascii_uppercase())
+                    {
+                        return Err(ParseError {
+                            message: "enum variant access uses `::` instead of `.`".into(),
+                            span: self.current_span(),
+                        });
+                    }
                     let dotted = self.pool.intern(&format!("{}.{}", base_name, field));
                     t = self.arena.named(dotted);
                 } else {
                     t = self.arena.method_call(t, field);
                 }
                 true
+            } else if self.peek_token() == Some(Token::LBrace) {
+                if let Term::Builtin(name) | Term::Named(name) | Term::Global(name) = t {
+                    t = self.parse_named_struct_cons(Some(*name))?;
+                    true
+                } else {
+                    false
+                }
             } else {
                 false
             };
@@ -809,7 +825,6 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             }
             Some(Token::Ident(_)) => self.parse_var(),
             Some(Token::Dollar) => self.parse_splice(),
-            Some(Token::Backslash) | Some(Token::Lambda) => self.parse_lam(),
             Some(Token::KwFun) => self.parse_fun_lam(),
             Some(Token::KwDo) => self.parse_do_expr(),
             Some(Token::KwUnsafe) => self.parse_unsafe_expr(),
@@ -824,6 +839,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 ))
             }
             Some(Token::LParen) => self.parse_parens(),
+            Some(Token::LBrace) => self.parse_named_struct_cons(None),
             Some(Token::KwBy) => {
                 self.advance();
                 let tactics = self.parse_tactics()?;
@@ -888,6 +904,18 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         Ok(self.pool.intern(&parts.join("::")))
     }
 
+    fn parse_variant_name(&mut self) -> Result<Name<'bump>, ParseError> {
+        let name = self.parse_path_ident()?;
+        if self.peek_token() == Some(Token::Dot) {
+            let span = self.peek().map(|(_, span)| span.clone()).unwrap_or(0..0);
+            return Err(ParseError {
+                message: "enum variant paths use `::` instead of `.`".into(),
+                span,
+            });
+        }
+        Ok(name)
+    }
+
     pub(super) fn parse_ident(&mut self) -> Result<Name<'bump>, ParseError> {
         match self.peek() {
             Some((Token::Ident(name), _)) => {
@@ -938,30 +966,6 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 span: 0..0,
             }),
         }
-    }
-
-    fn parse_lam(&mut self) -> Result<&'bump Term<'bump>, ParseError> {
-        match self.peek_token() {
-            Some(Token::Backslash) | Some(Token::Lambda) => self.advance(),
-            _ => {
-                return Err(ParseError {
-                    message: "expected lambda".into(),
-                    span: 0..0,
-                });
-            }
-        };
-        let mut params = vec![self.parse_ident()?];
-        while self
-            .peek_token()
-            .is_some_and(|t| matches!(t, Token::Ident(_)))
-        {
-            params.push(self.parse_ident()?);
-        }
-        self.expect(&Token::Dot)?;
-        let body = self.parse_expr()?;
-        Ok(params
-            .into_iter()
-            .rfold(body, |b, p| self.arena.named_lam(p, b)))
     }
 
     fn parse_fun_lam(&mut self) -> Result<&'bump Term<'bump>, ParseError> {
@@ -1015,5 +1019,37 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         let t = self.parse_expr()?;
         self.expect(&Token::RParen)?;
         Ok(t)
+    }
+
+    fn parse_named_struct_cons(
+        &mut self,
+        name: Option<Name<'bump>>,
+    ) -> Result<&'bump Term<'bump>, ParseError> {
+        self.expect(&Token::LBrace)?;
+        let mut fields = Vec::new();
+        loop {
+            if self.try_expect(&Token::RBrace) {
+                break;
+            }
+            let field = self.parse_ident()?;
+            self.expect(&Token::ColonEq)?;
+            let value = self.parse_expr()?;
+            fields.push((field, value));
+            if self.try_expect(&Token::Comma) {
+                continue;
+            }
+            self.expect(&Token::RBrace)?;
+            break;
+        }
+        if fields.is_empty() {
+            return Err(ParseError {
+                message: "struct initializer must have at least one field".into(),
+                span: self.current_span(),
+            });
+        }
+        Ok(self.arena.named_struct_cons(
+            name,
+            self.arena.alloc_slice(&fields),
+        ))
     }
 }

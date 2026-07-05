@@ -60,6 +60,7 @@ impl NavIndex {
         }
 
         self.visible_symbol(doc, &reference.name, reference.offset)
+            .or_else(|| self.visible_scoped_suffix_symbol(doc, &reference.name, reference.offset))
             .or_else(|| self.module_for_path(std::slice::from_ref(&reference.name)))
             .or_else(|| self.builtin_symbol(doc, &reference.name))
     }
@@ -105,6 +106,32 @@ impl NavIndex {
             })
     }
 
+    fn visible_scoped_suffix_symbol<'a>(
+        &'a self,
+        doc: &IndexedDocument,
+        name: &str,
+        offset: usize,
+    ) -> Option<&'a NavSymbol> {
+        self.symbols
+            .iter()
+            .filter(|symbol| {
+                symbol.scope.is_none()
+                    && (symbol.name.ends_with(&format!("::{name}"))
+                        || symbol.name.ends_with(&format!(".{name}")))
+            })
+            .filter(|symbol| {
+                symbol.module_key == doc.module_key
+                    || symbol.uri == doc.uri && symbol.byte_start <= offset
+            })
+            .max_by_key(|symbol| {
+                (
+                    usize::from(symbol.uri == doc.uri),
+                    usize::from(symbol.module_key == doc.module_key),
+                    symbol.byte_start,
+                )
+            })
+    }
+
     fn symbol_for_import_path<'a>(
         &'a self,
         doc: &IndexedDocument,
@@ -118,7 +145,9 @@ impl NavIndex {
         self.symbols.iter().find(|symbol| {
             symbol.scope.is_none()
                 && module_keys.contains(&symbol.module_key)
-                && (symbol.name == *item || symbol.name.ends_with(&format!(".{item}")))
+                && (symbol.name == *item
+                    || symbol.name.ends_with(&format!("::{item}"))
+                    || symbol.name.ends_with(&format!(".{item}")))
         })
     }
 

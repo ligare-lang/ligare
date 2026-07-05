@@ -560,6 +560,20 @@ impl SourceFormatter {
                 );
                 wrap_prec(parts.join(" "), PREC_APP, parent_prec)
             }
+            Term::NamedStructCons(name, fields) => {
+                let fields = fields
+                    .iter()
+                    .map(|(field, value)| {
+                        format!("{field} := {}", self.format_term(value, PREC_BLOCK))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let text = match name {
+                    Some(name) => format!("{name}{{{fields}}}"),
+                    None => format!("{{{fields}}}"),
+                };
+                wrap_prec(text, PREC_APP, parent_prec)
+            }
             Term::StructProj(subject, idx) => wrap_prec(
                 format!("{}.{}", self.format_term(subject, PREC_APP), idx),
                 PREC_APP,

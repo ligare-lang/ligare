@@ -362,7 +362,7 @@ fn lambda_int_to_int() {
     assert_eq!(
         check_empty(
             &arena,
-            parse("\\x. x", b, &arena),
+            arena.lam(arena.var(0)),
             parse_constraint("int -> int", b, &arena)
         ),
         Ok(())
@@ -375,7 +375,9 @@ fn lambda_bool_to_int_with_if() {
     assert_eq!(
         check_empty(
             &arena,
-            parse("\\x. (if x then 0 else 1)", b, &arena),
+            arena.lam(
+                arena.if_then_else(arena.var(0), arena.lit_int(0), arena.lit_int(1))
+            ),
             parse_constraint("bool -> int", b, &arena)
         ),
         Ok(())
@@ -755,9 +757,9 @@ fn var_from_context_satisfies_refinement() {
 #[test]
 fn annot_pi_matches_constraint_pi() {
     let (b, arena) = a();
-    // (\x. x : int -> int) checked against int -> int
+    // (fun x => x : int -> int) checked against int -> int
     let annot = arena.annot(
-        parse("\\x. x", b, &arena),
+        arena.lam(arena.var(0)),
         parse_constraint("int -> int", b, &arena),
     );
     assert_eq!(
@@ -769,7 +771,7 @@ fn annot_pi_matches_constraint_pi() {
 #[test]
 fn annot_pi_contravariant_domain() {
     let (_b, arena) = a();
-    // (\x. 5 : int -> int) checked against data -> int
+    // (fun x => 5 : int -> int) checked against data -> int
     // Contravariance: the function's declared domain is int, but
     // the constraint only demands data (which is strictly wider).
     // The body is the constant 5, which satisfies int regardless
@@ -799,9 +801,9 @@ fn annot_pi_contravariant_domain() {
 #[test]
 fn annot_pi_mismatch_codomain() {
     let (b, arena) = a();
-    // (\x. x : int -> int) checked against int -> bool — codomain mismatch
+    // (fun x => x : int -> int) checked against int -> bool — codomain mismatch
     let annot = arena.annot(
-        parse("\\x. x", b, &arena),
+        arena.lam(arena.var(0)),
         parse_constraint("int -> int", b, &arena),
     );
     assert!(check_empty(&arena, annot, parse_constraint("int -> bool", b, &arena)).is_err());
@@ -901,8 +903,8 @@ fn zero_param_func_wrong_type_fails() {
 #[test]
 fn lambda_with_nested_pi_passes() {
     let (b, arena) = a();
-    // (\f. f 1) : (int -> int) -> int
-    let term = parse("\\f. f 1", b, &arena);
+    // (fun f => f 1) : (int -> int) -> int
+    let term = arena.lam(arena.app(arena.var(0), arena.lit_int(1)));
     let constraint = parse_constraint("(int -> int) -> int", b, &arena);
     assert_eq!(check_empty(&arena, term, constraint), Ok(()));
 }
@@ -910,8 +912,8 @@ fn lambda_with_nested_pi_passes() {
 #[test]
 fn lambda_with_nested_pi_wrong_codomain_fails() {
     let (b, arena) = a();
-    // (\f. f 1) : (int -> int) -> bool — result should be int, not bool
-    let term = parse("\\f. f 1", b, &arena);
+    // (fun f => f 1) : (int -> int) -> bool — result should be int, not bool
+    let term = arena.lam(arena.app(arena.var(0), arena.lit_int(1)));
     let constraint = parse_constraint("(int -> int) -> bool", b, &arena);
     assert!(check_empty(&arena, term, constraint).is_err());
 }
@@ -1036,7 +1038,7 @@ fn annot_data_not_subtype_of_int() {
 #[test]
 fn annot_func_with_refinement_domain_contravariant() {
     let (_b, arena) = a();
-    // (\x. 5 : nonneg -> int) checked against data -> int
+    // (fun x => 5 : nonneg -> int) checked against data -> int
     // Body is constant 5 (int), so it works for any domain type
     let nonneg = arena.refine(
         s(&arena, ""),
@@ -1583,7 +1585,7 @@ fn by_proof_subject_passes_skips_tactics() {
         arena.builtin(s(&arena, "int")),
         arena.builtin(s(&arena, "int")),
     );
-    // `λx.x` already satisfies `int -> int`, so the intro tactic
+    // `fun x => x` already satisfies `int -> int`, so the intro tactic
     // is never reached.
     let term = arena.by_proof(
         Some(lam),
@@ -1612,7 +1614,7 @@ fn theorem_body_mismatches_type() {
     assert!(check_empty(&arena, body, prop).is_err());
 }
 
-/// Simulate `theorem id : int -> int := \x. x` — lambda satisfies arrow type.
+/// Simulate `theorem id : int -> int := fun x => x` — lambda satisfies arrow type.
 #[test]
 fn theorem_lambda_matches_arrow_type() {
     let (_b, arena) = a();

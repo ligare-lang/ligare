@@ -91,6 +91,7 @@ struct FileCache {
     semantic_tokens: Vec<lsp::SemanticToken>,
     symbols: Vec<String>,
     exports: Vec<String>,
+    export_targets: HashMap<String, String>,
     items: Vec<ItemCache>,
     module_imports: Vec<Vec<String>>,
     dependencies: HashSet<lsp::Url>,
@@ -135,6 +136,7 @@ struct ParsedFile<'bump> {
     module_imports: Vec<Vec<String>>,
     symbols: Vec<String>,
     exports: Vec<String>,
+    export_targets: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]

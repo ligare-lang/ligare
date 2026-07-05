@@ -292,6 +292,16 @@ fn collect_qualified_names_from_term<'bump>(term: &'bump Term<'bump>, names: &mu
                 collect_qualified_names_from_term(value, names);
             }
         }
+        Term::NamedStructCons(name, fields) => {
+            if let Some(name) = name
+                && qualified_symbol_parts(name).is_some()
+            {
+                names.insert((*name).to_string());
+            }
+            for (_, value) in fields.iter() {
+                collect_qualified_names_from_term(value, names);
+            }
+        }
         Term::Match(scrut, branches) => {
             collect_qualified_names_from_term(scrut, names);
             for (_, binds, body) in branches.iter() {

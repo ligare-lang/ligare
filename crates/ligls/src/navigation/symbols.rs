@@ -247,7 +247,7 @@ impl IndexedDocument {
                     let signature = constructor_signature(enum_name, fields);
                     if let Some(span) = self.find_enum_variant_span(start, end, variant_name) {
                         self.push_symbol(NavSymbol {
-                            name: (*variant_name).to_string(),
+                            name: format!("{type_name}::{variant_name}"),
                             detail: signature
                                 .as_ref()
                                 .map(|sig| sig.whole.display.clone())

@@ -40,6 +40,19 @@ fn enum_with_payload_check() {
 }
 
 #[test]
+fn scoped_enum_constructors_check() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    assert!(
+        compiler
+            .process_file_str(
+                "def Color : prop := enum\n  | Red\n  | Green\ndef Option : prop := enum\n  | None\n  | Some of (val : int)\n#check Color::Red : Color\n#check Option::Some 5 : Option\n#check Option::None : Option\n"
+            )
+            .is_ok()
+    );
+}
+
+#[test]
 fn match_reduces_on_variant() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
@@ -76,6 +89,33 @@ fn eval_match() {
 }
 
 #[test]
+fn scoped_enum_constructors_codegen_and_eval() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    compiler
+        .collect_file_str(
+            "def Option : prop := enum\n  | None\n  | Some of (val : int)\n#eval match Option::Some 42 with | Option::None => 0 | Option::Some x => x\n",
+        )
+        .unwrap();
+    let eval_c = emit_eval_c(
+        compiler.tops(),
+        compiler.raw_defs(),
+        compiler.fun_sigs(),
+        &compiler.enum_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"))
+    .expect("program has #eval output");
+    match compile_and_run_c(&eval_c) {
+        Ok(stdout) => assert_eq!(stdout, "42\n"),
+        Err(CompileError::CompilerNotFound) => {
+            eprintln!("skipping scoped enum constructor native run: C compiler not found")
+        }
+        Err(err) => panic!("scoped enum constructor native run failed: {err}\n{eval_c}"),
+    }
+}
+
+#[test]
 fn match_with_binding_eval() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);
@@ -83,6 +123,19 @@ fn match_with_binding_eval() {
         compiler
             .process_file_str(
                 "def Option : prop := enum\n  | None\n  | Some of (val : int)\n#eval match Some 5 with | None => -1 | Some x => x\n"
+            )
+            .is_ok()
+    );
+}
+
+#[test]
+fn match_accepts_scoped_constructor_patterns() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    assert!(
+        compiler
+            .process_file_str(
+                "def Option : prop := enum\n  | None\n  | Some of (val : int)\n#eval match Option::Some 42 with | Option::None => -1 | Option::Some x => x + 1\n"
             )
             .is_ok()
     );

@@ -128,15 +128,15 @@ impl LspCache {
 
         let bump = Bump::new();
         let arena = TermArena::new(&bump);
-        let parsed = parse_file(&uri, &text, &bump, &arena);
-        let semantic_top_ranges =
-            crate::completion::expanded_top_level_ranges(&text, &parsed.ast, &bump, &arena);
-        let semantic_tokens = semantic_tokens_for_source(&text, &parsed.ast, &semantic_top_ranges);
         let project = self.project_context_for_cached_uri(&uri);
         let module_key = project
             .as_ref()
             .map(|project| project.module_key_for_uri(&uri))
             .unwrap_or_else(|| fallback_module_key(&uri));
+        let parsed = parse_file(&uri, &text, &module_key, &bump, &arena);
+        let semantic_top_ranges =
+            crate::completion::expanded_top_level_ranges(&text, &parsed.ast, &bump, &arena);
+        let semantic_tokens = semantic_tokens_for_source(&text, &parsed.ast, &semantic_top_ranges);
         let changed_names = changed_names(previous.as_ref(), &parsed.item_infos);
         let mut dirty_indices =
             dirty_indices(previous.as_ref(), &parsed.item_infos, &changed_names);
@@ -247,6 +247,7 @@ impl LspCache {
             semantic_tokens,
             symbols: parsed.symbols,
             exports: parsed.exports,
+            export_targets: parsed.export_targets,
             items,
             module_imports: parsed.module_imports,
             dependencies,

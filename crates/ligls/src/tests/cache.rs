@@ -109,6 +109,46 @@ fn cache_resolves_wildcard_use_imports() {
 }
 
 #[test]
+fn cache_resolves_imported_struct_constructors() {
+    let mut cache = LspCache::new();
+    let types_uri = lsp::Url::parse("file:///workspace/types.lig").unwrap();
+    let main_uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+
+    cache.update_fast(
+        types_uri,
+        Some(1),
+        "pub def Wrap (T : prop) : prop := struct\n  value : T\n".to_string(),
+    );
+    let update = cache.update_fast(
+        main_uri,
+        Some(1),
+        "mod types\nuse types::Wrap\n#check Wrap.mk 1 : Wrap int\n".to_string(),
+    );
+
+    assert!(update.diagnostics.is_empty(), "{:#?}", update.diagnostics);
+}
+
+#[test]
+fn cache_resolves_imported_externs() {
+    let mut cache = LspCache::new();
+    let os_uri = lsp::Url::parse("file:///workspace/os.lig").unwrap();
+    let main_uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+
+    cache.update_fast(
+        os_uri,
+        Some(1),
+        "pub extern def malloc (sz : int) : int\n".to_string(),
+    );
+    let update = cache.update_fast(
+        main_uri,
+        Some(1),
+        "mod os\nuse os::malloc\n#check unsafe { malloc 1 } : int\n".to_string(),
+    );
+
+    assert!(update.diagnostics.is_empty(), "{:#?}", update.diagnostics);
+}
+
+#[test]
 fn cache_reports_unknown_declared_module() {
     let mut cache = LspCache::new();
     let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();

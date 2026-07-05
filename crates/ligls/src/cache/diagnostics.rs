@@ -208,7 +208,12 @@ fn imported_symbol_aliases<'bump>(
             };
             if tree.wildcard {
                 for item in &file.exports {
-                    aliases.insert(item.clone(), module.join_symbol(item));
+                    let target = file
+                        .export_targets
+                        .get(item)
+                        .cloned()
+                        .unwrap_or_else(|| module.join_symbol(item));
+                    aliases.insert(item.clone(), target);
                 }
                 continue;
             }
@@ -218,7 +223,12 @@ fn imported_symbol_aliases<'bump>(
                     .alias
                     .unwrap_or(tree.path[tree.path.len() - 1])
                     .to_string();
-                aliases.insert(local, module.join_symbol(&item));
+                let target = file
+                    .export_targets
+                    .get(&item)
+                    .cloned()
+                    .unwrap_or_else(|| module.join_symbol(&item));
+                aliases.insert(local, target);
             }
         }
     }

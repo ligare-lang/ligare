@@ -280,11 +280,6 @@ Available tactics:
 
 ### Lambda expressions
 ```ligare
--- Legacy syntax (still supported)
-\x. x + 1
-\a. \b. a + b
-
--- New `fun` syntax (preferred)
 fun x => x + 1
 fun x y => x + y
 fun (x : int) => x + 1
@@ -333,6 +328,8 @@ def Point : prop := struct
 **Construction**
 ```ligare
 def p : Point := Point.mk 3 4
+def q : Point := Point{x := 3, y := 4}
+def r : Point := {x := 3, y := 4}
 ```
 
 **Field projection**
@@ -343,6 +340,7 @@ def get_x (pt : Point) : int := Point.x pt
 
 **How it works**
 - `Point.mk` is an auto-generated constructor that takes field values in order.
+- `Point{...}` initializes a struct by field name; `{...}` is also allowed when the expected struct type is known.
 - `Point.x` is an auto-generated projector that extracts the named field from a struct value.
 - The compiler automatically generates these from the struct definition.
 - Field constraints are verified at construction time.
@@ -394,11 +392,11 @@ def Result (T : prop) (E : prop) : prop := enum
 Variant names are constructor functions.  They are automatically generated from the enum definition:
 
 ```ligare
-def c  : Color       := Red
-def x  : Option int  := Some 5
-def y  : Option int  := None              -- type annotation needed for inference
-def e  : Expr        := Add (Lit 1) (Lit 2)
-def ok : Result int str := Ok 42
+def c  : Color          := Color::Red
+def x  : Option int     := Option::Some 5
+def y  : Option int     := Option::None              -- type annotation needed for inference
+def e  : Expr           := Expr::Add (Expr::Lit 1) (Expr::Lit 2)
+def ok : Result int str := Result::Ok 42
 ```
 
 For no-payload variants like `None`, the type parameter cannot be inferred from arguments alone — a type annotation (`: Option int`) provides the necessary constraint for the compiler to resolve `A = int`.
@@ -410,8 +408,8 @@ def PosOption : prop := enum
   | Nothing
   | Just of (val : int where (x => x > 0))
 
-def j : PosOption := Just 5       -- auto proof: 5 > 0
-def k : PosOption := Just (-3)    -- compile error: -3 > 0 is false
+def j : PosOption := PosOption::Just 5       -- auto proof: 5 > 0
+def k : PosOption := PosOption::Just (-3)    -- compile error: -3 > 0 is false
 ```
 
 ### 10.3 Pattern Matching (Elimination)
@@ -421,18 +419,18 @@ Enum values are eliminated via `match` expressions.  Each branch covers one vari
 ```ligare
 def unwrap_or (opt : Option int) (default : int) : int :=
   match opt with
-  | None     => default
-  | Some val => val
+  | Option::None     => default
+  | Option::Some val => val
 ```
 
 **Theorem introduction** — every `match` branch automatically introduces a theorem that the scrutinee is of that variant, exactly like `if` branches introduce the condition theorem:
 
 ```ligare
 match opt with
-| None =>
-  -- theorem: opt = None  (available in this branch)
-| Some val =>
-  -- theorem: opt = Some val  (available in this branch)
+| Option::None =>
+  -- theorem: opt = Option::None  (available in this branch)
+| Option::Some val =>
+  -- theorem: opt = Option::Some val  (available in this branch)
   -- if val has a refinement constraint (e.g. val > 0),
   -- that theorem is also available here
 ```
@@ -442,8 +440,8 @@ This enables safe refinement propagation through match branches:
 ```ligare
 def safe_div (opt : PosOption) (x : int) : int :=
   match opt with
-  | Nothing  => 0
-  | Just val =>
+  | PosOption::Nothing  => 0
+  | PosOption::Just val =>
     -- theorem: val > 0 (from PosOption's refinement)
     -- this satisfies div's proof obligation that the divisor is non-zero
     div x val
@@ -456,9 +454,9 @@ Nested matches are naturally supported:
 ```ligare
 def eval (e : Expr) : int :=
   match e with
-  | Lit n      => n
-  | Add l r    => eval l + eval r
-  | If c t e   => if eval c /= 0 then eval t else eval e
+  | Expr::Lit n      => n
+  | Expr::Add l r    => eval l + eval r
+  | Expr::If c t e   => if eval c /= 0 then eval t else eval e
 ```
 
 ### 10.4 Erasure and Compilation

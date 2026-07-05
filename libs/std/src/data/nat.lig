@@ -13,3 +13,4 @@ pub def from_int (n : int) : Nat :=
     if n <= 0 then Zero else Succ (from_int (n - 1))
 
 instance of_nat_nat : OfNat Nat := OfNat.mk from_int
+

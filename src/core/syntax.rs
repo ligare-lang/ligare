@@ -24,6 +24,11 @@ pub type NamedMatchBranch<'bump> = (
     &'bump Term<'bump>,
 );
 
+/// A parser-level struct construction before the target struct and field order
+/// are resolved. `None` means the struct type must come from the expected
+/// constraint; `Some(name)` is an explicit `Type{field := value}` initializer.
+pub type NamedStructFieldInit<'bump> = (Name<'bump>, &'bump Term<'bump>);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DoStmt<'bump> {
     Bind(Name<'bump>, &'bump Term<'bump>),
@@ -146,6 +151,11 @@ pub fn compute_level(term: &Term<'_>) -> u32 {
         Term::Variant(_, _, payloads) | Term::StructCons(_, payloads) => payloads
             .iter()
             .map(|payload| compute_level(payload))
+            .max()
+            .unwrap_or(0),
+        Term::NamedStructCons(_, fields) => fields
+            .iter()
+            .map(|(_, value)| compute_level(value))
             .max()
             .unwrap_or(0),
         Term::Match(scrutinee, branches) => branches
@@ -311,6 +321,9 @@ pub enum Term<'bump> {
     StructDef(Name<'bump>, &'bump [(Name<'bump>, &'bump Term<'bump>)]),
     /// Struct value construction (in `data`): (struct_name, field_values in order)
     StructCons(Name<'bump>, &'bump [&'bump Term<'bump>]),
+    /// Parser-level struct construction by field name, optionally with an
+    /// explicit type prefix: `Point{x := 1}` or `{x := 1}`.
+    NamedStructCons(Option<Name<'bump>>, &'bump [NamedStructFieldInit<'bump>]),
     /// Struct field projection (in `data`): (subject, field_index)
     StructProj(&'bump Term<'bump>, usize),
     /// Parser-level implicit method call receiver: `receiver.method`.

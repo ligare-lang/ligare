@@ -298,7 +298,7 @@ fn codegen_constant_constructed_from_match() {
 fn eval_with_self_fib() {
     use ligare::core::eval::eval_with_self;
     let (_b, arena) = setup();
-    // Build: fib = λn. if n < 2 then n else fib(n-1) + fib(n-2)
+    // Build: fib = fun n => if n < 2 then n else fib(n-1) + fib(n-2)
     let body = arena.if_then_else(
         arena.app(
             arena.app(arena.prim_op(PrimOp::Lt), arena.var(0)),

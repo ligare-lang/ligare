@@ -87,6 +87,9 @@ impl<'bump> Eraser<'bump> {
                 let ev: Vec<_> = field_values.iter().map(|v| self.erase(v)).collect();
                 self.arena.struct_cons(name, self.arena.alloc_slice(&ev))
             }
+            Term::NamedStructCons(..) => {
+                panic!("NamedStructCons reached erasure before resolution")
+            }
             Term::StructProj(subject, idx) => self.arena.struct_proj(self.erase(subject), *idx),
             Term::MethodCall(_, _) => {
                 panic!("MethodCall reached erasure before resolution")

@@ -151,7 +151,7 @@ fn collect_type_members(type_name: &str, body: &Term<'_>, symbols: &mut Vec<Symb
             for (variant_name, fields) in *variants {
                 let signature = constructor_signature(enum_name, fields);
                 symbols.push(Symbol {
-                    name: (*variant_name).to_string(),
+                    name: format!("{type_name}::{variant_name}"),
                     detail: signature
                         .as_ref()
                         .map(|sig| sig.whole.display.clone())

@@ -276,6 +276,16 @@ impl<'bump> TypeChecker<'bump> {
                 }
             }
         }
+        if let Some((enum_name, variant_name)) = ctor_name.rsplit_once("::")
+            && let Some((udef, _)) = self.lookup_enum(enum_name)
+            && let Term::EnumDef(uname, variants) = udef
+        {
+            for (idx, (vname, fields)) in variants.iter().enumerate() {
+                if *vname == variant_name {
+                    return Some((*uname, idx, *fields));
+                }
+            }
+        }
         None
     }
 
@@ -714,7 +724,7 @@ mod tests {
     fn app_of_lam_checks() {
         let (_b, arena) = a();
         let chk = checker(arena);
-        // id = λx. x : int → int
+        // id = fun x => x : int -> int
         let body = arena.annot(
             arena.lam(arena.var(0)),
             arena.pi(

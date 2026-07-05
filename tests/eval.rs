@@ -65,7 +65,7 @@ fn let_() {
 fn beta_reduction() {
     let (b, arena) = a();
     assert_eq!(
-        *eval(&arena, parse("(\\x. x + 1) 5", b, &arena)).unwrap(),
+        *eval(&arena, parse("(fun x => x + 1) 5", b, &arena)).unwrap(),
         Term::LitInt(6)
     );
 }
@@ -259,7 +259,7 @@ fn let_shadowing() {
 fn multiple_beta_nested_lambdas() {
     let (b, arena) = a();
     assert_eq!(
-        *eval(&arena, parse("(\\x. \\y. x + y) 3 4", b, &arena)).unwrap(),
+        *eval(&arena, parse("(fun x => fun y => x + y) 3 4", b, &arena)).unwrap(),
         Term::LitInt(7)
     );
 }
@@ -267,9 +267,9 @@ fn multiple_beta_nested_lambdas() {
 #[test]
 fn multi_param_lambda_beta() {
     let (b, arena) = a();
-    // (\\x y. x + y) 3 4 → 7
+    // (fun x y => x + y) 3 4 → 7
     assert_eq!(
-        *eval(&arena, parse("(\\x y. x + y) 3 4", b, &arena)).unwrap(),
+        *eval(&arena, parse("(fun x y => x + y) 3 4", b, &arena)).unwrap(),
         Term::LitInt(7)
     );
 }
@@ -277,9 +277,9 @@ fn multi_param_lambda_beta() {
 #[test]
 fn multi_param_lambda_three_params() {
     let (b, arena) = a();
-    // (\\x y z. x + y + z) 1 2 3 → 6
+    // (fun x y z => x + y + z) 1 2 3 → 6
     assert_eq!(
-        *eval(&arena, parse("(\\x y z. x + y + z) 1 2 3", b, &arena)).unwrap(),
+        *eval(&arena, parse("(fun x y z => x + y + z) 1 2 3", b, &arena)).unwrap(),
         Term::LitInt(6)
     );
 }
@@ -287,9 +287,9 @@ fn multi_param_lambda_three_params() {
 #[test]
 fn multi_param_lambda_identity_curried() {
     let (b, arena) = a();
-    // (\\x y. x) 5 10 → 5
+    // (fun x y => x) 5 10 → 5
     assert_eq!(
-        *eval(&arena, parse("(\\x y. x) 5 10", b, &arena)).unwrap(),
+        *eval(&arena, parse("(fun x y => x) 5 10", b, &arena)).unwrap(),
         Term::LitInt(5)
     );
 }
@@ -411,7 +411,7 @@ fn auto_proof_evaluates_to_itself() {
 #[test]
 fn recursive_fib_evaluates() {
     let (_b, arena) = a();
-    // Build: fib = λn. if n < 2 then n else fib(n-1) + fib(n-2)
+    // Build: fib = fun n => if n < 2 then n else fib(n-1) + fib(n-2)
     // Using a builtin to refer to self
     let body = arena.if_then_else(
         bin(&arena, PrimOp::Lt, arena.var(0), arena.lit_int(2)),
@@ -538,7 +538,7 @@ fn all_binary_arith_operators() {
 #[test]
 fn app_with_lambda_result_evaluates() {
     let (_b, arena) = a();
-    // ((λx. x) (λy. y+1)) 5 → (λy. y+1) 5 → 6
+    // ((fun x => x) (fun y => y+1)) 5 -> (fun y => y+1) 5 -> 6
     let id = arena.lam(arena.var(0));
     let add1 = arena.lam(bin(&arena, PrimOp::Add, arena.var(0), arena.lit_int(1)));
     let app1 = arena.app(id, add1);
@@ -559,7 +559,7 @@ fn sub_with_zero_parses_as_binary() {
 #[test]
 fn lambda_applied_to_lambda_returns_lambda() {
     let (_b, arena) = a();
-    // (λx. λy. x) 5 → λy. 5
+    // (fun x => fun y => x) 5 -> fun y => 5
     let k = arena.lam(arena.lam(arena.var(1)));
     let app = arena.app(k, arena.lit_int(5));
     assert_eq!(*eval(&arena, app).unwrap(), Term::Lam(arena.lit_int(5)));

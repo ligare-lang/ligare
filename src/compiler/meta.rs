@@ -777,6 +777,9 @@ impl<'bump> Compiler<'bump> {
             Term::Variant(_, _, payloads) | Term::StructCons(_, payloads) => payloads
                 .iter()
                 .any(|payload| self.contains_resolvable_global(payload)),
+            Term::NamedStructCons(_, fields) => fields
+                .iter()
+                .any(|(_, value)| self.contains_resolvable_global(value)),
             Term::Match(scrut, branches) => {
                 self.contains_resolvable_global(scrut)
                     || branches.iter().any(|(_, binds, body)| {

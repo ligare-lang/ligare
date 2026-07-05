@@ -281,6 +281,15 @@ impl<'bump> Compiler<'bump> {
                     .arena
                     .struct_cons(name, self.arena.alloc_slice(&values)))
             }
+            Term::NamedStructCons(name, fields) => {
+                let fields = fields
+                    .iter()
+                    .map(|(field, value)| Ok((*field, self.rewrite_method_calls(value, scope)?)))
+                    .collect::<Result<Vec<_>, Diagnostic>>()?;
+                Ok(self
+                    .arena
+                    .named_struct_cons(*name, self.arena.alloc_slice(&fields)))
+            }
             Term::StructProj(subject, idx) => Ok(self
                 .arena
                 .struct_proj(self.rewrite_method_calls(subject, scope)?, *idx)),
@@ -1057,7 +1066,7 @@ impl<'bump> Compiler<'bump> {
         }
     }
 
-    fn elaborate_of_nat_literals(
+    pub(crate) fn elaborate_of_nat_literals(
         &self,
         term: &'bump Term<'bump>,
         ctx: &Context<'bump>,
@@ -1180,6 +1189,20 @@ impl<'bump> Compiler<'bump> {
                     .arena
                     .struct_cons(name, self.arena.alloc_slice(&fields)))
             }
+            Term::NamedStructCons(name, fields) => {
+                let (struct_name, type_args, struct_fields) =
+                    self.resolve_named_struct_target(*name, expected)?;
+                let values = self.elaborate_named_struct_fields(
+                    struct_name,
+                    struct_fields,
+                    type_args.as_deref(),
+                    fields,
+                    ctx,
+                )?;
+                Ok(self
+                    .arena
+                    .struct_cons(struct_name, self.arena.alloc_slice(&values)))
+            }
             Term::Variant(name, idx, payloads) => {
                 let payload_constraints =
                     self.checker
@@ -1280,6 +1303,172 @@ impl<'bump> Compiler<'bump> {
         match self.checker.evaluator.whnf(constraint).ok()? {
             Term::Pi(_, domain, _) => Some(domain),
             _ => None,
+        }
+    }
+
+    fn resolve_named_struct_target(
+        &self,
+        explicit_name: Option<Name<'bump>>,
+        expected: Option<&'bump Term<'bump>>,
+    ) -> Result<
+        (
+            Name<'bump>,
+            Option<Vec<&'bump Term<'bump>>>,
+            &'bump [(Name<'bump>, &'bump Term<'bump>)],
+        ),
+        Diagnostic,
+    > {
+        if let Some(name) = explicit_name {
+            let (def, _) = self
+                .checker
+                .lookup_struct(name)
+                .ok_or_else(|| Diagnostic::new(format!("unknown struct in initializer: {name}")))?;
+            let Term::StructDef(actual_name, fields) = def else {
+                return Err(Diagnostic::new(format!(
+                    "{name} is not a struct constraint"
+                )));
+            };
+            let type_args = expected.and_then(|expected| {
+                self.constraint_type_args_for(*actual_name, expected)
+            });
+            return Ok((*actual_name, type_args, *fields));
+        }
+
+        let Some(expected) = expected else {
+            return Err(Diagnostic::new(
+                "cannot infer struct type for initializer; add a constraint or use Type{...}"
+                    .to_string(),
+            ));
+        };
+        let Some((head, type_args)) = self.constraint_head_and_args(
+            crate::checker::TypeChecker::implicit_inner(expected),
+        ) else {
+            return Err(Diagnostic::new(format!(
+                "expected a struct constraint for initializer, got {}",
+                crate::pretty::PrettyPrinter::pretty(expected)
+            )));
+        };
+        let Some((def, _)) = self.checker.lookup_struct(head) else {
+            return Err(Diagnostic::new(format!(
+                "expected a struct constraint for initializer, got {}",
+                crate::pretty::PrettyPrinter::pretty(expected)
+            )));
+        };
+        let Term::StructDef(actual_name, fields) = def else {
+            return Err(Diagnostic::new(format!(
+                "expected a struct constraint for initializer, got {}",
+                crate::pretty::PrettyPrinter::pretty(expected)
+            )));
+        };
+        Ok((*actual_name, Some(type_args), *fields))
+    }
+
+    fn elaborate_named_struct_fields(
+        &self,
+        struct_name: Name<'bump>,
+        struct_fields: &'bump [(Name<'bump>, &'bump Term<'bump>)],
+        type_args: Option<&[&'bump Term<'bump>]>,
+        named_fields: &'bump [(Name<'bump>, &'bump Term<'bump>)],
+        ctx: &Context<'bump>,
+    ) -> Result<Vec<&'bump Term<'bump>>, Diagnostic> {
+        for (idx, (field_name, _)) in named_fields.iter().enumerate() {
+            if named_fields[..idx]
+                .iter()
+                .any(|(seen_name, _)| seen_name == field_name)
+            {
+                return Err(Diagnostic::new(format!(
+                    "struct {struct_name} initializer duplicates field `{field_name}`"
+                )));
+            }
+            if !struct_fields.iter().any(|(name, _)| name == field_name) {
+                return Err(Diagnostic::new(format!(
+                    "struct {struct_name} has no field `{field_name}`"
+                )));
+            }
+        }
+
+        let mut ordered = Vec::with_capacity(struct_fields.len());
+        for (field_name, field_constraint) in struct_fields.iter() {
+            let Some((_, value)) = named_fields.iter().find(|(name, _)| name == field_name) else {
+                return Err(Diagnostic::new(format!(
+                    "struct {struct_name} initializer is missing field `{field_name}`"
+                )));
+            };
+            let field_constraint = if let Some(type_args) = type_args {
+                self.replace_generic_constraint_vars(*field_constraint, type_args)
+            } else {
+                *field_constraint
+            };
+            ordered.push(self.elaborate_of_nat_literals(
+                value,
+                ctx,
+                Some(field_constraint),
+            )?);
+        }
+        Ok(ordered)
+    }
+
+    fn constraint_type_args_for(
+        &self,
+        expected_name: Name<'bump>,
+        constraint: &'bump Term<'bump>,
+    ) -> Option<Vec<&'bump Term<'bump>>> {
+        let mut args = Vec::new();
+        let mut current = crate::checker::TypeChecker::implicit_inner(constraint);
+        while let Term::App(f, a) = current {
+            args.push(*a);
+            current = f;
+        }
+        args.reverse();
+        match current {
+            Term::Builtin(name) | Term::Global(name) if *name == expected_name => Some(args),
+            _ => match self
+                .checker
+                .evaluator
+                .whnf(crate::checker::TypeChecker::implicit_inner(constraint))
+                .ok()?
+            {
+                Term::StructDef(name, _) if *name == expected_name => Some(args),
+                _ => None,
+            },
+        }
+    }
+
+    fn replace_generic_constraint_vars(
+        &self,
+        term: &'bump Term<'bump>,
+        type_args: &[&'bump Term<'bump>],
+    ) -> &'bump Term<'bump> {
+        self.replace_generic_constraint_vars_at(term, type_args, 0)
+    }
+
+    fn replace_generic_constraint_vars_at(
+        &self,
+        term: &'bump Term<'bump>,
+        type_args: &[&'bump Term<'bump>],
+        depth: usize,
+    ) -> &'bump Term<'bump> {
+        match term {
+            Term::Var(i) if *i >= depth && (*i - depth) < type_args.len() => {
+                type_args[type_args.len() - 1 - (*i - depth)]
+            }
+            Term::App(f, a) => self.arena.app(
+                self.replace_generic_constraint_vars_at(f, type_args, depth),
+                self.replace_generic_constraint_vars_at(a, type_args, depth),
+            ),
+            Term::Implicit(inner) => self.arena.implicit(
+                self.replace_generic_constraint_vars_at(inner, type_args, depth),
+            ),
+            Term::Pi(name, a, b) => self.arena.pi(
+                name,
+                self.replace_generic_constraint_vars_at(a, type_args, depth),
+                self.replace_generic_constraint_vars_at(b, type_args, depth + 1),
+            ),
+            Term::Annot(inner, constraint) => self.arena.annot(
+                self.replace_generic_constraint_vars_at(inner, type_args, depth),
+                self.replace_generic_constraint_vars_at(constraint, type_args, depth),
+            ),
+            _ => term,
         }
     }
 

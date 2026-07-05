@@ -248,6 +248,14 @@ fn collect_global_refs<'bump>(term: &'bump Term<'bump>, refs: &mut HashSet<Name<
                 collect_global_refs(payload, refs);
             }
         }
+        Term::NamedStructCons(name, fields) => {
+            if let Some(name) = name {
+                refs.insert(*name);
+            }
+            for (_, value) in *fields {
+                collect_global_refs(value, refs);
+            }
+        }
         Term::Match(scrutinee, branches) => {
             collect_global_refs(scrutinee, refs);
             for (_, binds, body) in *branches {

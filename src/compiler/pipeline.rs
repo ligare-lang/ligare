@@ -1,4 +1,5 @@
 use crate::checker::context::lookup_refine;
+use crate::checker::context::empty_ctx;
 use crate::checker::erase::Eraser;
 use crate::config::COMPILER_INTRINSIC_ATTR;
 use crate::core::semantics::SemanticQueries;
@@ -335,10 +336,16 @@ impl<'bump> Compiler<'bump> {
                         }
                         _ => None,
                     }) {
-                        eraser.erase(raw_body)
+                        let desugared = self.desugar_checked_def(params, m_ret, raw_body)?;
+                        let resolved = self.subst_top_level(desugared);
+                        let resolved =
+                            self.elaborate_of_nat_literals(resolved, &empty_ctx(), None)?;
+                        eraser.erase(resolved)
                     } else {
                         let desugared = self.desugar_checked_def(params, m_ret, body_term)?;
                         let resolved = self.subst_top_level(desugared);
+                        let resolved =
+                            self.elaborate_of_nat_literals(resolved, &empty_ctx(), None)?;
                         eraser.erase(resolved)
                     }
                 } else {
@@ -347,6 +354,8 @@ impl<'bump> Compiler<'bump> {
                         self.checker.desugar_with_context(term)
                     })?;
                     let resolved = self.subst_top_level(desugared);
+                    let resolved =
+                        self.elaborate_of_nat_literals(resolved, &empty_ctx(), None)?;
                     eraser.erase(resolved)
                 };
                 Ok(Some(TopLevel::TLDef(name, params, m_ret, erased, span)))
@@ -354,11 +363,13 @@ impl<'bump> Compiler<'bump> {
             TopLevel::TLEval(term, span) => {
                 let desugared = self.checker.desugar_with_context(term)?;
                 let resolved = self.subst_top_level(desugared);
+                let resolved = self.elaborate_of_nat_literals(resolved, &empty_ctx(), None)?;
                 Ok(Some(TopLevel::TLEval(eraser.erase(resolved), span)))
             }
             TopLevel::TLExpr(term, span) => {
                 let desugared = self.checker.desugar_with_context(term)?;
                 let resolved = self.subst_top_level(desugared);
+                let resolved = self.elaborate_of_nat_literals(resolved, &empty_ctx(), None)?;
                 Ok(Some(TopLevel::TLExpr(eraser.erase(resolved), span)))
             }
             TopLevel::TLTheorem(name, _, body, span) => {

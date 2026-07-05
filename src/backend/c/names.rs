@@ -262,6 +262,11 @@ impl NameResolver {
                     self.collect_matching_names_in_term(v, target_names, called);
                 }
             }
+            Term::NamedStructCons(_, fields) => {
+                for (_, value) in *fields {
+                    self.collect_matching_names_in_term(value, target_names, called);
+                }
+            }
             Term::StructProj(subj, _) => {
                 self.collect_matching_names_in_term(subj, target_names, called);
             }

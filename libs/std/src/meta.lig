@@ -27,7 +27,7 @@ pub def Expr : prop := enum
   | Name of (name : str)
   | Global of (name : str)
   | Prim of (op : str)
-  | App of (fun : Expr) (arg : Expr)
+  | App of (funct : Expr) (arg : Expr)
   | Lam of (body : Expr)
   | Let of (name : str) (value : Expr) (body : Expr)
   | If of (cond : Expr) (then_branch : Expr) (else_branch : Expr)

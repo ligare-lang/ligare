@@ -69,6 +69,7 @@ impl<'a> SemanticQueries<'a> {
             Term::Variant(..) => Some(Universe::UData),
             Term::StructDef(..) => Some(Universe::UProp),
             Term::StructCons(..) => Some(Universe::UData),
+            Term::NamedStructCons(..) => Some(Universe::UData),
             Term::StructProj(subject, _) | Term::MethodCall(subject, _) => {
                 self.universe(ctx, subject)
             }
@@ -152,6 +153,7 @@ impl<'a> SemanticQueries<'a> {
             Term::Named(_)
             | Term::NamedLam(..)
             | Term::NamedMatch(..)
+            | Term::NamedStructCons(..)
             | Term::Do(_)
             | Term::MethodCall(..)
             | Term::Quote(..)

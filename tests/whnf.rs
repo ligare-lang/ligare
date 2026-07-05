@@ -82,7 +82,7 @@ fn pi_identity() {
 fn beta_reduction() {
     let (b, arena) = a();
     assert_eq!(
-        *whnf(&arena, parse("(\\x. x + 1) 5", b, &arena)).unwrap(),
+        *whnf(&arena, parse("(fun x => x + 1) 5", b, &arena)).unwrap(),
         Term::LitInt(6)
     );
 }
@@ -91,7 +91,7 @@ fn beta_reduction() {
 fn nested_beta() {
     let (b, arena) = a();
     assert_eq!(
-        *whnf(&arena, parse("(\\x. \\y. x + y) 3 4", b, &arena)).unwrap(),
+        *whnf(&arena, parse("(fun x => fun y => x + y) 3 4", b, &arena)).unwrap(),
         Term::LitInt(7)
     );
 }
@@ -399,7 +399,7 @@ fn recursive_call_partial_reduction() {
 fn non_recursive_function_computes() {
     let (b, arena) = a();
     assert_eq!(
-        *whnf(&arena, parse("(\\x. x + 1) 5", b, &arena)).unwrap(),
+        *whnf(&arena, parse("(fun x => x + 1) 5", b, &arena)).unwrap(),
         Term::LitInt(6)
     );
 }

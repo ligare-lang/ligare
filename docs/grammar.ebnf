@@ -80,6 +80,7 @@ Param       ::= "(" Ident { Ident } [ ":" Expr ] ")"
 (* ── Expressions ────────────────────────────────────────────────── *)
 
 Expr        ::= IfExpr
+              | MatchExpr
               | OperatorExpr
 
 IfExpr      ::= "if" Expr "then" Expr "else" Expr
@@ -105,6 +106,7 @@ TermApp     ::= LetExpr
 Term        ::= Atom TermSuffix
 
 TermSuffix  ::= RefineSuffix TermSuffix
+              | StructInitSuffix TermSuffix
               | ":" Expr TermSuffix     (* type annotation *)
               | "by" Tactics TermSuffix  (* proof block    *)
               | ε
@@ -116,6 +118,7 @@ Atom        ::= IntLiteral
               | "false"
               | Lambda
               | Ident
+              | StructLiteral
               | "(" Expr ")"
               | "by" Tactics             (* standalone proof block *)
               | "auto"                   (* auto proof             *)
@@ -123,13 +126,31 @@ Atom        ::= IntLiteral
               | "∧-intro" | "∧-elim-left"
               | "-" Atom                 (* unary negation (desugars to 0 - x) *)
 
+StructInitSuffix ::= "{" StructInitFields "}"   (* explicit form: Type{field := value} *)
+
+StructLiteral ::= "{" StructInitFields "}"      (* expected-type form: {field := value} *)
+
+StructInitFields ::= StructInitField { "," StructInitField } [ "," ]
+
+StructInitField ::= Ident ":=" Expr
+
 IntLiteral  ::= [0-9]+
 
-Lambda      ::= ("\" | "λ") Ident "." Expr
+Lambda      ::= "fun" FunParam { FunParam } "=>" Expr
+
+FunParam    ::= Ident
+              | "(" Ident { Ident } [ ":" Expr ] ")"
+              | "{" Ident { Ident } ":" Expr "}"
 
 (* ── Let expressions ────────────────────────────────────────────── *)
 
 LetExpr     ::= "let" Ident [ ":" Expr ] [ "by" Tactics ] ":=" Expr "in" Expr
+
+MatchExpr   ::= "match" Expr "with" MatchBranch { MatchBranch }
+
+MatchBranch ::= "|" ScopedCtor { Ident } "=>" Expr
+
+ScopedCtor  ::= Ident { "::" Ident }
 
 (* ── Do expressions ─────────────────────────────────────────────── *)
 
@@ -219,5 +240,5 @@ Ident       ::= [a-zA-Z_][a-zA-Z0-9_]*
      "data"                    universe of data
      T "->" T                  non-dependent arrow  (≡ Pi "" T T)
      "(" x ":" T ")" "->" T   dependent arrow       (≡ Pi x T T)
-     T "where" "(" x "=>" P ")"   refinement type   (≡ Refine T (λx.P))
+     T "where" "(" x "=>" P ")"   refinement type   (≡ Refine T (fun x => P))
 *)

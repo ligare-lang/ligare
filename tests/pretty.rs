@@ -17,7 +17,7 @@ fn integer() {
 
 #[test]
 fn lambda() {
-    assert_eq!(pretty(&Term::Lam(&Term::Var(0))), "λ. $0");
+    assert_eq!(pretty(&Term::Lam(&Term::Var(0))), "fun _ => $0");
 }
 
 #[test]

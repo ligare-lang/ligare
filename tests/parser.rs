@@ -12,6 +12,17 @@ fn a() -> (&'static Bump, TermArena<'static>) {
     (b, a)
 }
 
+fn parse_fun_body<'bump>(
+    input: &str,
+    bump: &'bump Bump,
+    arena: &'bump TermArena<'bump>,
+) -> &'bump Term<'bump> {
+    match parse(input, bump, arena) {
+        Term::Annot(inner, _) => inner,
+        other => panic!("expected fun lambda annotation, got {other:?}"),
+    }
+}
+
 #[test]
 fn integer_literal() {
     let (b, a) = a();
@@ -149,15 +160,15 @@ fn let_with_constraint() {
 #[test]
 fn lambda() {
     let (b, a) = a();
-    assert_eq!(*parse("\\x. x", b, &a), Term::Lam(&Term::Var(0)));
+    assert_eq!(*parse_fun_body("fun x => x", b, &a), Term::Lam(&Term::Var(0)));
 }
 
 #[test]
 fn lambda_multi_param() {
     let (b, a) = a();
-    // \\x y. x + y  →  Lam(Lam(App(App(PrimOp(Add), Var(1)), Var(0))))
+    // fun x y => x + y  →  Lam(Lam(App(App(PrimOp(Add), Var(1)), Var(0))))
     assert_eq!(
-        *parse("\\x y. x + y", b, &a),
+        *parse_fun_body("fun x y => x + y", b, &a),
         *a.lam(a.lam(bin(&a, PrimOp::Add, a.var(1), a.var(0))))
     );
 }
@@ -165,7 +176,7 @@ fn lambda_multi_param() {
 #[test]
 fn lambda_three_params() {
     let (b, a) = a();
-    // \\x y z. x + y + z  →  Lam(Lam(Lam(App(App(+, App(App(+, Var(2)), Var(1))), Var(0)))))
+    // fun x y z => x + y + z  →  Lam(Lam(Lam(App(App(+, App(App(+, Var(2)), Var(1))), Var(0)))))
     let inner = bin(
         &a,
         PrimOp::Add,
@@ -173,7 +184,7 @@ fn lambda_three_params() {
         a.var(0),
     );
     assert_eq!(
-        *parse("\\x y z. x + y + z", b, &a),
+        *parse_fun_body("fun x y z => x + y + z", b, &a),
         *a.lam(a.lam(a.lam(inner)))
     );
 }
@@ -707,6 +718,53 @@ fn struct_field_types_do_not_consume_following_fields() {
 }
 
 #[test]
+fn parse_struct_initializer_with_explicit_type() {
+    let (b, arena) = a();
+    let term = parse_expr_top("Point{x := 1, y := 2}", b, &arena).expect("struct init");
+    match term {
+        Term::NamedStructCons(Some(name), fields) => {
+            assert_eq!(*name, s(&arena, "Point"));
+            assert_eq!(fields.len(), 2);
+            assert_eq!(fields[0].0, "x");
+            assert_eq!(*fields[1].1, Term::LitInt(2));
+        }
+        other => panic!("expected named struct init, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_struct_initializer_with_expected_type() {
+    let (b, arena) = a();
+    let term = parse_expr_top("{x := 1, y := 2}", b, &arena).expect("struct init");
+    match term {
+        Term::NamedStructCons(None, fields) => {
+            assert_eq!(fields.len(), 2);
+            assert_eq!(fields[0].0, "x");
+            assert_eq!(*fields[0].1, Term::LitInt(1));
+        }
+        other => panic!("expected expected-type struct init, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_match_with_scoped_constructor_name() {
+    let (b, arena) = a();
+    let term = parse_expr_top(
+        "match opt with | Option::Some value => value | Option::None => 0",
+        b,
+        &arena,
+    )
+    .expect("scoped match");
+    match term {
+        Term::NamedMatch(_, branches) => {
+            assert_eq!(branches[0].0, "Option::Some");
+            assert_eq!(branches[1].0, "Option::None");
+        }
+        other => panic!("expected NamedMatch, got {other:?}"),
+    }
+}
+
+#[test]
 fn empty_enum_definition_fails() {
     let (b, arena) = a();
     let err = parse_def_top("def Empty : prop := enum", b, &arena)
@@ -732,6 +790,21 @@ fn fun_expression_without_params_fails() {
         "{}",
         err.message
     );
+}
+
+#[test]
+fn legacy_lambda_syntax_is_rejected() {
+    let (b, arena) = a();
+    let err = parse_expr_top("\\x. x", b, &arena).expect_err("legacy lambda must fail");
+    assert!(err.message.contains("invalid token"), "{}", err.message);
+}
+
+#[test]
+fn legacy_enum_variant_dot_access_is_rejected() {
+    let (b, arena) = a();
+    let err = parse_expr_top("Option.Some 1", b, &arena)
+        .expect_err("legacy enum variant dot access must fail");
+    assert!(err.message.contains("uses `::` instead of `.`"), "{}", err.message);
 }
 
 #[test]
@@ -818,7 +891,7 @@ fn binary_sub_in_lambda_body() {
     let (b, arena) = a();
     // "n - 1" must parse as Sub(Var(0), LitInt(1)), NOT as App(Var(0), Sub(0,1)).
     assert_eq!(
-        *parse("\\n. n - 1", b, &arena),
+        *parse_fun_body("fun n => n - 1", b, &arena),
         *arena.lam(bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1)))
     );
 }
@@ -828,7 +901,7 @@ fn binary_sub_in_parens_in_lambda() {
     let (b, arena) = a();
     // Parentheses should not change the parse of a binary subtraction.
     assert_eq!(
-        *parse("\\n. (n - 1)", b, &arena),
+        *parse_fun_body("fun n => (n - 1)", b, &arena),
         *arena.lam(bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1)))
     );
 }
@@ -838,7 +911,7 @@ fn binary_sub_left_assoc_with_add() {
     let (b, arena) = a();
     // "n - 1 + 2" should be left-associative: (n - 1) + 2
     assert_eq!(
-        *parse("\\n. n - 1 + 2", b, &arena),
+        *parse_fun_body("fun n => n - 1 + 2", b, &arena),
         *arena.lam(bin(
             &arena,
             PrimOp::Add,
@@ -853,7 +926,7 @@ fn binary_add_left_assoc_with_sub() {
     let (b, arena) = a();
     // "n + 1 - 2" should be left-associative: (n + 1) - 2
     assert_eq!(
-        *parse("\\n. n + 1 - 2", b, &arena),
+        *parse_fun_body("fun n => n + 1 - 2", b, &arena),
         *arena.lam(bin(
             &arena,
             PrimOp::Sub,
@@ -869,7 +942,7 @@ fn unary_negation_in_lambda() {
     // Unary minus should still normalize to: 0 - n
     let sub = arena.app(arena.prim_op(PrimOp::Sub), arena.lit_int(0));
     assert_eq!(
-        *parse("\\n. -n", b, &arena),
+        *parse_fun_body("fun n => -n", b, &arena),
         *arena.lam(arena.app(sub, arena.var(0)))
     );
 }
@@ -881,7 +954,7 @@ fn binary_plus_with_unary_negation_rhs() {
     let sub = arena.app(arena.prim_op(PrimOp::Sub), arena.lit_int(0));
     let neg_one = arena.app(sub, arena.lit_int(1));
     assert_eq!(
-        *parse("\\n. n + -1", b, &arena),
+        *parse_fun_body("fun n => n + -1", b, &arena),
         *arena.lam(bin(&arena, PrimOp::Add, arena.var(0), neg_one))
     );
 }
@@ -890,9 +963,9 @@ fn binary_plus_with_unary_negation_rhs() {
 fn binary_sub_in_application() {
     let (b, arena) = a();
     // "f (n-1)" as a lambda: the inner subtraction must be binary, not hijacked.
-    // \n. f (n-1)  →  Lam(App(Named(f), Sub(Var(0), LitInt(1))))
+    // fun n => f (n-1)  →  Lam(App(Named(f), Sub(Var(0), LitInt(1))))
     assert_eq!(
-        *parse("\\n. f (n - 1)", b, &arena),
+        *parse_fun_body("fun n => f (n - 1)", b, &arena),
         *arena.lam(arena.app(
             arena.global(s(&arena, "f")),
             bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1))
@@ -903,9 +976,9 @@ fn binary_sub_in_application() {
 #[test]
 fn binary_sub_multi_param_lambda() {
     let (b, arena) = a();
-    // \n m. n - m  →  Lam(Lam(Sub(Var(1), Var(0))))
+    // fun n m => n - m  →  Lam(Lam(Sub(Var(1), Var(0))))
     assert_eq!(
-        *parse("\\n m. n - m", b, &arena),
+        *parse_fun_body("fun n m => n - m", b, &arena),
         *arena.lam(arena.lam(bin(&arena, PrimOp::Sub, arena.var(1), arena.var(0))))
     );
 }
@@ -913,10 +986,10 @@ fn binary_sub_multi_param_lambda() {
 #[test]
 fn binary_sub_twice_in_lambda() {
     let (b, arena) = a();
-    // \n. n - 1 - 2  →  Lam(Sub(Sub(Var(0), LitInt(1)), LitInt(2)))
+    // fun n => n - 1 - 2  →  Lam(Sub(Sub(Var(0), LitInt(1)), LitInt(2)))
     let inner_sub = bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1));
     assert_eq!(
-        *parse("\\n. n - 1 - 2", b, &arena),
+        *parse_fun_body("fun n => n - 1 - 2", b, &arena),
         *arena.lam(bin(&arena, PrimOp::Sub, inner_sub, arena.lit_int(2)))
     );
 }
@@ -928,17 +1001,17 @@ fn all_infix_ops_with_variable() {
     // This ensures the "break on infix token" logic in parse_app_generic
     // doesn't break any operator.
     let cases: Vec<(&str, PrimOp)> = vec![
-        ("\\n. n + 1", PrimOp::Add),
-        ("\\n. n - 1", PrimOp::Sub),
-        ("\\n. n * 2", PrimOp::Mul),
-        ("\\n. n / 2", PrimOp::Div),
-        ("\\n. n % 2", PrimOp::Mod_),
-        ("\\n. n < 2", PrimOp::Lt),
-        ("\\n. n > 2", PrimOp::Gt),
-        ("\\n. n <= 2", PrimOp::Le),
-        ("\\n. n >= 2", PrimOp::Ge),
-        ("\\n. n == 2", PrimOp::Eq),
-        ("\\n. n /= 2", PrimOp::Neq),
+        ("fun n => n + 1", PrimOp::Add),
+        ("fun n => n - 1", PrimOp::Sub),
+        ("fun n => n * 2", PrimOp::Mul),
+        ("fun n => n / 2", PrimOp::Div),
+        ("fun n => n % 2", PrimOp::Mod_),
+        ("fun n => n < 2", PrimOp::Lt),
+        ("fun n => n > 2", PrimOp::Gt),
+        ("fun n => n <= 2", PrimOp::Le),
+        ("fun n => n >= 2", PrimOp::Ge),
+        ("fun n => n == 2", PrimOp::Eq),
+        ("fun n => n /= 2", PrimOp::Neq),
     ];
     for (input, op) in cases {
         let expected = arena.lam(bin(&arena, op, arena.var(0), arena.lit_int(2)));
@@ -949,7 +1022,7 @@ fn all_infix_ops_with_variable() {
             expected
         };
         assert_eq!(
-            *parse(input, b, &arena),
+            *parse_fun_body(input, b, &arena),
             *expected,
             "failed for input: {}",
             input
@@ -1051,11 +1124,11 @@ fn unary_negation_after_comparison() {
 #[test]
 fn comparison_of_two_binary_subs() {
     let (b, arena) = a();
-    // \n m. n - 1 < m - 2  —  both sides are binary subtractions.
+    // fun n m => n - 1 < m - 2  —  both sides are binary subtractions.
     let left = bin(&arena, PrimOp::Sub, arena.var(1), arena.lit_int(1));
     let right = bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(2));
     assert_eq!(
-        *parse("\\n. \\m. n - 1 < m - 2", b, &arena),
+        *parse_fun_body("fun n => fun m => n - 1 < m - 2", b, &arena),
         *arena.lam(arena.lam(bin(&arena, PrimOp::Lt, left, right)))
     );
 }
@@ -1067,7 +1140,7 @@ fn parens_respect_binary_op() {
     // then binary multiply on the grouped result.
     let sub = bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(1));
     assert_eq!(
-        *parse("\\n. (n - 1) * 2", b, &arena),
+        *parse_fun_body("fun n => (n - 1) * 2", b, &arena),
         *arena.lam(bin(&arena, PrimOp::Mul, sub, arena.lit_int(2)))
     );
 }
@@ -1109,7 +1182,7 @@ fn theorem_simple_value() {
 #[test]
 fn theorem_with_lambda_body() {
     let (b, arena) = a();
-    let result = parse_program("theorem id : int -> int := \\x. x", b, &arena);
+    let result = parse_program("theorem id : int -> int := fun x => x", b, &arena);
     assert!(result.is_ok());
     let tops = result.unwrap();
     assert_eq!(tops.len(), 1);

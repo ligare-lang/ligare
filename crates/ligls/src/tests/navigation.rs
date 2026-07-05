@@ -37,7 +37,7 @@ def Option : prop := enum
   | Some of (value : int)
 def Point : prop := struct
   x : int
-def opt : Option := <|>Some 1
+def opt : Option := Option::<|>Some 1
 def get (p : Point) : int := Point.x p
 "#,
     );
@@ -93,7 +93,7 @@ def inc (x : int) : int := x + 1
         .collect::<Vec<_>>();
 
     assert!(names.contains(&"Option".to_string()), "{names:?}");
-    assert!(names.contains(&"Some".to_string()), "{names:?}");
+    assert!(names.contains(&"Option::Some".to_string()), "{names:?}");
     assert!(names.contains(&"inc".to_string()), "{names:?}");
 }
 

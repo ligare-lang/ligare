@@ -12,7 +12,7 @@ def Point : prop := struct
 def Option : prop := enum
   | None
   | Some of (value : int)
-def main : int := match Option.Some 1 with | Some value => value | None => 0
+def main : int := match Option::Some 1 with | Some value => value | None => 0
 #eval Point.x
 "#;
 

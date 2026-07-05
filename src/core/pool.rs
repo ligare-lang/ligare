@@ -3,7 +3,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::core::syntax::{
-    DoStmt, MatchBranch, Name, NamedMatchBranch, PrimOp, Tactic, Term, Universe,
+    DoStmt, MatchBranch, Name, NamedMatchBranch, NamedStructFieldInit, PrimOp, Tactic, Term,
+    Universe,
 };
 
 /// A bumpalo-backed string interner.
@@ -222,6 +223,13 @@ impl<'bump> TermArena<'bump> {
             Term::StructCons(name, field_values) => {
                 let mapped: Vec<_> = field_values.iter().map(|v| self.map_mut(v, f)).collect();
                 self.struct_cons(name, self.alloc_slice(&mapped))
+            }
+            Term::NamedStructCons(name, fields) => {
+                let mapped: Vec<_> = fields
+                    .iter()
+                    .map(|(field, value)| (*field, self.map_mut(value, f)))
+                    .collect();
+                self.named_struct_cons(*name, self.alloc_slice(&mapped))
             }
             Term::StructProj(subject, idx) => self.struct_proj(self.map_mut(subject, f), *idx),
             Term::MethodCall(receiver, method) => {
@@ -443,6 +451,14 @@ impl<'bump> TermArena<'bump> {
         field_values: &'bump [&'bump Term<'bump>],
     ) -> &'bump Term<'bump> {
         self.alloc(Term::StructCons(name, field_values))
+    }
+
+    pub fn named_struct_cons(
+        &self,
+        name: Option<Name<'bump>>,
+        fields: &'bump [NamedStructFieldInit<'bump>],
+    ) -> &'bump Term<'bump> {
+        self.alloc(Term::NamedStructCons(name, fields))
     }
 
     pub fn struct_proj(

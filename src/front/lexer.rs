@@ -131,10 +131,6 @@ pub enum Token {
     Colon,
     #[token(".")]
     Dot,
-    #[token("\\")]
-    Backslash,
-    #[token("λ")]
-    Lambda,
     #[token("+")]
     Plus,
     #[token("-")]
