@@ -5,17 +5,27 @@
 //! and emits typedefs — all as methods on a single cohesive object.
 
 use crate::backend::ir::CType;
+use crate::backend::ir::FunSig;
 use crate::core::syntax::{Name, Term};
 use crate::diagnostic::Diagnostic;
 use std::collections::{HashMap, HashSet};
 
 // ── Type info structs ──
 
+/// Field layout info for C codegen.
+#[derive(Debug, Clone)]
+pub struct FieldInfo {
+    pub name: String,
+    pub logical_type: CType,
+    pub storage_type: CType,
+    pub boxed: bool,
+}
+
 /// Info about an enum variant for C codegen.
 #[derive(Debug, Clone)]
 pub struct VariantInfo {
     pub name: String,
-    pub fields: Vec<(String, CType)>,
+    pub fields: Vec<FieldInfo>,
 }
 
 /// Enum type info for C codegen.
@@ -27,7 +37,7 @@ pub struct EnumInfo {
 /// Struct type info for C codegen.
 #[derive(Debug, Clone)]
 pub struct StructInfo {
-    pub fields: Vec<(String, CType)>,
+    pub fields: Vec<FieldInfo>,
 }
 
 // ── TypeMapper trait ──
@@ -70,8 +80,11 @@ impl TypeAnalyzer {
         let enum_names: HashSet<String> = enum_types.iter().map(|(n, _)| n.to_string()).collect();
         let struct_names: HashSet<String> =
             struct_types.iter().map(|(n, _)| n.to_string()).collect();
+        let cyclic_structs =
+            Self::find_cyclic_structs(struct_types, enum_types, &enum_names, &struct_names);
         let enum_map = Self::build_enum_map(enum_types, &enum_names, &struct_names)?;
-        let struct_map = Self::build_struct_map(struct_types, &enum_names, &struct_names)?;
+        let struct_map =
+            Self::build_struct_map(struct_types, &enum_names, &struct_names, &cyclic_structs)?;
         Ok(Self {
             enum_names,
             struct_names,
@@ -86,15 +99,29 @@ impl TypeAnalyzer {
         struct_types: &[(&str, &Term<'_>)],
         enum_names: &HashSet<String>,
         struct_names: &HashSet<String>,
+        cyclic_structs: &HashSet<String>,
     ) -> Result<HashMap<String, StructInfo>, Diagnostic> {
         let mut map = HashMap::new();
         for (name, sdef) in struct_types {
             if let Term::StructDef(_, fields) = sdef {
-                let fs: Vec<(String, CType)> = fields
+                let is_cyclic = cyclic_structs.contains(*name);
+                let fs: Vec<FieldInfo> = fields
                     .iter()
                     .map(|(fnm, fc)| {
-                        Self::constraint_to_ctype_static(fc, enum_names, struct_names)
-                            .map(|ct| (fnm.to_string(), ct))
+                        let logical_type =
+                            Self::constraint_to_ctype_static(fc, enum_names, struct_names)?;
+                        let boxed = is_cyclic && matches!(logical_type, CType::Enum(_));
+                        let storage_type = if boxed {
+                            CType::Ptr(Box::new(logical_type.clone()))
+                        } else {
+                            logical_type.clone()
+                        };
+                        Ok::<FieldInfo, Diagnostic>(FieldInfo {
+                            name: fnm.to_string(),
+                            logical_type,
+                            storage_type,
+                            boxed,
+                        })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 map.insert(name.to_string(), StructInfo { fields: fs });
@@ -113,17 +140,23 @@ impl TypeAnalyzer {
             if let Term::EnumDef(_, variants) = udef {
                 let mut vis = Vec::new();
                 for (vname, fields) in variants.iter() {
-                    let fs: Vec<(String, CType)> = fields
+                    let fs: Vec<FieldInfo> = fields
                         .iter()
-                        .map(|(fnm, fc)| -> Result<(String, CType), Diagnostic> {
-                            let cty =
+                        .map(|(fnm, fc)| -> Result<FieldInfo, Diagnostic> {
+                            let logical_type =
                                 Self::constraint_to_ctype_static(fc, enum_names, struct_names)?;
-                            let cty = if matches!(&cty, CType::Enum(un) if un == *name) {
-                                CType::Ptr(Box::new(cty))
+                            let boxed = matches!(&logical_type, CType::Enum(un) if un == *name);
+                            let storage_type = if boxed {
+                                CType::Ptr(Box::new(logical_type.clone()))
                             } else {
-                                cty
+                                logical_type.clone()
                             };
-                            Ok((fnm.to_string(), cty))
+                            Ok(FieldInfo {
+                                name: fnm.to_string(),
+                                logical_type,
+                                storage_type,
+                                boxed,
+                            })
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     vis.push(VariantInfo {
@@ -137,10 +170,56 @@ impl TypeAnalyzer {
         Ok(map)
     }
 
+    fn find_cyclic_structs(
+        struct_types: &[(&str, &Term<'_>)],
+        enum_types: &[(&str, &Term<'_>)],
+        enum_names: &HashSet<String>,
+        struct_names: &HashSet<String>,
+    ) -> HashSet<String> {
+        let mut emitted: HashSet<String> = HashSet::new();
+        let mut remaining: Vec<(&str, &Term<'_>, bool)> = Vec::new();
+        for (n, s) in struct_types {
+            remaining.push((n, *s, true));
+        }
+        for (n, u) in enum_types {
+            remaining.push((n, *u, false));
+        }
+
+        let mut changed = true;
+        while changed && !remaining.is_empty() {
+            changed = false;
+            let mut next = Vec::new();
+            for (name, def, is_struct) in remaining.drain(..) {
+                let deps = Self::type_dependencies_static(def, enum_names, struct_names);
+                let all_deps_emitted = deps.iter().all(|d| emitted.contains(d.as_str()));
+                if all_deps_emitted || deps.is_empty() {
+                    emitted.insert(name.to_string());
+                    changed = true;
+                } else {
+                    next.push((name, def, is_struct));
+                }
+            }
+            remaining = next;
+        }
+
+        remaining
+            .into_iter()
+            .filter_map(|(name, _, is_struct)| is_struct.then(|| name.to_string()))
+            .collect()
+    }
+
     // ── Type dependency analysis ──
 
     /// Extract type dependencies from a type definition (struct or enum).
     pub fn type_dependencies(&self, def: &Term<'_>) -> HashSet<String> {
+        Self::type_dependencies_static(def, &self.enum_names, &self.struct_names)
+    }
+
+    fn type_dependencies_static(
+        def: &Term<'_>,
+        enum_names: &HashSet<String>,
+        struct_names: &HashSet<String>,
+    ) -> HashSet<String> {
         let mut deps = HashSet::new();
         let fields: Option<&[(Name<'_>, &Term<'_>)]> = match def {
             Term::StructDef(_, f) => Some(*f),
@@ -153,7 +232,7 @@ impl TypeAnalyzer {
                     return deps;
                 }
                 for (_name, fty) in &all {
-                    self.collect_type_refs(fty, &mut deps);
+                    Self::collect_type_refs_static(fty, enum_names, struct_names, &mut deps);
                 }
                 return deps;
             }
@@ -161,28 +240,32 @@ impl TypeAnalyzer {
         };
         if let Some(fs) = fields {
             for (_name, fty) in fs {
-                self.collect_type_refs(fty, &mut deps);
+                Self::collect_type_refs_static(fty, enum_names, struct_names, &mut deps);
             }
         }
         deps
     }
 
-    /// Recursively collect user-defined type names from a constraint term.
-    fn collect_type_refs(&self, t: &Term<'_>, deps: &mut HashSet<String>) {
+    fn collect_type_refs_static(
+        t: &Term<'_>,
+        enum_names: &HashSet<String>,
+        struct_names: &HashSet<String>,
+        deps: &mut HashSet<String>,
+    ) {
         match t {
             Term::Builtin(name) | Term::Global(name) => {
                 let s = name.to_string();
-                if self.enum_names.contains(&s) || self.struct_names.contains(&s) {
+                if enum_names.contains(&s) || struct_names.contains(&s) {
                     deps.insert(s);
                 }
             }
             Term::Pi(_, a, b) => {
-                self.collect_type_refs(a, deps);
-                self.collect_type_refs(b, deps);
+                Self::collect_type_refs_static(a, enum_names, struct_names, deps);
+                Self::collect_type_refs_static(b, enum_names, struct_names, deps);
             }
             Term::App(f, a) => {
-                self.collect_type_refs(f, deps);
-                self.collect_type_refs(a, deps);
+                Self::collect_type_refs_static(f, enum_names, struct_names, deps);
+                Self::collect_type_refs_static(a, enum_names, struct_names, deps);
             }
             _ => {}
         }
@@ -211,11 +294,11 @@ impl TypeAnalyzer {
                 let vi = info.variants.get(variant_idx);
                 out.push_str("        struct { ");
                 for (field_idx, (fname, fty)) in fields.iter().enumerate() {
-                    let cty = vi
-                        .and_then(|variant| variant.fields.get(field_idx).map(|(_, cty)| cty))
-                        .cloned()
+                    let storage_type = vi
+                        .and_then(|variant| variant.fields.get(field_idx))
+                        .map(|field| field.storage_type.clone())
                         .unwrap_or(self.constraint_to_ctype(fty)?);
-                    out.push_str(&format!("{} {}; ", cty.c_name(), fname));
+                    out.push_str(&format!("{} {}; ", storage_type.c_name(), fname));
                 }
                 out.push_str(&format!("}} {vname};\n"));
             }
@@ -227,15 +310,21 @@ impl TypeAnalyzer {
 
     /// Emit a C typedef for a struct type (product type with named fields).
     pub fn emit_struct_typedef(&self, name: &str, sdef: &Term<'_>) -> Result<String, Diagnostic> {
-        let Term::StructDef(_, fields) = sdef else {
+        let Term::StructDef(_, _fields) = sdef else {
             return Ok(String::new());
         };
         let c_name = CType::Struct(name.to_string()).c_name();
         let mut out = format!("// struct {name}\n");
         out.push_str(&format!("typedef struct {c_name} {{\n"));
-        for (fname, fty) in fields.iter() {
-            let cty = self.constraint_to_ctype(fty)?;
-            out.push_str(&format!("    {} {};\n", cty.c_name(), fname));
+        let info = self.struct_map.get(name).ok_or_else(|| {
+            Diagnostic::new(format!("Cannot emit unknown struct typedef `{name}`"))
+        })?;
+        for field in &info.fields {
+            out.push_str(&format!(
+                "    {} {};\n",
+                field.storage_type.c_name(),
+                field.name
+            ));
         }
         out.push_str(&format!("}} {c_name};\n"));
         Ok(out)
@@ -247,22 +336,7 @@ impl TypeAnalyzer {
         name: &str,
         sdef: &Term<'_>,
     ) -> Result<String, Diagnostic> {
-        let Term::StructDef(_, fields) = sdef else {
-            return Ok(String::new());
-        };
-        let c_name = CType::Struct(name.to_string()).c_name();
-        let mut out = format!("// struct {name} (ptr cycle)\n");
-        out.push_str(&format!("typedef struct {c_name} {{\n"));
-        for (fname, fty) in fields.iter() {
-            let cty = self.constraint_to_ctype(fty)?;
-            if matches!(cty, CType::Enum(_)) {
-                out.push_str(&format!("    {}* {};\n", cty.c_name(), fname));
-            } else {
-                out.push_str(&format!("    {} {};\n", cty.c_name(), fname));
-            }
-        }
-        out.push_str(&format!("}} {c_name};\n"));
-        Ok(out)
+        self.emit_struct_typedef(name, sdef)
     }
 
     /// Emit forward declarations and topological-sorted type definitions.
@@ -320,7 +394,7 @@ impl TypeAnalyzer {
         if !remaining.is_empty() {
             for (name, def, is_struct) in remaining {
                 if is_struct {
-                    out.push_str(&self.emit_struct_typedef_ptr(name, def)?);
+                    out.push_str(&self.emit_struct_typedef(name, def)?);
                 } else {
                     out.push_str(&self.emit_enum_typedef(name, def)?);
                 }
@@ -350,6 +424,58 @@ impl TypeAnalyzer {
     /// Access the struct type map.
     pub fn struct_map(&self) -> &HashMap<String, StructInfo> {
         &self.struct_map
+    }
+
+    pub fn def_return_ctype(
+        &self,
+        params: &[(Name<'_>, Option<&Term<'_>>)],
+        m_ret: Option<&Term<'_>>,
+        body: &Term<'_>,
+    ) -> Result<CType, Diagnostic> {
+        FunSig::from_func(params, m_ret, body, &self.enum_names, &self.struct_names)
+            .map(|sig| sig.ret_type)
+    }
+
+    pub fn clone_required_type_names(&self) -> HashSet<String> {
+        let mut required = HashSet::new();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for (name, info) in &self.struct_map {
+                if required.contains(name) {
+                    continue;
+                }
+                if info.fields.iter().any(|field| {
+                    field.boxed
+                        || Self::named_type_is_clone_required(&field.logical_type, &required)
+                }) {
+                    required.insert(name.clone());
+                    changed = true;
+                }
+            }
+            for (name, info) in &self.enum_map {
+                if required.contains(name) {
+                    continue;
+                }
+                if info.variants.iter().any(|variant| {
+                    variant.fields.iter().any(|field| {
+                        field.boxed
+                            || Self::named_type_is_clone_required(&field.logical_type, &required)
+                    })
+                }) {
+                    required.insert(name.clone());
+                    changed = true;
+                }
+            }
+        }
+        required
+    }
+
+    fn named_type_is_clone_required(ctype: &CType, required: &HashSet<String>) -> bool {
+        match ctype {
+            CType::Enum(name) | CType::Struct(name) => required.contains(name),
+            _ => false,
+        }
     }
 }
 

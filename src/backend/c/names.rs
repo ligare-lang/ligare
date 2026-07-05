@@ -149,7 +149,7 @@ impl NameResolver {
         let mut called = HashSet::new();
         // Seed with names found in output expressions.
         for term in outputs {
-            self.collect_names_in_term(term, &def_names, &mut called);
+            self.collect_matching_names_in_term(term, &def_names, &mut called);
         }
         // Transitive closure: also walk bodies of already-called functions.
         let mut changed = true;
@@ -160,7 +160,7 @@ impl NameResolver {
                 if let TopLevel::TLDef(name, _, _, body, _) = raw_def
                     && called.contains(*name)
                 {
-                    self.collect_names_in_term(body, &def_names, &mut called);
+                    self.collect_matching_names_in_term(body, &def_names, &mut called);
                 }
             }
             if called.len() > prev_len {
@@ -193,55 +193,55 @@ impl NameResolver {
     /// Recursively walk a desugared term looking for global symbols that
     /// match known function definitions.
     /// nodes that match known function definitions.
-    pub fn collect_names_in_term(
+    pub fn collect_matching_names_in_term(
         &self,
         term: &Term<'_>,
-        def_names: &HashSet<&str>,
+        target_names: &HashSet<&str>,
         called: &mut HashSet<String>,
     ) {
         match term {
             Term::Builtin(name) | Term::Global(name) => {
-                if def_names.contains(name) {
+                if target_names.contains(name) {
                     called.insert(name.to_string());
                 }
             }
             Term::App(f, a) => {
-                self.collect_names_in_term(f, def_names, called);
-                self.collect_names_in_term(a, def_names, called);
+                self.collect_matching_names_in_term(f, target_names, called);
+                self.collect_matching_names_in_term(a, target_names, called);
             }
             Term::Implicit(inner) => {
-                self.collect_names_in_term(inner, def_names, called);
+                self.collect_matching_names_in_term(inner, target_names, called);
             }
             Term::Lam(body) => {
-                self.collect_names_in_term(body, def_names, called);
+                self.collect_matching_names_in_term(body, target_names, called);
             }
             Term::Pi(_, a, b) => {
-                self.collect_names_in_term(a, def_names, called);
-                self.collect_names_in_term(b, def_names, called);
+                self.collect_matching_names_in_term(a, target_names, called);
+                self.collect_matching_names_in_term(b, target_names, called);
             }
             Term::Let(_, val, body, mconstr) => {
-                self.collect_names_in_term(val, def_names, called);
-                self.collect_names_in_term(body, def_names, called);
+                self.collect_matching_names_in_term(val, target_names, called);
+                self.collect_matching_names_in_term(body, target_names, called);
                 if let Some(c) = mconstr {
-                    self.collect_names_in_term(c, def_names, called);
+                    self.collect_matching_names_in_term(c, target_names, called);
                 }
             }
             Term::Annot(t, c) => {
-                self.collect_names_in_term(t, def_names, called);
-                self.collect_names_in_term(c, def_names, called);
+                self.collect_matching_names_in_term(t, target_names, called);
+                self.collect_matching_names_in_term(c, target_names, called);
             }
             Term::IfThenElse(c, t, f) => {
-                self.collect_names_in_term(c, def_names, called);
-                self.collect_names_in_term(t, def_names, called);
-                self.collect_names_in_term(f, def_names, called);
+                self.collect_matching_names_in_term(c, target_names, called);
+                self.collect_matching_names_in_term(t, target_names, called);
+                self.collect_matching_names_in_term(f, target_names, called);
             }
             Term::Match(scrut, branches) => {
-                self.collect_names_in_term(scrut, def_names, called);
+                self.collect_matching_names_in_term(scrut, target_names, called);
                 for (_, binds, body) in *branches {
                     for (_, bt) in *binds {
-                        self.collect_names_in_term(bt, def_names, called);
+                        self.collect_matching_names_in_term(bt, target_names, called);
                     }
-                    self.collect_names_in_term(body, def_names, called);
+                    self.collect_matching_names_in_term(body, target_names, called);
                 }
             }
             Term::Named(_)
@@ -252,44 +252,44 @@ impl NameResolver {
                 panic!("parser-level term reached C name collection before desugaring")
             }
             Term::Unsafe(inner) | Term::Pure(inner) => {
-                self.collect_names_in_term(inner, def_names, called)
+                self.collect_matching_names_in_term(inner, target_names, called)
             }
             Term::Quote(inner) | Term::Splice(inner) => {
-                self.collect_names_in_term(inner, def_names, called)
+                self.collect_matching_names_in_term(inner, target_names, called)
             }
             Term::StructCons(_, field_values) => {
                 for v in *field_values {
-                    self.collect_names_in_term(v, def_names, called);
+                    self.collect_matching_names_in_term(v, target_names, called);
                 }
             }
             Term::StructProj(subj, _) => {
-                self.collect_names_in_term(subj, def_names, called);
+                self.collect_matching_names_in_term(subj, target_names, called);
             }
             Term::Variant(_, _, payloads) => {
                 for p in *payloads {
-                    self.collect_names_in_term(p, def_names, called);
+                    self.collect_matching_names_in_term(p, target_names, called);
                 }
             }
             Term::Refine(_, p, pred) => {
-                self.collect_names_in_term(p, def_names, called);
-                self.collect_names_in_term(pred, def_names, called);
+                self.collect_matching_names_in_term(p, target_names, called);
+                self.collect_matching_names_in_term(pred, target_names, called);
             }
             Term::ByProof(subj_opt, tactics) => {
                 if let Some(s) = subj_opt {
-                    self.collect_names_in_term(s, def_names, called);
+                    self.collect_matching_names_in_term(s, target_names, called);
                 }
                 for tac in *tactics {
                     match tac {
                         crate::core::syntax::Tactic::Exact(t)
                         | crate::core::syntax::Tactic::Apply(t) => {
-                            self.collect_names_in_term(t, def_names, called);
+                            self.collect_matching_names_in_term(t, target_names, called);
                         }
                         crate::core::syntax::Tactic::Have(_, t) => {
-                            self.collect_names_in_term(t, def_names, called);
+                            self.collect_matching_names_in_term(t, target_names, called);
                         }
                         crate::core::syntax::Tactic::Custom(_, args) => {
                             for arg in *args {
-                                self.collect_names_in_term(arg, def_names, called);
+                                self.collect_matching_names_in_term(arg, target_names, called);
                             }
                         }
                         _ => {}

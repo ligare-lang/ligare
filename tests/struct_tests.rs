@@ -2,6 +2,7 @@
 
 use bumpalo::Bump;
 use ligare::backend::c::{emit_c, emit_eval_c};
+use ligare::backend::compile::{CompileError, compile_and_run_c};
 use ligare::compiler::Compiler;
 use ligare::core::pool::TermArena;
 
@@ -561,4 +562,53 @@ fn codegen_struct_with_enum_field() {
         c.contains("Option opt;"),
         "struct field should reference enum type:\n{c}"
     );
+}
+
+#[test]
+fn codegen_cyclic_struct_enum_field_is_boxed_and_lazy() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    compiler
+        .collect_file_str(
+            "def Tree : prop := enum\n  | Leaf\n  | Node of (holder : Holder)\ndef Holder : prop := struct\n  tree : Tree\ndef leaf_holder : Holder := Holder.mk Leaf\n",
+        )
+        .unwrap();
+    let c = emit_c(
+        compiler.tops(),
+        compiler.raw_defs(),
+        compiler.fun_sigs(),
+        &compiler.enum_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert!(c.contains("Tree* tree;"), "{c}");
+    assert!(c.contains("Holder leaf_holder(void)"), "{c}");
+    assert!(c.contains("Tree* _ligare_heap"), "{c}");
+}
+
+#[test]
+fn cyclic_struct_enum_top_level_value_compiles_and_runs() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    compiler
+        .collect_file_str(
+            "def Tree : prop := enum\n  | Leaf\n  | Node of (holder : Holder)\ndef Holder : prop := struct\n  tree : Tree\ndef leaf_holder : Holder := Holder.mk Leaf\n#eval match Holder.tree leaf_holder with | Leaf => 0 | Node h => 1\n",
+        )
+        .unwrap();
+    let eval_c = emit_eval_c(
+        compiler.tops(),
+        compiler.raw_defs(),
+        compiler.fun_sigs(),
+        &compiler.enum_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"))
+    .expect("program has #eval output");
+    match compile_and_run_c(&eval_c) {
+        Ok(stdout) => assert_eq!(stdout, "0\n"),
+        Err(CompileError::CompilerNotFound) => {
+            eprintln!("skipping cyclic struct/enum native run: C compiler not found")
+        }
+        Err(err) => panic!("cyclic struct/enum native run failed: {err}\n{eval_c}"),
+    }
 }

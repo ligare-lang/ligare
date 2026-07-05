@@ -280,6 +280,52 @@ fn codegen_recursive_enum_match_compiles_and_runs() {
 }
 
 #[test]
+fn extern_call_clones_recursive_enum_argument() {
+    let (bump, arena) = setup();
+    let mut compiler = Compiler::new(bump, &arena);
+    compiler
+        .collect_file_str(
+            "def Nat : prop := enum\n  | Zero\n  | Succ of (pred : Nat)\n\
+             extern def smash (n : Nat) : c_int\n\
+             def depth (n : Nat) : int := match n with | Zero => 0 | Succ p => 1 + depth p\n\
+             def one : Nat := Succ Zero\n\
+             #eval unsafe { smash one }\n\
+             #eval depth one\n",
+        )
+        .unwrap();
+    let eval_c = emit_eval_c(
+        compiler.tops(),
+        compiler.raw_defs(),
+        compiler.fun_sigs(),
+        &compiler.enum_types,
+        &compiler.struct_types,
+    )
+    .unwrap_or_else(|e| panic!("{e}"))
+    .expect("program has #eval output");
+    assert!(eval_c.contains("ligare_clone_Nat("), "{eval_c}");
+    let c_impl = r#"
+#include <stdlib.h>
+int smash(Nat n) {
+    if (n.tag == 1 && n.data.Succ.pred != NULL) {
+        Nat* pred = n.data.Succ.pred;
+        pred->tag = 1;
+        pred->data.Succ.pred = (Nat*)malloc(sizeof(Nat));
+        pred->data.Succ.pred->tag = 0;
+        pred->data.Succ.pred->data.Zero._empty = 0;
+    }
+    return 0;
+}
+"#;
+    match compile_and_run_c(&format!("{eval_c}\n{c_impl}")) {
+        Ok(stdout) => assert_eq!(stdout, "0\n1\n"),
+        Err(CompileError::CompilerNotFound) => {
+            eprintln!("skipping extern recursive enum clone test: C compiler not found")
+        }
+        Err(err) => panic!("extern recursive enum clone test failed: {err}\n{eval_c}"),
+    }
+}
+
+#[test]
 fn enum_with_mixed_payload_types() {
     let (bump, arena) = setup();
     let mut compiler = Compiler::new(bump, &arena);

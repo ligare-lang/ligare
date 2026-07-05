@@ -45,8 +45,13 @@ impl MatchEmitter {
         out.push_str(&format!("    {ret_name} {r_var};\n"));
         out.push_str(&format!("    switch ({s_var}.tag) {{\n"));
         for case in &plan.cases {
-            let bind_decls =
-                self.build_bind_decls(&scrut_ty, case.variant_idx, &s_var, &case.binds, enum_map);
+            let bind_decls = self.build_bind_decls(
+                &plan.scrut_type,
+                case.variant_idx,
+                &s_var,
+                &case.binds,
+                enum_map,
+            );
             out.push_str(&format!(
                 "    case {}: {{ {bind_decls}{r_var} = {}; }} break;\n",
                 case.variant_idx,
@@ -77,7 +82,7 @@ impl MatchEmitter {
     /// from the enum info. Skips wildcard binds (named "_" or empty).
     fn build_bind_decls(
         &self,
-        scrut_ty: &str,
+        scrut_ty: &CType,
         case_idx: usize,
         s_var: &str,
         binds: &[MatchBind],
@@ -86,7 +91,10 @@ impl MatchEmitter {
         if binds.is_empty() {
             return String::new();
         }
-        if let Some(info) = enum_map.get(scrut_ty)
+        let CType::Enum(enum_name) = scrut_ty else {
+            return String::new();
+        };
+        if let Some(info) = enum_map.get(enum_name)
             && let Some(vi) = info.variants.get(case_idx)
         {
             return binds
@@ -97,15 +105,15 @@ impl MatchEmitter {
                     let field_name = vi
                         .fields
                         .get(j)
-                        .map(|(fnm, _)| fnm.as_str())
+                        .map(|field| field.name.as_str())
                         .unwrap_or(bind.name.as_str());
                     let access = format!("{s_var}.data.{}.{field_name}", vi.name);
-                    let value = match vi.fields.get(j).map(|(_, cty)| cty) {
-                        Some(CType::Ptr(inner)) if inner.as_ref() == &bind.ctype => {
-                            format!("*({access})")
-                        }
-                        _ => access,
-                    };
+                    let value = vi
+                        .fields
+                        .get(j)
+                        .filter(|field| field.boxed)
+                        .map(|_| format!("*({access})"))
+                        .unwrap_or(access);
                     format!("{} {} = {value}; ", bind.ctype.c_name(), bind.name,)
                 })
                 .collect::<Vec<_>>()

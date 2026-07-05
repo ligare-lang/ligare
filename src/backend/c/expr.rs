@@ -73,6 +73,12 @@ pub struct ExpressionEmitter<'a> {
     match_expr_counter: Cell<u32>,
     /// Global allocator selected by the C emitter.
     global_allocator: RefCell<Option<GlobalAllocator>>,
+    /// External C function names.
+    extern_names: RefCell<HashSet<String>>,
+    /// Named struct/enum types that require deep-clone helpers at unsafe boundaries.
+    clone_type_names: RefCell<HashSet<String>>,
+    /// Zero-arg top-level defs emitted as runtime getter functions.
+    zero_arg_getters: RefCell<HashMap<String, CType>>,
     /// Counter for statement-expression temporaries used by allocator expansions.
     allocation_counter: Cell<u32>,
 }
@@ -85,12 +91,27 @@ impl<'a> ExpressionEmitter<'a> {
             names: NameResolver::new(),
             match_expr_counter: Cell::new(1000),
             global_allocator: RefCell::new(None),
+            extern_names: RefCell::new(HashSet::new()),
+            clone_type_names: RefCell::new(HashSet::new()),
+            zero_arg_getters: RefCell::new(HashMap::new()),
             allocation_counter: Cell::new(0),
         }
     }
 
     pub(crate) fn set_global_allocator(&self, allocator: Option<GlobalAllocator>) {
         *self.global_allocator.borrow_mut() = allocator;
+    }
+
+    pub(crate) fn set_zero_arg_getters(&self, getters: HashMap<String, CType>) {
+        *self.zero_arg_getters.borrow_mut() = getters;
+    }
+
+    pub(crate) fn set_extern_names(&self, extern_names: HashSet<String>) {
+        *self.extern_names.borrow_mut() = extern_names;
+    }
+
+    pub(crate) fn set_clone_type_names(&self, clone_type_names: HashSet<String>) {
+        *self.clone_type_names.borrow_mut() = clone_type_names;
     }
 
     // ── Main entry ──
@@ -160,6 +181,12 @@ impl<'a> ExpressionEmitter<'a> {
             Term::Builtin(name) | Term::Global(name) => {
                 if is_builtin_name(name, BUILTIN_UNIT) {
                     return Ok(CValue::code("0", CType::Int64));
+                }
+                if let Some(ret_ty) = self.zero_arg_getters.borrow().get(*name).cloned() {
+                    return Ok(CValue::code(
+                        format!("{}()", self.names.escape(name)),
+                        ret_ty,
+                    ));
                 }
                 let ty = self
                     .fun_sigs
@@ -255,9 +282,19 @@ impl<'a> ExpressionEmitter<'a> {
                 field_values.len()
             )));
         }
-        let field_codes: Vec<CCode> = field_values
+        let field_codes: Vec<CCode> = info
+            .fields
             .iter()
-            .map(|v| self.emit_expr_code(v, ctx, enum_map, struct_map))
+            .zip(field_values.iter())
+            .map(|(field, value)| {
+                let value = self.emit_expr(value, ctx, enum_map, struct_map)?;
+                let code = self.value_code(value, enum_map)?;
+                if field.boxed {
+                    self.emit_heap_copy(&field.logical_type, code.as_str())
+                } else {
+                    Ok(code)
+                }
+            })
             .collect::<Result<Vec<_>, Diagnostic>>()?;
         let field_codes = field_codes
             .iter()
@@ -284,12 +321,15 @@ impl<'a> ExpressionEmitter<'a> {
         let sty = subject.ctype;
         if let CType::Struct(ref sname) = sty
             && let Some(info) = struct_map.get(sname)
-            && let Some((fname, ftype)) = info.fields.get(idx)
+            && let Some(field) = info.fields.get(idx)
         {
-            return Ok(CValue::code(
-                format!("({}).{}", scode.as_str(), fname),
-                ftype.clone(),
-            ));
+            let access = format!("({}).{}", scode.as_str(), field.name);
+            let code = if field.boxed {
+                format!("*({access})")
+            } else {
+                access
+            };
+            return Ok(CValue::code(code, field.logical_type.clone()));
         }
         Err(Diagnostic::new(format!(
             "Cannot determine C type for struct projection field {idx} on {:?}",
@@ -355,17 +395,16 @@ impl<'a> ExpressionEmitter<'a> {
             .fields
             .iter()
             .zip(payloads.iter())
-            .map(|((fnm, fty), p)| {
+            .map(|(field, p)| {
                 let value = self.emit_expr(p, ctx, enum_map, struct_map)?;
                 let code = self.value_code(value.clone(), enum_map)?;
-                let recursive_payload_ty = Self::recursive_payload_storage_type(fty, type_name);
-                let code = if let Some(payload_ty) = recursive_payload_ty.as_ref() {
-                    self.emit_heap_copy(payload_ty, code.as_str())?
+                let code = if field.boxed {
+                    self.emit_heap_copy(&field.logical_type, code.as_str())?
                 } else {
                     code
                 };
                 Ok(FieldInit {
-                    field: fnm.clone(),
+                    field: field.name.clone(),
                     value: code,
                 })
             })
@@ -459,25 +498,11 @@ impl<'a> ExpressionEmitter<'a> {
         if let Some(uname) = scrut_enum
             && let Some(info) = enum_map.get(uname)
             && let Some(variant) = info.variants.get(variant_idx)
-            && let Some((_, cty)) = variant.fields.get(bind_idx)
+            && let Some(field) = variant.fields.get(bind_idx)
         {
-            if let CType::Ptr(inner) = cty
-                && matches!(inner.as_ref(), CType::Enum(inner_name) if inner_name == uname)
-            {
-                return Ok((**inner).clone());
-            }
-            return Ok(cty.clone());
+            return Ok(field.logical_type.clone());
         }
         crate::backend::ir::constraint_to_ctype(fallback_ty, type_names.enums, type_names.structs)
-    }
-
-    fn recursive_payload_storage_type(fty: &CType, type_name: &str) -> Option<CType> {
-        if let CType::Ptr(inner) = fty
-            && matches!(inner.as_ref(), CType::Enum(inner_name) if inner_name == type_name)
-        {
-            return Some((**inner).clone());
-        }
-        None
     }
 
     // ── Function call emission ──
@@ -517,42 +542,52 @@ impl<'a> ExpressionEmitter<'a> {
             return self.emit_ptr_cast(target, pointer, ctx, enum_map, struct_map);
         }
         let call = self.collect_call_args(term, ctx, enum_map, struct_map)?;
-        let param_count = self
+        let (param_types, ret_ty) = self
             .fun_sigs
             .iter()
             .find(|(n, _)| Some(*n) == call.raw_function.as_deref())
-            .map(|(_, sig)| sig.param_types.len())
+            .map(|(_, sig)| (sig.param_types.clone(), sig.ret_type.clone()))
             .ok_or_else(|| {
                 Diagnostic::new(format!(
                     "Cannot emit call to `{}`; missing function signature",
                     call.function.as_str()
                 ))
             })?;
-        let args = if call.args.len() > param_count {
-            call.args[call.args.len() - param_count..].to_vec()
+        let args = if call.args.len() > param_types.len() {
+            call.args[call.args.len() - param_types.len()..].to_vec()
         } else {
             call.args
         };
-        let ret_ty = self
-            .fun_sigs
-            .iter()
-            .find(|(n, _)| Some(*n) == call.raw_function.as_deref())
-            .map(|(_, sig)| sig.ret_type.clone())
-            .ok_or_else(|| {
-                Diagnostic::new(format!(
-                    "Cannot determine C return type for `{}`; missing function signature",
-                    call.function.as_str()
-                ))
-            })?;
+        let is_extern = call
+            .raw_function
+            .as_deref()
+            .is_some_and(|name| self.extern_names.borrow().contains(name));
+        let args = if is_extern {
+            args.into_iter()
+                .zip(param_types.iter())
+                .map(|(arg, param_ty)| {
+                    if self.ctype_requires_clone(param_ty) {
+                        Ok(CCode::new(self.clone_value_expr(param_ty, arg.as_str())?))
+                    } else {
+                        Ok(arg)
+                    }
+                })
+                .collect::<Result<Vec<_>, Diagnostic>>()?
+        } else {
+            args
+        };
         let args = args
             .iter()
             .map(CCode::as_str)
             .collect::<Vec<_>>()
             .join(", ");
-        Ok(CValue::code(
-            format!("{}({})", call.function.as_str(), args),
-            ret_ty,
-        ))
+        let call_code = format!("{}({})", call.function.as_str(), args);
+        let call_code = if is_extern && self.ctype_requires_clone(&ret_ty) {
+            self.clone_value_expr(&ret_ty, &call_code)?
+        } else {
+            call_code
+        };
+        Ok(CValue::code(call_code, ret_ty))
     }
 
     fn primop_binop_parts<'term>(
@@ -697,5 +732,27 @@ impl<'a> ExpressionEmitter<'a> {
             "({{ {ty}* {ptr} = ({ty}*){}(sizeof({ty})); *{ptr} = ({value}); {ptr}; }})",
             allocator.allocate
         )))
+    }
+
+    fn ctype_requires_clone(&self, ctype: &CType) -> bool {
+        match ctype {
+            CType::Enum(name) | CType::Struct(name) => {
+                self.clone_type_names.borrow().contains(name)
+            }
+            _ => false,
+        }
+    }
+
+    fn clone_value_expr(&self, ctype: &CType, value: &str) -> Result<String, Diagnostic> {
+        match ctype {
+            CType::Enum(_) | CType::Struct(_) if self.ctype_requires_clone(ctype) => {
+                Ok(format!("{}({value})", Self::clone_helper_name(ctype)))
+            }
+            _ => Ok(value.to_string()),
+        }
+    }
+
+    pub(crate) fn clone_helper_name(ctype: &CType) -> String {
+        format!("ligare_clone_{}", ctype.c_name())
     }
 }

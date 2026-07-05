@@ -9,13 +9,14 @@ use crate::backend::c::context::EmitCtx;
 use crate::backend::c::expr::ExpressionEmitter;
 use crate::backend::c::match_emit::MatchEmitter;
 use crate::backend::c::names::NameResolver;
-use crate::backend::c::types::{TypeAnalyzer, TypeMapper};
+use crate::backend::c::types::{EnumInfo, StructInfo, TypeAnalyzer, TypeMapper};
 use crate::backend::c::value::CExpr;
 use crate::backend::ir::{CType, FunSig};
 use crate::config::GLOBAL_ALLOCATOR_NAME_PREFIX;
 use crate::core::syntax::{Name, PrimOp, Term};
 use crate::diagnostic::Diagnostic;
 use crate::front::parser::TopLevel;
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +146,9 @@ impl<'a> CEmitter<'a> {
         if params.is_empty() {
             let arity = self.name_resolver.count_lams(body);
             if arity == 0 {
+                if self.should_emit_zero_arg_getter(body) {
+                    return self.emit_zero_arg_getter(name, body);
+                }
                 let mut ctx = EmitCtx::new();
                 let value = self.expr_emitter.emit_expr(
                     body,
@@ -189,6 +193,38 @@ impl<'a> CEmitter<'a> {
             let peeled = self.name_resolver.peel_lams(body, params.len());
             self.emit_fun(name, &pns, &param_types, peeled)
         }
+    }
+
+    fn emit_zero_arg_getter(&self, name: &str, body: &Term<'_>) -> Result<String, Diagnostic> {
+        let mut ctx = EmitCtx::new();
+        let value = self.expr_emitter.emit_expr(
+            body,
+            &mut ctx,
+            self.type_analyzer.enum_map(),
+            self.type_analyzer.struct_map(),
+        )?;
+        let escaped = self.name_resolver.escape(name);
+        let cache_flag = format!("_ligare_init_{escaped}");
+        let cache_value = format!("_ligare_value_{escaped}");
+        let init_stmt = match value.expr {
+            CExpr::Match(plan) => {
+                let block = self
+                    .match_emitter
+                    .emit(&plan, 0, self.type_analyzer.enum_map());
+                format!(
+                    "{}        {cache_value} = {};\n",
+                    Self::indent_block(&block, "    "),
+                    self.name_resolver.result_temp(0)
+                )
+            }
+            CExpr::Code(code) => format!("        {cache_value} = {};\n", code.as_str()),
+        };
+        Ok(format!(
+            "static int {cache_flag};\nstatic {} {cache_value};\n{} {}(void) {{\n    if (!{cache_flag}) {{\n{init_stmt}        {cache_flag} = 1;\n    }}\n    return {cache_value};\n}}\n",
+            value.ctype.c_name(),
+            value.ctype.c_name(),
+            escaped,
+        ))
     }
 
     /// Emit a C function with named parameters and a Term body.
@@ -379,9 +415,12 @@ impl<'a> CEmitter<'a> {
             Term::Unsafe(inner) | Term::Pure(inner) | Term::Lam(inner) => {
                 self.term_requires_allocation(inner)
             }
-            Term::StructCons(_, values) => values
-                .iter()
-                .any(|value| self.term_requires_allocation(value)),
+            Term::StructCons(name, values) => {
+                self.struct_requires_heap_field(name)
+                    || values
+                        .iter()
+                        .any(|value| self.term_requires_allocation(value))
+            }
             Term::Variant(uname, idx, values) => {
                 self.variant_requires_heap_payload(uname, *idx)
                     || values
@@ -405,11 +444,14 @@ impl<'a> CEmitter<'a> {
             .enum_map()
             .get(uname)
             .and_then(|info| info.variants.get(idx))
-            .is_some_and(|variant| {
-                variant.fields.iter().any(|(_, cty)| {
-                    matches!(cty, CType::Ptr(inner) if matches!(inner.as_ref(), CType::Enum(inner_name) if inner_name == uname))
-                })
-            })
+            .is_some_and(|variant| variant.fields.iter().any(|field| field.boxed))
+    }
+
+    fn struct_requires_heap_field(&self, sname: &str) -> bool {
+        self.type_analyzer
+            .struct_map()
+            .get(sname)
+            .is_some_and(|info| info.fields.iter().any(|field| field.boxed))
     }
 
     fn is_string_concat_app(&self, term: &Term<'_>) -> bool {
@@ -472,10 +514,25 @@ impl<'a> CEmitter<'a> {
         } else {
             self.name_resolver.collect_called_names(outputs, raw_defs)
         };
-        let allocation_required =
-            self.codegen_roots_require_allocation(tops, raw_defs, outputs, &called_names);
+        let extern_names = self.collect_extern_names(raw_defs);
+        let called_extern_names =
+            self.collect_called_extern_names(tops, outputs, raw_defs, &called_names, &extern_names);
+        let clone_type_names = self.type_analyzer.clone_required_type_names();
+        let allocation_required = self.codegen_roots_require_allocation(
+            tops,
+            raw_defs,
+            outputs,
+            &called_names,
+            &called_extern_names,
+            &clone_type_names,
+        );
         let allocator = self.resolve_global_allocator(raw_defs, allocation_required)?;
         self.expr_emitter.set_global_allocator(allocator.clone());
+        self.expr_emitter.set_extern_names(extern_names.clone());
+        self.expr_emitter
+            .set_clone_type_names(clone_type_names.clone());
+        self.expr_emitter
+            .set_zero_arg_getters(self.collect_zero_arg_getters(raw_defs)?);
         if let Some(allocator) = &allocator
             && !allocator.is_default
         {
@@ -525,6 +582,15 @@ impl<'a> CEmitter<'a> {
             .iter()
             .any(|(name, _)| self.name_resolver.is_extern_name(name, raw_defs))
         {
+            out.push('\n');
+        }
+        if self.extern_clone_helpers_required(&called_extern_names, &clone_type_names) {
+            let allocator = allocator.as_ref().ok_or_else(|| {
+                Diagnostic::new(
+                    "deep-copying extern struct/enum values requires a global allocator",
+                )
+            })?;
+            self.emit_clone_helpers(&mut out, &clone_type_names, allocator);
             out.push('\n');
         }
 
@@ -614,6 +680,8 @@ impl<'a> CEmitter<'a> {
         raw_defs: &[TopLevel<'_>],
         outputs: &[&Term<'_>],
         called_names: &HashSet<String>,
+        called_extern_names: &HashSet<String>,
+        clone_type_names: &HashSet<String>,
     ) -> bool {
         outputs
             .iter()
@@ -639,6 +707,7 @@ impl<'a> CEmitter<'a> {
                         if called_names.contains(*name) && self.term_requires_allocation(body)
                 )
             })
+            || self.extern_clone_helpers_required(called_extern_names, clone_type_names)
     }
 
     fn runtime_main_body<'t>(&self, tops: &'t [TopLevel<'_>]) -> Option<&'t Term<'t>> {
@@ -653,6 +722,291 @@ impl<'a> CEmitter<'a> {
                 None
             }
         })
+    }
+
+    fn collect_zero_arg_getters(
+        &self,
+        raw_defs: &[TopLevel<'_>],
+    ) -> Result<HashMap<String, CType>, Diagnostic> {
+        let mut getters = HashMap::new();
+        for top in raw_defs {
+            let TopLevel::TLDef(name, params, m_ret, body, _) = top else {
+                continue;
+            };
+            if *name == "main"
+                || !params.is_empty()
+                || self.name_resolver.count_lams(body) != 0
+                || !self.should_emit_zero_arg_getter(body)
+            {
+                continue;
+            }
+            getters.insert(
+                (*name).to_string(),
+                self.type_analyzer.def_return_ctype(params, *m_ret, body)?,
+            );
+        }
+        Ok(getters)
+    }
+
+    fn should_emit_zero_arg_getter(&self, body: &Term<'_>) -> bool {
+        !self.term_is_static_initializer(body)
+    }
+
+    fn term_is_static_initializer(&self, term: &Term<'_>) -> bool {
+        match self.peel_annotations(term) {
+            Term::LitInt(_) | Term::LitBool(_) | Term::LitStr(_) => true,
+            Term::StructCons(name, values) => {
+                !self.struct_requires_heap_field(name)
+                    && values
+                        .iter()
+                        .all(|value| self.term_is_static_initializer(value))
+            }
+            Term::Variant(uname, idx, payloads) => {
+                !self.variant_requires_heap_payload(uname, *idx)
+                    && payloads
+                        .iter()
+                        .all(|value| self.term_is_static_initializer(value))
+            }
+            _ => false,
+        }
+    }
+
+    fn indent_block(block: &str, prefix: &str) -> String {
+        block
+            .lines()
+            .map(|line| {
+                let mut out = String::with_capacity(prefix.len() + line.len() + 1);
+                out.push_str(prefix);
+                out.push_str(line);
+                out.push('\n');
+                out
+            })
+            .collect()
+    }
+
+    fn collect_extern_names(&self, raw_defs: &[TopLevel<'_>]) -> HashSet<String> {
+        raw_defs
+            .iter()
+            .filter_map(|top| {
+                if let TopLevel::TLExternDef(name, ..) = top {
+                    Some((*name).to_string())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn collect_called_extern_names(
+        &self,
+        tops: &[TopLevel<'_>],
+        outputs: &[&Term<'_>],
+        raw_defs: &[TopLevel<'_>],
+        called_names: &HashSet<String>,
+        extern_names: &HashSet<String>,
+    ) -> HashSet<String> {
+        let extern_name_refs = extern_names
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let mut called = HashSet::new();
+        if let Some(main_body) = self.runtime_main_body(tops) {
+            self.name_resolver.collect_matching_names_in_term(
+                main_body,
+                &extern_name_refs,
+                &mut called,
+            );
+        }
+        for term in outputs {
+            self.name_resolver
+                .collect_matching_names_in_term(term, &extern_name_refs, &mut called);
+        }
+        for raw_def in raw_defs {
+            if let TopLevel::TLDef(name, _, _, body, _) = raw_def
+                && called_names.contains(*name)
+            {
+                self.name_resolver.collect_matching_names_in_term(
+                    body,
+                    &extern_name_refs,
+                    &mut called,
+                );
+            }
+        }
+        called
+    }
+
+    fn extern_clone_helpers_required(
+        &self,
+        called_extern_names: &HashSet<String>,
+        clone_type_names: &HashSet<String>,
+    ) -> bool {
+        self.fun_sigs.iter().any(|(name, sig)| {
+            called_extern_names.contains(*name)
+                && (sig
+                    .param_types
+                    .iter()
+                    .any(|ty| self.ctype_requires_clone(ty, clone_type_names))
+                    || self.ctype_requires_clone(&sig.ret_type, clone_type_names))
+        })
+    }
+
+    fn ctype_requires_clone(&self, ctype: &CType, clone_type_names: &HashSet<String>) -> bool {
+        match ctype {
+            CType::Enum(name) | CType::Struct(name) => clone_type_names.contains(name),
+            _ => false,
+        }
+    }
+
+    fn emit_clone_helpers(
+        &self,
+        out: &mut String,
+        clone_type_names: &HashSet<String>,
+        allocator: &GlobalAllocator,
+    ) {
+        let mut names = clone_type_names.iter().cloned().collect::<Vec<_>>();
+        names.sort();
+        for name in &names {
+            if self.type_analyzer.struct_map().contains_key(name) {
+                let ctype = CType::Struct(name.clone());
+                out.push_str(&format!(
+                    "static {} {}({} value);\n",
+                    ctype.c_name(),
+                    ExpressionEmitter::clone_helper_name(&ctype),
+                    ctype.c_name()
+                ));
+            } else if self.type_analyzer.enum_map().contains_key(name) {
+                let ctype = CType::Enum(name.clone());
+                out.push_str(&format!(
+                    "static {} {}({} value);\n",
+                    ctype.c_name(),
+                    ExpressionEmitter::clone_helper_name(&ctype),
+                    ctype.c_name()
+                ));
+            }
+        }
+        if !names.is_empty() {
+            out.push('\n');
+        }
+        for name in &names {
+            if let Some(info) = self.type_analyzer.struct_map().get(name) {
+                out.push_str(&self.emit_struct_clone_helper(
+                    name,
+                    info,
+                    clone_type_names,
+                    allocator,
+                ));
+            } else if let Some(info) = self.type_analyzer.enum_map().get(name) {
+                out.push_str(&self.emit_enum_clone_helper(name, info, clone_type_names, allocator));
+            }
+            out.push('\n');
+        }
+    }
+
+    fn emit_struct_clone_helper(
+        &self,
+        name: &str,
+        info: &StructInfo,
+        clone_type_names: &HashSet<String>,
+        allocator: &GlobalAllocator,
+    ) -> String {
+        let ctype = CType::Struct(name.to_string());
+        let ty = ctype.c_name();
+        let helper = ExpressionEmitter::clone_helper_name(&ctype);
+        let mut out = format!("static {ty} {helper}({ty} value) {{\n    {ty} out = value;\n");
+        for (field_idx, field) in info.fields.iter().enumerate() {
+            let access = format!("value.{}", field.name);
+            let value_expr = self.clone_field_expr(
+                &field.logical_type,
+                field.boxed,
+                &access,
+                clone_type_names,
+                allocator,
+                &format!("{ty}_{field_idx}"),
+            );
+            if value_expr != access {
+                out.push_str(&format!("    out.{} = {};\n", field.name, value_expr));
+            }
+        }
+        out.push_str("    return out;\n}\n");
+        out
+    }
+
+    fn emit_enum_clone_helper(
+        &self,
+        name: &str,
+        info: &EnumInfo,
+        clone_type_names: &HashSet<String>,
+        allocator: &GlobalAllocator,
+    ) -> String {
+        let ctype = CType::Enum(name.to_string());
+        let ty = ctype.c_name();
+        let helper = ExpressionEmitter::clone_helper_name(&ctype);
+        let mut out = format!("static {ty} {helper}({ty} value) {{\n    switch (value.tag) {{\n");
+        for (variant_idx, variant) in info.variants.iter().enumerate() {
+            if variant.fields.is_empty() {
+                out.push_str(&format!("    case {variant_idx}: return value;\n"));
+                continue;
+            }
+            let field_inits = variant
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(field_idx, field)| {
+                    let access = format!("value.data.{}.{}", variant.name, field.name);
+                    let value_expr = self.clone_field_expr(
+                        &field.logical_type,
+                        field.boxed,
+                        &access,
+                        clone_type_names,
+                        allocator,
+                        &format!("{ty}_{variant_idx}_{field_idx}"),
+                    );
+                    format!(".{} = {}", field.name, value_expr)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!(
+                "    case {variant_idx}: return (({ty}){{ .tag = {variant_idx}, .data = {{ .{} = {{ {} }} }} }});\n",
+                variant.name, field_inits
+            ));
+        }
+        out.push_str("    default: return value;\n    }\n}\n");
+        out
+    }
+
+    fn clone_field_expr(
+        &self,
+        logical_type: &CType,
+        boxed: bool,
+        access: &str,
+        clone_type_names: &HashSet<String>,
+        allocator: &GlobalAllocator,
+        suffix: &str,
+    ) -> String {
+        if boxed {
+            let pointee_ty = logical_type.c_name();
+            let helper_value =
+                self.clone_value_expr(logical_type, &format!("*({access})"), clone_type_names);
+            let ptr_name = format!("_ligare_clone_box_{suffix}");
+            return format!(
+                "({{ {pointee_ty}* {ptr_name} = NULL; if ({access} != NULL) {{ {ptr_name} = ({pointee_ty}*){}(sizeof({pointee_ty})); *{ptr_name} = {}; }} {ptr_name}; }})",
+                allocator.allocate, helper_value
+            );
+        }
+        self.clone_value_expr(logical_type, access, clone_type_names)
+    }
+
+    fn clone_value_expr(
+        &self,
+        ctype: &CType,
+        access: &str,
+        clone_type_names: &HashSet<String>,
+    ) -> String {
+        if self.ctype_requires_clone(ctype, clone_type_names) {
+            format!("{}({access})", ExpressionEmitter::clone_helper_name(ctype))
+        } else {
+            access.to_string()
+        }
     }
 }
 
