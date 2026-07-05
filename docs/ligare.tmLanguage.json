@@ -1,0 +1,698 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Ligare",
+  "scopeName": "source.ligare",
+  "fileTypes": [
+    "lig"
+  ],
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#attributes"
+    },
+    {
+      "include": "#topLevelDeclarations"
+    },
+    {
+      "include": "#structBody"
+    },
+    {
+      "include": "#enumBody"
+    },
+    {
+      "include": "#lambdas"
+    },
+    {
+      "include": "#bindings"
+    },
+    {
+      "include": "#parameterGroups"
+    },
+    {
+      "include": "#matchBranches"
+    },
+    {
+      "include": "#imports"
+    },
+    {
+      "include": "#paths"
+    },
+    {
+      "include": "#fields"
+    },
+    {
+      "include": "#builtins"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#punctuation"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-dash.ligare",
+          "match": "--.*$"
+        },
+        {
+          "name": "comment.block.documentation.ligare",
+          "begin": "\\{-!",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.begin.ligare"
+            }
+          },
+          "end": "-\\}",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.end.ligare"
+            }
+          }
+        },
+        {
+          "name": "comment.block.ligare",
+          "begin": "\\{-",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.begin.ligare"
+            }
+          },
+          "end": "-\\}",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.end.ligare"
+            }
+          }
+        },
+        {
+          "include": "#nestableBlockComment"
+        }
+      ]
+    },
+    "nestableBlockComment": {
+      "name": "comment.block.nestable.ligare",
+      "begin": "/-",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.ligare"
+        }
+      },
+      "end": "-/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.ligare"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#nestableBlockComment"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.ligare",
+      "begin": "\"",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.begin.ligare"
+        }
+      },
+      "end": "\"",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.end.ligare"
+        }
+      },
+      "patterns": [
+        {
+          "name": "constant.character.escape.ligare",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "attributes": {
+      "patterns": [
+        {
+          "name": "keyword.control.directive.ligare",
+          "match": "\\B#(?:check|eval)\\b"
+        },
+        {
+          "name": "meta.attribute.ligare",
+          "begin": "#\\[",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.attribute.begin.ligare"
+            }
+          },
+          "end": "\\]",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.attribute.end.ligare"
+            }
+          },
+          "patterns": [
+            {
+              "name": "support.attribute.ligare",
+              "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s*(?:::|\\(|\\]))"
+            },
+            {
+              "name": "punctuation.separator.namespace.ligare",
+              "match": "::"
+            },
+            {
+              "include": "#strings"
+            },
+            {
+              "include": "#numbers"
+            },
+            {
+              "include": "#builtins"
+            },
+            {
+              "include": "#operators"
+            },
+            {
+              "include": "#punctuation"
+            }
+          ]
+        }
+      ]
+    },
+    "topLevelDeclarations": {
+      "patterns": [
+        {
+          "match": "^(\\s*)(pub)\\b",
+          "captures": {
+            "2": {
+              "name": "storage.modifier.visibility.ligare"
+            }
+          }
+        },
+        {
+          "match": "^(\\s*)(extern)(?=\\s+def\\b)",
+          "captures": {
+            "2": {
+              "name": "storage.modifier.extern.ligare"
+            }
+          }
+        },
+        {
+          "match": "^(\\s*)(def)\\s+([A-Z][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "2": {
+              "name": "keyword.declaration.definition.ligare"
+            },
+            "3": {
+              "name": "entity.name.type.ligare"
+            }
+          }
+        },
+        {
+          "match": "^(\\s*)(def)\\s+([a-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "2": {
+              "name": "keyword.declaration.definition.ligare"
+            },
+            "3": {
+              "name": "entity.name.function.ligare"
+            }
+          }
+        },
+        {
+          "match": "^(\\s*)(theorem)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "2": {
+              "name": "keyword.declaration.theorem.ligare"
+            },
+            "3": {
+              "name": "entity.name.constant.ligare"
+            }
+          }
+        },
+        {
+          "match": "^(\\s*)(instance)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "2": {
+              "name": "keyword.declaration.instance.ligare"
+            },
+            "3": {
+              "name": "entity.name.instance.ligare"
+            }
+          }
+        },
+        {
+          "match": "\\b(func)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.function-expression.ligare"
+            },
+            "2": {
+              "name": "entity.name.function.ligare"
+            }
+          }
+        },
+        {
+          "match": "^(\\s*)(mod|namespace)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "2": {
+              "name": "keyword.declaration.namespace.ligare"
+            },
+            "3": {
+              "name": "entity.name.namespace.ligare"
+            }
+          }
+        },
+        {
+          "match": "^(\\s*)(use)\\b",
+          "captures": {
+            "2": {
+              "name": "keyword.control.import.ligare"
+            }
+          }
+        },
+        {
+          "match": "^(\\s*)(variable)\\b",
+          "captures": {
+            "2": {
+              "name": "keyword.declaration.variable.ligare"
+            }
+          }
+        }
+      ]
+    },
+    "structBody": {
+      "name": "meta.definition.struct.ligare",
+      "begin": "\\bstruct\\b",
+      "beginCaptures": {
+        "0": {
+          "name": "keyword.declaration.struct.ligare"
+        }
+      },
+      "end": "(?=^\\s*(?:#\\[|pub\\b|def\\b|extern\\b|instance\\b|variable\\b|use\\b|mod\\b|namespace\\b|theorem\\b|#check\\b|#eval\\b)|\\z)",
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#strings"
+        },
+        {
+          "match": "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*:)",
+          "captures": {
+            "2": {
+              "name": "variable.other.member.definition.ligare"
+            }
+          }
+        },
+        {
+          "include": "#parameterGroups"
+        },
+        {
+          "include": "#paths"
+        },
+        {
+          "include": "#builtins"
+        },
+        {
+          "include": "#keywords"
+        },
+        {
+          "include": "#operators"
+        },
+        {
+          "include": "#punctuation"
+        }
+      ]
+    },
+    "enumBody": {
+      "name": "meta.definition.enum.ligare",
+      "begin": "\\benum\\b",
+      "beginCaptures": {
+        "0": {
+          "name": "keyword.declaration.enum.ligare"
+        }
+      },
+      "end": "(?=^\\s*(?:#\\[|pub\\b|def\\b|extern\\b|instance\\b|variable\\b|use\\b|mod\\b|namespace\\b|theorem\\b|#check\\b|#eval\\b)|\\z)",
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#strings"
+        },
+        {
+          "match": "^(\\s*)(\\|)(\\s*)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*(?:$|of\\b))",
+          "captures": {
+            "2": {
+              "name": "keyword.operator.pattern.ligare"
+            },
+            "4": {
+              "name": "entity.name.constructor.ligare"
+            }
+          }
+        },
+        {
+          "include": "#parameterGroups"
+        },
+        {
+          "include": "#paths"
+        },
+        {
+          "include": "#builtins"
+        },
+        {
+          "include": "#keywords"
+        },
+        {
+          "include": "#operators"
+        },
+        {
+          "include": "#punctuation"
+        }
+      ]
+    },
+    "lambdas": {
+      "patterns": [
+        {
+          "name": "meta.lambda.ligare",
+          "begin": "(\\\\|λ)",
+          "beginCaptures": {
+            "1": {
+              "name": "storage.type.lambda.ligare"
+            }
+          },
+          "end": "(\\.)",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.separator.lambda.ligare"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#parameterGroups"
+            },
+            {
+              "name": "variable.parameter.ligare",
+              "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+            }
+          ]
+        },
+        {
+          "name": "meta.lambda.fun.ligare",
+          "begin": "\\bfun\\b",
+          "beginCaptures": {
+            "0": {
+              "name": "keyword.declaration.lambda.ligare"
+            }
+          },
+          "end": "(=>)",
+          "endCaptures": {
+            "1": {
+              "name": "keyword.operator.arrow.ligare"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#parameterGroups"
+            },
+            {
+              "name": "variable.parameter.ligare",
+              "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+            }
+          ]
+        }
+      ]
+    },
+    "bindings": {
+      "patterns": [
+        {
+          "match": "\\b(let)\\s+([A-Z][A-Za-z0-9_]*)\\b(?=\\s*\\{)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.let.ligare"
+            },
+            "2": {
+              "name": "entity.name.type.ligare"
+            }
+          }
+        },
+        {
+          "match": "\\b(let)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b(?!\\s*\\{)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.let.ligare"
+            },
+            "2": {
+              "name": "variable.other.definition.ligare"
+            }
+          }
+        },
+        {
+          "match": "\\b(have)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b(?=\\s*:=)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.have.ligare"
+            },
+            "2": {
+              "name": "variable.other.definition.ligare"
+            }
+          }
+        },
+        {
+          "match": "\\b(intro)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.intro.ligare"
+            },
+            "2": {
+              "name": "variable.parameter.ligare"
+            }
+          }
+        },
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\b(\\s*)(<-)(?![=])",
+          "captures": {
+            "1": {
+              "name": "variable.other.definition.ligare"
+            },
+            "3": {
+              "name": "keyword.operator.monad.ligare"
+            }
+          }
+        }
+      ]
+    },
+    "parameterGroups": {
+      "name": "meta.parameters.ligare",
+      "begin": "(\\(|\\{)(?=\\s*[A-Za-z_][A-Za-z0-9_]*\\b(?:\\s+[A-Za-z_][A-Za-z0-9_]*\\b)*\\s*(?::|[\\)\\}]))",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.section.parameters.begin.ligare"
+        }
+      },
+      "end": "(\\)|\\})",
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.section.parameters.end.ligare"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#strings"
+        },
+        {
+          "name": "variable.parameter.ligare",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s*(?:[A-Za-z_][A-Za-z0-9_]*\\b\\s*)*(?::|[\\)\\}]))"
+        },
+        {
+          "include": "#paths"
+        },
+        {
+          "include": "#builtins"
+        },
+        {
+          "include": "#keywords"
+        },
+        {
+          "include": "#operators"
+        },
+        {
+          "include": "#punctuation"
+        }
+      ]
+    },
+    "matchBranches": {
+      "name": "meta.match.branch.ligare",
+      "begin": "(\\|)(?=\\s+[A-Za-z_][A-Za-z0-9_]*(?:\\s+[A-Za-z_][A-Za-z0-9_]*)*\\s*=>)",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.operator.pattern.ligare"
+        }
+      },
+      "end": "(=>)",
+      "endCaptures": {
+        "1": {
+          "name": "keyword.operator.arrow.ligare"
+        }
+      },
+      "patterns": [
+        {
+          "match": "\\G\\s*([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "entity.name.constructor.ligare"
+            }
+          }
+        },
+        {
+          "match": "(?<=\\S)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": {
+              "name": "variable.parameter.pattern.ligare"
+            }
+          }
+        }
+      ]
+    },
+    "imports": {
+      "patterns": [
+        {
+          "match": "\\b(as)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": {
+              "name": "keyword.control.import.alias.ligare"
+            },
+            "2": {
+              "name": "entity.name.namespace.alias.ligare"
+            }
+          }
+        }
+      ]
+    },
+    "paths": {
+      "patterns": [
+        {
+          "name": "entity.name.namespace.ligare",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=::)"
+        },
+        {
+          "name": "punctuation.separator.namespace.ligare",
+          "match": "::"
+        },
+        {
+          "name": "entity.name.type.ligare",
+          "match": "(?<=::)\\b[A-Z][A-Za-z0-9_]*\\b"
+        },
+        {
+          "name": "support.other.path.ligare",
+          "match": "(?<=::)\\b[a-z_][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "fields": {
+      "patterns": [
+        {
+          "name": "entity.name.constructor.ligare",
+          "match": "(?<=\\.)\\bmk\\b"
+        },
+        {
+          "name": "variable.other.member.ligare",
+          "match": "(?<=\\.)\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "builtins": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.ligare",
+          "match": "\\b(?:true|false)\\b"
+        },
+        {
+          "name": "constant.language.unit.ligare",
+          "match": "\\(\\)"
+        },
+        {
+          "name": "support.function.builtin.ligare",
+          "match": "∧-intro|∧-elim-left"
+        },
+        {
+          "name": "support.type.builtin.ligare",
+          "match": "\\b(?:int|bool|str|IO|data|prop|theorem|proof|ptr|ptr_cast|i8|i16|i32|i64|u8|u16|u32|u64|c_int|c_uint)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "name": "constant.numeric.integer.ligare",
+      "match": "\\b[0-9]+\\b"
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.quote.ligare",
+          "match": "\\bquote\\b(?=\\s*\\{)"
+        },
+        {
+          "name": "keyword.control.ligare",
+          "match": "\\b(?:let|in|if|then|else|by|fun|func|do|where|def|extern|instance|variable|unsafe|pure|auto|exact|apply|intro|have|pub|use|mod|namespace|as|struct|enum|match|with|of)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.logical.ligare",
+          "match": "∧|∨|¬|→"
+        },
+        {
+          "name": "keyword.operator.lambda.ligare",
+          "match": "\\\\|λ"
+        },
+        {
+          "name": "keyword.operator.ligare",
+          "match": ":=|=>|->|<=|<-|>=|/=|==|[+\\-*/%<>=]|\\$"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.type.ligare",
+          "match": ":"
+        },
+        {
+          "name": "punctuation.accessor.dot.ligare",
+          "match": "\\."
+        },
+        {
+          "name": "keyword.operator.pattern.ligare",
+          "match": "\\|"
+        },
+        {
+          "name": "punctuation.separator.ligare",
+          "match": "[,;]"
+        },
+        {
+          "name": "punctuation.section.group.ligare",
+          "match": "[(){}\\[\\]]"
+        }
+      ]
+    }
+  }
+}
