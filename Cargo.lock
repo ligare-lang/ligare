@@ -526,12 +526,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "ligare-doc"
+version = "0.1.0"
+dependencies = [
+ "bumpalo",
+ "ligare",
+]
+
+[[package]]
+name = "ligare-fmt"
+version = "0.1.0"
+dependencies = [
+ "bumpalo",
+ "ligare",
+]
+
+[[package]]
 name = "ligls"
 version = "0.1.0"
 dependencies = [
  "bumpalo",
  "chumsky",
  "ligare",
+ "ligare-doc",
+ "ligare-fmt",
  "logos",
  "tokio",
  "tower-lsp",

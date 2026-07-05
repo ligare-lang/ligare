@@ -4,11 +4,15 @@ use std::process;
 use bumpalo::Bump;
 use clap::{Parser, Subcommand};
 
+#[path = "../crates/ligare_doc/src/lib.rs"]
+mod ligare_doc;
+#[path = "../crates/ligare_fmt/src/lib.rs"]
+mod ligare_fmt;
+
 use ligare::backend::c::{emit_c, emit_eval_c};
 use ligare::backend::compile::{compile_and_run_c, compile_c};
 use ligare::compiler::Compiler;
 use ligare::core::pool::TermArena;
-use ligare::format::format_source;
 use ligare::package::{PackageType, UpdateMode, find_manifest_root, resolve_project, write_lock};
 
 #[derive(Parser)]
@@ -81,6 +85,18 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Generate Markdown documentation for Ligare source files
+    Doc {
+        /// File or directory to document
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Write Markdown output to a file instead of stdout
+        #[arg(short = 'o', long, value_name = "PATH")]
+        output: Option<PathBuf>,
+        /// Include private items
+        #[arg(long)]
+        private: bool,
+    },
 }
 
 fn main() {
@@ -97,12 +113,17 @@ fn main() {
             } => run_update(path, name.clone(), version.clone()),
             Command::Test { path } => run_tests(path),
             Command::Fmt { path, check } => run_fmt(path, *check),
+            Command::Doc {
+                path,
+                output,
+                private,
+            } => run_doc(path, output.as_deref(), *private),
         }
         return;
     }
 
     if cli.files.is_empty() {
-        eprintln!("ligare requires source files, or one of: build, update, test");
+        eprintln!("ligare requires source files, or one of: build, update, test, fmt, doc");
         process::exit(2);
     }
 
@@ -365,93 +386,39 @@ fn run_tests(path: &Path) {
 }
 
 fn run_fmt(path: &Path, check: bool) {
-    let files = match collect_format_targets(path) {
-        Ok(files) => files,
+    let report = match ligare_fmt::format_path(path, check) {
+        Ok(report) => report,
         Err(e) => {
             eprintln!("{e}");
             process::exit(1);
         }
     };
-    if files.is_empty() {
-        eprintln!("no .lig files found under `{}`", path.display());
-        process::exit(1);
-    }
 
-    let mut changed = Vec::new();
-    let mut had_error = false;
-
-    for file in files {
-        let source = match std::fs::read_to_string(&file) {
-            Ok(source) => source,
-            Err(err) => {
-                eprintln!("cannot read `{}`: {err}", file.display());
-                had_error = true;
-                continue;
-            }
-        };
-        let formatted = match format_source(&source) {
-            Ok(formatted) => formatted,
-            Err(err) => {
-                eprintln!("{}: {}", file.display(), err);
-                had_error = true;
-                continue;
-            }
-        };
-        if source == formatted {
-            continue;
-        }
-        changed.push(file.clone());
-        if check {
-            continue;
-        }
-        if let Err(err) = std::fs::write(&file, formatted) {
-            eprintln!("cannot write `{}`: {err}", file.display());
-            had_error = true;
-        }
-    }
-
-    if check && !changed.is_empty() {
-        for file in &changed {
+    if check && !report.changed.is_empty() {
+        for file in &report.changed {
             eprintln!("needs formatting: {}", file.display());
         }
         process::exit(1);
     }
-
-    if had_error {
-        process::exit(1);
-    }
 }
 
-fn collect_format_targets(path: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
-    fn visit(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), std::io::Error> {
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                let skip = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| matches!(name, ".git" | "target"));
-                if !skip {
-                    visit(&path, out)?;
-                }
-                continue;
+fn run_doc(path: &Path, output: Option<&Path>, include_private: bool) {
+    let markdown =
+        match ligare_doc::generate_markdown(path, &ligare_doc::DocOptions { include_private }) {
+            Ok(markdown) => markdown,
+            Err(err) => {
+                eprintln!("{err}");
+                process::exit(1);
             }
-            if path.extension().and_then(|ext| ext.to_str()) == Some("lig") {
-                out.push(path);
-            }
+        };
+    if let Some(output) = output {
+        if let Err(err) = std::fs::write(output, &markdown) {
+            eprintln!("cannot write `{}`: {err}", output.display());
+            process::exit(1);
         }
-        Ok(())
-    }
-
-    let mut files = Vec::new();
-    if path.is_file() {
-        files.push(path.to_path_buf());
     } else {
-        visit(path, &mut files)?;
+        print!("{markdown}");
     }
-    files.sort();
-    Ok(files)
 }
 
 fn emit_or_compile(compiler: &Compiler<'_>, cli: &Cli) {

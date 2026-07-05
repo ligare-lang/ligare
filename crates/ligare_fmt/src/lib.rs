@@ -1,8 +1,10 @@
+use std::path::{Path, PathBuf};
+
 use bumpalo::Bump;
 
-use crate::core::pool::TermArena;
-use crate::core::syntax::{DoStmt, Name, PrimOp, Tactic, Term};
-use crate::front::parser::{Attribute, ParseError, TopLevel, UseTree, Visibility, parse_program};
+use ligare::core::pool::TermArena;
+use ligare::core::syntax::{DoStmt, Name, PrimOp, Tactic, Term};
+use ligare::front::parser::{Attribute, ParseError, TopLevel, UseTree, Visibility, parse_program};
 
 const INDENT: usize = 2;
 const PREC_BLOCK: u8 = 0;
@@ -14,11 +16,60 @@ const PREC_MUL: u8 = 5;
 const PREC_APP: u8 = 6;
 const PREC_ATOM: u8 = 7;
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct FormatReport {
+    pub changed: Vec<PathBuf>,
+}
+
 pub fn format_source(source: &str) -> Result<String, ParseError> {
     let bump = Bump::new();
     let arena = TermArena::new(&bump);
     let tops = parse_program(source, &bump, &arena)?;
     Ok(SourceFormatter::new().format_top_levels(&tops))
+}
+
+pub fn format_path(path: &Path, check: bool) -> Result<FormatReport, String> {
+    let files = collect_format_targets(path)
+        .map_err(|err| format!("cannot read `{}`: {err}", path.display()))?;
+    if files.is_empty() {
+        return Err(format!("no .lig files found under `{}`", path.display()));
+    }
+
+    let mut report = FormatReport::default();
+    let mut errors = Vec::new();
+
+    for file in files {
+        let source = match std::fs::read_to_string(&file) {
+            Ok(source) => source,
+            Err(err) => {
+                errors.push(format!("cannot read `{}`: {err}", file.display()));
+                continue;
+            }
+        };
+        let formatted = match format_source(&source) {
+            Ok(formatted) => formatted,
+            Err(err) => {
+                errors.push(format!("{}: {}", file.display(), err));
+                continue;
+            }
+        };
+        if source == formatted {
+            continue;
+        }
+        report.changed.push(file.clone());
+        if check {
+            continue;
+        }
+        if let Err(err) = std::fs::write(&file, formatted) {
+            errors.push(format!("cannot write `{}`: {err}", file.display()));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(report)
+    } else {
+        Err(errors.join("\n"))
+    }
 }
 
 struct SourceFormatter;
@@ -1021,12 +1072,44 @@ fn escape_str(text: &str) -> String {
     out
 }
 
+fn collect_format_targets(path: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
+    fn visit(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), std::io::Error> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                let skip = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| matches!(name, ".git" | "target"));
+                if !skip {
+                    visit(&path, out)?;
+                }
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) == Some("lig") {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    if path.is_file() {
+        files.push(path.to_path_buf());
+    } else {
+        visit(path, &mut files)?;
+    }
+    files.sort();
+    Ok(files)
+}
+
 #[cfg(test)]
 mod tests {
     use super::format_source;
-    use crate::core::pool::TermArena;
-    use crate::front::parser::parse_program;
     use bumpalo::Bump;
+    use ligare::core::pool::TermArena;
+    use ligare::front::parser::parse_program;
 
     fn assert_roundtrip(source: &str, expected: &str) {
         let formatted = format_source(source).unwrap();

@@ -4,7 +4,6 @@ pub mod compiler;
 pub mod config;
 pub mod core;
 pub mod diagnostic;
-pub mod format;
 pub mod front;
 pub mod package;
 pub mod pretty;

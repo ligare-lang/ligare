@@ -9,8 +9,8 @@ Ligare is an experimental programming language and compiler written in Rust. It 
 
 The current repository contains:
 
-- A lexer, parser, type checker, evaluator, formatter, and C backend for `.lig` source files.
-- A package mode driven by `ligare.toml`, with build, update, test, and format commands.
+- A lexer, parser, type checker, evaluator, formatter, documentation generator, and C backend for `.lig` source files.
+- A package mode driven by `ligare.toml`, with build, update, test, format, and documentation commands.
 - Experimental support for refinement constraints, proof blocks, structs, enums, pattern matching, modules, generics, and code generation to C.
 - A small `ligls` language-server crate under `crates/ligls`.
 
@@ -59,6 +59,13 @@ cargo run -- fmt .
 cargo run -- fmt --check .
 ```
 
+### Generate Markdown Docs
+
+```bash
+cargo run -- doc .
+cargo run -- doc . -o docs/api.md
+```
+
 ## CLI Reference
 
 ```text
@@ -76,6 +83,7 @@ Usage: ligare [OPTIONS] [FILES]... [COMMAND]
 | `update [NAME] [VERSION]` | Refresh `ligare.lock`, optionally pinning one dependency. |
 | `test [PATH]` | Run package files whose names end in `_test.lig`. |
 | `fmt [--check] [PATH]` | Format `.lig` files, or check whether formatting is needed. |
+| `doc [--private] [-o PATH] [PATH]` | Generate Markdown documentation from `.lig` files. |
 
 ## Package Manifest
 
@@ -101,6 +109,8 @@ src/checker/      constraint checking, inference, proof search, erasure
 src/compiler/     file/module pipeline, project loading, monomorphization
 src/backend/      IR and C code generation
 src/package/      manifest, lockfile, and dependency resolution
+crates/ligare_fmt formatter crate
+crates/ligare_doc markdown documentation generator crate
 crates/ligls/     experimental language server crate
 tests/            integration and regression tests
 tests/fixtures/   sample .lig programs used by tests

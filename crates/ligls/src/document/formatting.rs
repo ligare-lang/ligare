@@ -1,4 +1,4 @@
-use ligare::format::format_source;
+use ligare_fmt::format_source;
 use tower_lsp::lsp_types as lsp;
 
 use super::text::offset_to_position;
