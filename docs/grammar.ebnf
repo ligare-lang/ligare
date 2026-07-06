@@ -51,7 +51,7 @@ AttrArgs    ::= Expr { "," Expr }
 Def         ::= [ "pub" ] "def" Ident Params [ ":" Expr ] ":=" Expr
               | [ "pub" ] "def" Ident                   ":=" Expr
 
-Instance    ::= [ "pub" ] "instance" Ident ":" Expr ":=" Expr
+Instance    ::= "#[instance]" [ "pub" ] "def" Ident ":" Expr ":=" Expr
 
 Variable    ::= "variable" Params
 
@@ -206,6 +206,11 @@ Tactic terminators (tokens that end the tactic block):
      Marks one definition as the allocator instance used by codegen.
      This attribute may only prefix `def`.
 
+   #[instance]
+     Marks a definition as a compile-time implicit instance.
+     This attribute may only prefix `def`, and the definition must provide
+     an explicit constraint.
+
    #[compiler_intrinsic]
      Marks a std declaration whose implementation is supplied by the compiler.
      The declaration documents and exports the symbol; codegen does not emit
@@ -228,7 +233,7 @@ Ident       ::= [a-zA-Z_][a-zA-Z0-9_]*
 
 (* Reserved words (cannot be used as identifiers):
      let  in  if  then  else  true  false  by  fun  func  do  where  def
-     extern  instance  unsafe  pure  auto  theorem  pub  use  mod  as
+     extern  unsafe  pure  auto  theorem  pub  use  mod  as
      struct  enum  match  with  of *)
 
 (* ── Types (subset of expressions used as type constraints) ─────── *)

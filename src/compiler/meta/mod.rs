@@ -4,7 +4,7 @@ use crate::config::{
     BUILTIN_I32, BUILTIN_I64, BUILTIN_INT, BUILTIN_IO, BUILTIN_PROOF, BUILTIN_PROP, BUILTIN_PTR,
     BUILTIN_PTR_CAST, BUILTIN_STR, BUILTIN_THEOREM, BUILTIN_U8, BUILTIN_U16, BUILTIN_U32,
     BUILTIN_U64, BUILTIN_UNIT, COMPILER_BUILTIN_ATTRIBUTE_ATTR, COMPILER_INTRINSIC_ATTR,
-    CUSTOM_ATTRIBUTE_ATTR, GLOBAL_ALLOCATOR_ATTR, TACTIC_ATTR, TERMINATING_ATTR,
+    CUSTOM_ATTRIBUTE_ATTR, GLOBAL_ALLOCATOR_ATTR, INSTANCE_ATTR, TACTIC_ATTR, TERMINATING_ATTR,
 };
 use crate::core::eval::Evaluator;
 use crate::core::syntax::{DoStmt, Name, PrimOp, Tactic, Term};
@@ -262,6 +262,7 @@ impl<'bump> Compiler<'bump> {
         attr.is_name(COMPILER_INTRINSIC_ATTR)
             || attr.is_name(COMPILER_BUILTIN_ATTRIBUTE_ATTR)
             || attr.is_name(GLOBAL_ALLOCATOR_ATTR)
+            || attr.is_name(INSTANCE_ATTR)
             || attr.is_name(TERMINATING_ATTR)
             || attr.is_name(TACTIC_ATTR)
             || attr.is_name(CUSTOM_ATTRIBUTE_ATTR)

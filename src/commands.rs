@@ -236,7 +236,6 @@ fn is_ligare_keyword(name: &str) -> bool {
             | "have"
             | "if"
             | "in"
-            | "instance"
             | "intro"
             | "let"
             | "match"

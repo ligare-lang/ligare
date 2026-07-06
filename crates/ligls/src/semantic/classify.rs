@@ -338,7 +338,6 @@ pub(super) fn is_keyword(token: &Token) -> bool {
             | Token::KwWhere
             | Token::KwDef
             | Token::KwExtern
-            | Token::KwInstance
             | Token::KwUnsafe
             | Token::KwPure
             | Token::KwAuto

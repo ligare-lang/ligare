@@ -43,22 +43,6 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         Ok((name, self.arena.alloc_slice(&params), ret))
     }
 
-    pub(super) fn parse_instance(
-        &mut self,
-    ) -> Result<(Name<'bump>, &'bump Term<'bump>, &'bump Term<'bump>), ParseError> {
-        self.expect(&Token::KwInstance)?;
-        let name = self.parse_decl_ident()?;
-        let constraint = self
-            .parse_constraint_until(|tokens, i| matches!(tokens[i].0, Token::ColonEq))
-            .ok_or_else(|| ParseError {
-                message: "instance requires an explicit constraint".into(),
-                span: self.current_span(),
-            })?;
-        self.expect(&Token::ColonEq)?;
-        let value = self.parse_expr()?;
-        Ok((name, constraint, value))
-    }
-
     pub(super) fn parse_variable(
         &mut self,
     ) -> Result<&'bump [(Name<'bump>, Option<&'bump Term<'bump>>)], ParseError> {
@@ -130,7 +114,6 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             tokens[i].0,
             Token::KwDef
                 | Token::KwExtern
-                | Token::KwInstance
                 | Token::HashCheck
                 | Token::HashEval
                 | Token::HashLBracket

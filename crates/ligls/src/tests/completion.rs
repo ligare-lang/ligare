@@ -36,7 +36,8 @@ fn dot_completion_lists_only_interface_instance_methods() {
 def ShowInt : prop := struct
   show : int -> str
 def show_int (n : int) : str := "n"
-instance showInt : ShowInt := ShowInt.mk show_int
+#[instance]
+def showInt : ShowInt := ShowInt.mk show_int
 def free (n : int) : str := "free"
 def n : int := 1
 #eval n.<|>

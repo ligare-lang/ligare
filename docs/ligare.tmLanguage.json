@@ -244,17 +244,6 @@
           }
         },
         {
-          "match": "^(\\s*)(instance)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
-          "captures": {
-            "2": {
-              "name": "keyword.declaration.instance.ligare"
-            },
-            "3": {
-              "name": "entity.name.instance.ligare"
-            }
-          }
-        },
-        {
           "match": "\\b(func)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
           "captures": {
             "1": {
@@ -302,7 +291,7 @@
           "name": "keyword.declaration.struct.ligare"
         }
       },
-      "end": "(?=^\\s*(?:#\\[|pub\\b|def\\b|extern\\b|instance\\b|variable\\b|use\\b|mod\\b|namespace\\b|theorem\\b|#check\\b|#eval\\b)|\\z)",
+      "end": "(?=^\\s*(?:#\\[|pub\\b|def\\b|extern\\b|variable\\b|use\\b|mod\\b|namespace\\b|theorem\\b|#check\\b|#eval\\b)|\\z)",
       "patterns": [
         {
           "include": "#comments"
@@ -346,7 +335,7 @@
           "name": "keyword.declaration.enum.ligare"
         }
       },
-      "end": "(?=^\\s*(?:#\\[|pub\\b|def\\b|extern\\b|instance\\b|variable\\b|use\\b|mod\\b|namespace\\b|theorem\\b|#check\\b|#eval\\b)|\\z)",
+      "end": "(?=^\\s*(?:#\\[|pub\\b|def\\b|extern\\b|variable\\b|use\\b|mod\\b|namespace\\b|theorem\\b|#check\\b|#eval\\b)|\\z)",
       "patterns": [
         {
           "include": "#comments"
@@ -640,7 +629,7 @@
         },
         {
           "name": "keyword.control.ligare",
-          "match": "\\b(?:let|in|if|then|else|by|fun|func|do|where|def|extern|instance|variable|unsafe|pure|auto|exact|apply|intro|have|pub|use|mod|namespace|as|struct|enum|match|with|of)\\b"
+          "match": "\\b(?:let|in|if|then|else|by|fun|func|do|where|def|extern|variable|unsafe|pure|auto|exact|apply|intro|have|pub|use|mod|namespace|as|struct|enum|match|with|of)\\b"
         }
       ]
     },

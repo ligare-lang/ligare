@@ -171,7 +171,6 @@ fn kind(token: &Token) -> TokKind {
         Token::KwWhere => TokKind::KwWhere,
         Token::KwDef => TokKind::KwDef,
         Token::KwExtern => TokKind::KwExtern,
-        Token::KwInstance => TokKind::KwDef,
         Token::KwVariable => TokKind::KwDef,
         Token::KwUnsafe => TokKind::KwUnsafe,
         Token::KwPure => TokKind::KwPure,
@@ -319,6 +318,7 @@ fn is_sync_start(source: &str, tokens: &[SpannedToken], index: usize) -> bool {
         | Token::HashLBracket
         | Token::HashCheck
         | Token::HashEval => true,
+        Token::Ident(ref name) if name == "instance" => true,
         Token::KwPub => next_non_newline_kind(tokens, index + 1).is_some_and(|k| {
             matches!(
                 k,

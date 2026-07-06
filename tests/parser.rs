@@ -464,6 +464,39 @@ fn global_allocator_attribute_keeps_codegen_marker() {
 }
 
 #[test]
+fn instance_attribute_desugars_to_instance_top_level() {
+    let (b, arena) = a();
+    let tops = parse_program(
+        "#[instance]\ndef show_int : ShowInt := ShowInt.mk render",
+        b,
+        &arena,
+    )
+    .expect("parse");
+
+    assert_eq!(tops.len(), 1);
+    assert!(matches!(
+        tops[0],
+        TopLevel::TLInstance(name, constraint, body, _)
+            if name == "show_int"
+                && matches!(constraint, Term::Named("ShowInt"))
+                && matches!(body, Term::App(_, _))
+    ));
+}
+
+#[test]
+fn legacy_instance_syntax_reports_migration_error() {
+    let (b, arena) = a();
+    let err = parse_program(
+        "instance show_int : ShowInt := ShowInt.mk render",
+        b,
+        &arena,
+    )
+    .expect_err("legacy syntax should fail");
+
+    assert!(err.message.contains("#[instance] def"), "{}", err.message);
+}
+
+#[test]
 fn def_body_with_builtin_application_stops_at_newline() {
     let (b, arena) = a();
     parse_expr_top("ptr_cast c_uint p", b, &arena).expect("body expression should parse");

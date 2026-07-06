@@ -265,14 +265,16 @@ fn semantic_tokens_classify_interface_instances() {
 def ShowInt : prop := struct
   show : int -> str
 def show_int (x : int) : str := "int"
-instance showInt : ShowInt := ShowInt.mk show_int
+#[instance]
+def showInt : ShowInt := ShowInt.mk show_int
 "#;
 
     cache.update_fast(uri.clone(), Some(1), source.to_string());
     let tokens = cache.semantic_tokens(&uri).expect("semantic tokens");
     let decoded = decode_semantic_tokens(source, &tokens);
 
-    assert_token(&decoded, "instance", "keyword");
+    assert_token(&decoded, "instance", "attribute");
+    assert_token(&decoded, "def", "keyword");
     assert_token(&decoded, "showInt", "variable");
     assert_token(&decoded, "ShowInt", "constraint");
 }

@@ -268,7 +268,6 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             tokens[i].0,
             Token::KwDef
                 | Token::KwExtern
-                | Token::KwInstance
                 | Token::KwTheorem
                 | Token::KwPub
                 | Token::KwUse

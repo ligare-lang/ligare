@@ -518,9 +518,16 @@ Ligare programs consist of a sequence of top-level commands:
 | Command | Description |
 |---------|-------------|
 | `def <name> <params>? : <type>? := <body>` | Define a named term or function |
+| `#[instance]` + `def <name> : <type> := <body>` | Register an implicit compile-time instance |
 | `theorem <name> : <type> := <body>` | Define a named theorem (type-checked, then available as a term) |
 | `#check <expr> : <type>` | Type-check an expression against a constraint |
 | `#eval <expr>` | Evaluate an expression and display the result |
+
+Implicit instances are declared with `#[instance]` on a normal definition:
+```ligare
+#[instance]
+def show_nat : Show nat := Show.mk render_nat
+```
 
 **Example program**  
 ```ligare

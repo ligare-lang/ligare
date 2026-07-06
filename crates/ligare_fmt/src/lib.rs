@@ -184,10 +184,11 @@ impl SourceFormatter {
             }
             TopLevel::TLInstance(name, constraint, value, _) => {
                 let mut head = String::new();
+                head.push_str("#[instance]\n");
                 if public {
                     head.push_str("pub ");
                 }
-                head.push_str("instance ");
+                head.push_str("def ");
                 head.push_str(name);
                 head.push_str(" : ");
                 head.push_str(&self.format_term(constraint, PREC_BLOCK));
@@ -1167,6 +1168,14 @@ do\nlet x:int=5\nlet y:=x+1\ny\n",
             "def wrap : prop :=\n  struct\n    x : int\n\n\
              def mk : int -> int := fun (x : int) => x\n\n\
              def option (A : prop) : prop :=\n  enum\n    | Some of (value : A)\n    | None\n",
+        );
+    }
+
+    #[test]
+    fn formats_instance_definitions() {
+        assert_roundtrip(
+            "#[instance]\ndef add_int:Add int:=Add.mk std::primitive::int_add\n",
+            "#[instance]\ndef add_int : Add int := Add.mk std::primitive::int_add\n",
         );
     }
 }

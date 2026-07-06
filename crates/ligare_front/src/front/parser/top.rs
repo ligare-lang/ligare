@@ -1,5 +1,5 @@
 use super::{Attribute, ParseError, ParsedDef, Parser, TopLevel, UseTree, Visibility};
-use crate::config::{GLOBAL_ALLOCATOR_ATTR, GLOBAL_ALLOCATOR_NAME_PREFIX};
+use crate::config::{GLOBAL_ALLOCATOR_ATTR, GLOBAL_ALLOCATOR_NAME_PREFIX, INSTANCE_ATTR};
 use crate::core::syntax::Term;
 use crate::front::lexer::Token;
 
@@ -43,6 +43,7 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             self.advance();
         }
         let global_allocator_attr = attrs.iter().any(|attr| attr.is_name(GLOBAL_ALLOCATOR_ATTR));
+        let instance_attr = attrs.iter().any(|attr| attr.is_name(INSTANCE_ATTR));
 
         let visibility = if self.peek_token() == Some(Token::KwPub) {
             self.advance();
@@ -51,9 +52,25 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             Visibility::Private
         };
 
+        if global_allocator_attr && instance_attr {
+            return Err(ParseError {
+                message: format!(
+                    "#[{GLOBAL_ALLOCATOR_ATTR}] cannot be combined with #[{INSTANCE_ATTR}]"
+                ),
+                span: start_span,
+            });
+        }
+
         if global_allocator_attr && self.peek_token() != Some(Token::KwDef) {
             return Err(ParseError {
                 message: format!("#[{GLOBAL_ALLOCATOR_ATTR}] may only prefix `def`"),
+                span: start_span,
+            });
+        }
+
+        if instance_attr && self.peek_token() != Some(Token::KwDef) {
+            return Err(ParseError {
+                message: format!("#[{INSTANCE_ATTR}] may only prefix `def`"),
                 span: start_span,
             });
         }
@@ -104,19 +121,11 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             return Ok(self.with_attributes(top, &attrs, self.current_span()));
         }
 
-        if self.peek_token() == Some(Token::KwInstance) {
-            let (name, constraint, value) = self.parse_instance()?;
-            let top = TopLevel::TLInstance(name, constraint, value, start_span);
-            let top = self.with_visibility(top, visibility);
-            return Ok(self.with_attributes(top, &attrs, self.current_span()));
-        }
-
         if self.peek_token() == Some(Token::KwVariable) {
             if matches!(visibility, Visibility::Public) {
                 return Err(ParseError {
-                    message:
-                        "`pub` may only prefix `def`, `instance`, `theorem`, `use`, `mod`, or `namespace`"
-                            .into(),
+                    message: "`pub` may only prefix `def`, `theorem`, `use`, `mod`, or `namespace`"
+                        .into(),
                     span: start_span,
                 });
             }
@@ -151,15 +160,41 @@ impl<'a, 'bump> Parser<'a, 'bump> {
             } else {
                 name
             };
-            let top = TopLevel::TLDef(name, params, m_ret, body, start_span);
+            let top = if instance_attr {
+                if !params.is_empty() {
+                    return Err(ParseError {
+                        message: format!("#[{INSTANCE_ATTR}] def cannot take parameters"),
+                        span: start_span,
+                    });
+                }
+                let Some(constraint) = m_ret else {
+                    return Err(ParseError {
+                        message: format!("#[{INSTANCE_ATTR}] def requires an explicit constraint"),
+                        span: start_span,
+                    });
+                };
+                TopLevel::TLInstance(name, constraint, body, start_span)
+            } else {
+                TopLevel::TLDef(name, params, m_ret, body, start_span)
+            };
             let top = self.with_visibility(top, visibility);
+            let attrs = self.filter_surface_attrs(&attrs);
             return Ok(self.with_attributes(top, &attrs, self.current_span()));
+        }
+
+        if self
+            .peek()
+            .is_some_and(|(token, _)| matches!(token, Token::Ident(name) if name == "instance"))
+        {
+            return Err(ParseError {
+                message: "instance syntax was removed; use `#[instance] def <name> : <constraint> := <value>`".into(),
+                span: start_span,
+            });
         }
 
         if matches!(visibility, Visibility::Public) {
             return Err(ParseError {
-                message:
-                    "`pub` may only prefix `def`, `instance`, `theorem`, `use`, `mod`, or `namespace`"
+                message: "`pub` may only prefix `def`, `theorem`, `use`, `mod`, or `namespace`"
                     .into(),
                 span: start_span,
             });
@@ -276,7 +311,6 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 | Token::KwMod
                 | Token::KwNamespace
                 | Token::KwExtern
-                | Token::KwInstance
                 | Token::KwVariable
                 | Token::HashLBracket
                     if parens == 0 && braces == 0 =>
@@ -383,6 +417,14 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 span,
             )
         }
+    }
+
+    fn filter_surface_attrs(&self, attrs: &[Attribute<'bump>]) -> Vec<Attribute<'bump>> {
+        attrs
+            .iter()
+            .copied()
+            .filter(|attr| !attr.is_name(INSTANCE_ATTR))
+            .collect()
     }
 
     fn bump_alloc_top(&self, top: TopLevel<'bump>) -> &'bump TopLevel<'bump> {

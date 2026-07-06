@@ -55,6 +55,24 @@ fn global_allocator_attribute_is_parsed_with_following_def() {
 }
 
 #[test]
+fn instance_attribute_is_parsed_with_following_def() {
+    let (bump, arena) = arena();
+    let source = "#[instance]\ndef show_int : ShowInt := ShowInt.mk render\ndef after : int := 2";
+
+    let (ast, errors) = parse_program_lsp(source, bump, &arena);
+
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(ast.top_levels().count(), 2);
+    assert!(matches!(
+        ast.items[0],
+        AstNode::TopLevel(TopLevel::TLInstance(name, ..)) if name == "show_int"
+    ));
+    assert!(
+        matches!(ast.items[1], AstNode::TopLevel(TopLevel::TLDef(name, ..)) if name == "after")
+    );
+}
+
+#[test]
 fn shared_constraint_param_group_reuses_ligare_ast() {
     let (bump, arena) = arena();
     let source = "def add (a b : int) : int := a + b";

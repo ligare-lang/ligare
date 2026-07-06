@@ -8,6 +8,9 @@ pub def compiler_intrinsic : prop := data
 pub def global_allocator : prop := data
 
 #[compiler_builtin_attribute]
+pub def instance : prop := data
+
+#[compiler_builtin_attribute]
 pub def terminating : prop := data
 
 #[compiler_builtin_attribute]

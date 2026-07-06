@@ -120,6 +120,7 @@ pub const AND_ELIM_LEFT: &str = "∧-elim-left";
 
 pub const GLOBAL_ALLOCATOR_ATTR: &str = "global_allocator";
 pub const GLOBAL_ALLOCATOR_NAME_PREFIX: &str = "__ligare_global_allocator__";
+pub const INSTANCE_ATTR: &str = "instance";
 pub const COMPILER_INTRINSIC_ATTR: &str = "compiler_intrinsic";
 pub const COMPILER_BUILTIN_ATTRIBUTE_ATTR: &str = "compiler_builtin_attribute";
 pub const TERMINATING_ATTR: &str = "terminating";

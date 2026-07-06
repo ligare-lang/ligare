@@ -35,7 +35,8 @@ def ShowInt : prop := struct
 def show_int (x : int) : str := "int"
 variable {s : ShowInt}
 def render (x : int) : str := ShowInt.show s x
-instance showInt : ShowInt := ShowInt.mk show_int
+#[instance]
+def showInt : ShowInt := ShowInt.mk show_int
 #check render 1 : str
 "#,
     );

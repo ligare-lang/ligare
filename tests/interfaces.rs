@@ -19,7 +19,8 @@ def ShowInt : prop := struct
   show : int -> str
 
 def show_int (x : int) : str := "int"
-instance showInt : ShowInt := ShowInt.mk show_int
+#[instance]
+def showInt : ShowInt := ShowInt.mk show_int
 
 def render {s : ShowInt} (x : int) : str := ShowInt.show s x
 #check render 1 : str
@@ -38,7 +39,8 @@ def Show (A : prop) : prop := struct
   show : A -> str
 
 def show_int (x : int) : str := "int"
-instance showInt : Show int := Show.mk show_int
+#[instance]
+def showInt : Show int := Show.mk show_int
 
 def render {A : prop} {s : Show A} (x : A) : str := Show.show s x
 #check render 1 : str
@@ -57,7 +59,8 @@ def EqInt : prop := struct
   eq : int -> int -> bool
 
 def eq_int (x : int) (y : int) : bool := x == y
-instance eqInt : EqInt := EqInt.mk eq_int
+#[instance]
+def eqInt : EqInt := EqInt.mk eq_int
 
 def ne_default {e : EqInt} (x : int) (y : int) : bool := if EqInt.eq e x y then false else true
 def ne_int (x : int) (y : int) : bool := ne_default x y
@@ -100,7 +103,8 @@ def ShowInt : prop := struct
   show : int -> str
 
 def show_int (x : int) : str := "int"
-instance showInt : ShowInt := ShowInt.mk show_int
+#[instance]
+def showInt : ShowInt := ShowInt.mk show_int
 
 def render {s : ShowInt} (x : int) : str := ShowInt.show s x
 def main : str := render 5
@@ -125,7 +129,8 @@ def ShowInt : prop := struct
   show : int -> str
 
 def show_int (x : int) : str := "int"
-instance showInt : ShowInt := ShowInt.mk show_int
+#[instance]
+def showInt : ShowInt := ShowInt.mk show_int
 
 def render (x : int) : str := x.show
 #check render 1 : str
@@ -145,8 +150,10 @@ def ShowInt : prop := struct
 
 def show_a (x : int) : str := "a"
 def show_b (x : int) : str := "b"
-instance showA : ShowInt := ShowInt.mk show_a
-instance showB : ShowInt := ShowInt.mk show_b
+#[instance]
+def showA : ShowInt := ShowInt.mk show_a
+#[instance]
+def showB : ShowInt := ShowInt.mk show_b
 
 def render (x : int) : str := x.show
 "#,
@@ -178,7 +185,8 @@ def Peano : prop := enum
 def from_int (n : int) : Peano :=
   if n <= 0 then Zero else Succ (from_int (n - 1))
 
-instance of_nat_peano : OfNat Peano := OfNat.mk from_int
+#[instance]
+def of_nat_peano : OfNat Peano := OfNat.mk from_int
 
 def accept_peano (x : Peano) : Peano := x
 #check accept_peano 2 : Peano
@@ -203,7 +211,8 @@ def Point : prop := struct
 def point_add (a : Point) (b : Point) : Point :=
   Point.mk (std::primitive::int_add (Point.x a) (Point.x b)) (std::primitive::int_add (Point.y a) (Point.y b))
 
-instance add_point : Add Point := Add.mk point_add
+#[instance]
+def add_point : Add Point := Add.mk point_add
 
 def sum (a : Point) (b : Point) : Point := a + b
 #check sum (Point.mk 1 2) (Point.mk 3 4) : Point

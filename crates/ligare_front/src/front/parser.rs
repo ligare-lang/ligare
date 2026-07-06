@@ -99,7 +99,6 @@ pub(super) const KEYWORDS: &[&str] = &[
     "def",
     "do",
     "extern",
-    "instance",
     "variable",
     "unsafe",
     "pure",

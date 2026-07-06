@@ -37,8 +37,6 @@ pub enum Token {
     KwDef,
     #[token("extern")]
     KwExtern,
-    #[token("instance")]
-    KwInstance,
     #[token("variable")]
     KwVariable,
     #[token("unsafe")]

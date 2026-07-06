@@ -38,18 +38,31 @@ pub def Ge (Self : prop) : prop := struct
 pub def Neq (Self : prop) : prop := struct
     neq : Self -> Self -> bool
 
-instance of_nat_int : OfNat int := OfNat.mk (fun n => n)
+#[instance]
+def of_nat_int : OfNat int := OfNat.mk (fun n => n)
 
-instance add_int : Add int := Add.mk std::primitive::int_add
-instance sub_int : Sub int := Sub.mk std::primitive::int_sub
-instance mul_int : Mul int := Mul.mk std::primitive::int_mul
-instance div_int : Div int := Div.mk std::primitive::int_div
-instance mod_int : Mod int := Mod.mk std::primitive::int_mod
-instance eq_int : Eq int := Eq.mk std::primitive::int_eq
-instance lt_int : Lt int := Lt.mk std::primitive::int_lt
-instance gt_int : Gt int := Gt.mk std::primitive::int_gt
-instance le_int : Le int := Le.mk std::primitive::int_le
-instance ge_int : Ge int := Ge.mk std::primitive::int_ge
-instance neq_int : Neq int := Neq.mk std::primitive::int_neq
+#[instance]
+def add_int : Add int := Add.mk std::primitive::int_add
+#[instance]
+def sub_int : Sub int := Sub.mk std::primitive::int_sub
+#[instance]
+def mul_int : Mul int := Mul.mk std::primitive::int_mul
+#[instance]
+def div_int : Div int := Div.mk std::primitive::int_div
+#[instance]
+def mod_int : Mod int := Mod.mk std::primitive::int_mod
+#[instance]
+def eq_int : Eq int := Eq.mk std::primitive::int_eq
+#[instance]
+def lt_int : Lt int := Lt.mk std::primitive::int_lt
+#[instance]
+def gt_int : Gt int := Gt.mk std::primitive::int_gt
+#[instance]
+def le_int : Le int := Le.mk std::primitive::int_le
+#[instance]
+def ge_int : Ge int := Ge.mk std::primitive::int_ge
+#[instance]
+def neq_int : Neq int := Neq.mk std::primitive::int_neq
 
-instance add_str : Add str := Add.mk std::primitive::str_add
+#[instance]
+def add_str : Add str := Add.mk std::primitive::str_add
