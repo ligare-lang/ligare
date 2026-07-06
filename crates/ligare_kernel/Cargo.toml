@@ -1,9 +1,9 @@
 [package]
-name = "ligare-doc"
+name = "ligare-kernel"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 bumpalo = "3"
 ligare-ast = { path = "../ligare_ast" }
-ligare-front = { path = "../ligare_front" }
+ligare-support = { path = "../ligare_support" }

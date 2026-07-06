@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use bumpalo::Bump;
-use ligare::core::pool::TermArena;
-use ligare::core::syntax::{Name, Term};
-use ligare::front::parser::{Attribute, TopLevel, parse_program};
-use ligare::pretty::PrettyPrinter;
+use ligare_ast::core::pool::TermArena;
+use ligare_ast::core::syntax::{Name, Term};
+use ligare_ast::pretty::PrettyPrinter;
+use ligare_front::front::parser::{Attribute, TopLevel, parse_program};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DocOptions {

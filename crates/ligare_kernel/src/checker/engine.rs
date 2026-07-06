@@ -25,7 +25,7 @@ impl<'bump> TypeChecker<'bump> {
         None
     }
 
-    pub(crate) fn desugar_with_context(
+    pub fn desugar_with_context(
         &self,
         term: &'bump Term<'bump>,
     ) -> Result<&'bump Term<'bump>, Diagnostic> {
@@ -35,7 +35,7 @@ impl<'bump> TypeChecker<'bump> {
             .map_err(Diagnostic::new)
     }
 
-    pub(crate) fn desugar_with_names_context(
+    pub fn desugar_with_names_context(
         &self,
         term: &'bump Term<'bump>,
         env: &[&'bump str],

@@ -363,7 +363,7 @@ impl<'bump> TypeChecker<'bump> {
         self.check(&new_ctx, body, constraint)
     }
 
-    pub(crate) fn infer_binding_constraint(
+    pub fn infer_binding_constraint(
         &self,
         ctx: &Context<'bump>,
         term: &'bump Term<'bump>,

@@ -356,7 +356,7 @@ impl<'bump> TermArena<'bump> {
 
     /// Mechanically expand `intro*; exact t` tactics to a lambda term.
     /// This is used for standalone `by` blocks at runtime.
-    pub(crate) fn expand_proof_tactics(
+    pub fn expand_proof_tactics(
         &self,
         tactics: &'bump [Tactic<'bump>],
     ) -> Result<&'bump Term<'bump>, String> {

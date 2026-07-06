@@ -6,11 +6,6 @@ use std::process;
 use bumpalo::Bump;
 use clap::{Parser, Subcommand};
 
-#[path = "../crates/ligare_doc/src/lib.rs"]
-mod ligare_doc;
-#[path = "../crates/ligare_fmt/src/lib.rs"]
-mod ligare_fmt;
-
 use ligare::compiler::Compiler;
 use ligare::core::pool::TermArena;
 use ligare::package::{PackageType, UpdateMode};

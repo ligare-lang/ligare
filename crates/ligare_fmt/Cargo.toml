@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 bumpalo = "3"
-ligare = { path = "../.." }
+ligare-ast = { path = "../ligare_ast" }
+ligare-front = { path = "../ligare_front" }

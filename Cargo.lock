@@ -516,13 +516,25 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 name = "ligare"
 version = "0.1.0"
 dependencies = [
- "annotate-snippets",
  "bumpalo",
  "clap",
- "logos",
+ "ligare-ast",
+ "ligare-doc",
+ "ligare-fmt",
+ "ligare-front",
+ "ligare-kernel",
+ "ligare-support",
  "rmp-serde",
  "serde",
  "toml",
+]
+
+[[package]]
+name = "ligare-ast"
+version = "0.1.0"
+dependencies = [
+ "bumpalo",
+ "ligare-support",
 ]
 
 [[package]]
@@ -530,7 +542,8 @@ name = "ligare-doc"
 version = "0.1.0"
 dependencies = [
  "bumpalo",
- "ligare",
+ "ligare-ast",
+ "ligare-front",
 ]
 
 [[package]]
@@ -538,7 +551,34 @@ name = "ligare-fmt"
 version = "0.1.0"
 dependencies = [
  "bumpalo",
- "ligare",
+ "ligare-ast",
+ "ligare-front",
+]
+
+[[package]]
+name = "ligare-front"
+version = "0.1.0"
+dependencies = [
+ "bumpalo",
+ "ligare-ast",
+ "ligare-support",
+ "logos",
+]
+
+[[package]]
+name = "ligare-kernel"
+version = "0.1.0"
+dependencies = [
+ "bumpalo",
+ "ligare-ast",
+ "ligare-support",
+]
+
+[[package]]
+name = "ligare-support"
+version = "0.1.0"
+dependencies = [
+ "annotate-snippets",
 ]
 
 [[package]]

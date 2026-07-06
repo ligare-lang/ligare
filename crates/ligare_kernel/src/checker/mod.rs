@@ -40,20 +40,20 @@ pub enum CheckMode {
 /// are encountered (via `add_refinement`).  Individual `check` calls may
 /// create temporary table clones without mutating the persistent state.
 pub struct TypeChecker<'bump> {
-    pub(crate) arena: &'bump TermArena<'bump>,
-    pub(crate) evaluator: WhnfEvaluator<'bump>,
-    pub(crate) builtins: BuiltinRegistry,
-    table: ConstraintTable<'bump>,
+    pub arena: &'bump TermArena<'bump>,
+    pub evaluator: WhnfEvaluator<'bump>,
+    pub builtins: BuiltinRegistry,
+    pub table: ConstraintTable<'bump>,
     /// Registry of enum definitions: maps enum name → (EnumDef term, param_names)
-    pub(crate) enum_table: Vec<(Name<'bump>, &'bump Term<'bump>, &'bump [Name<'bump>])>,
+    pub enum_table: Vec<(Name<'bump>, &'bump Term<'bump>, &'bump [Name<'bump>])>,
     /// Registry of struct definitions: maps struct name → (StructDef term, param_names)
-    pub(crate) struct_table: Vec<(Name<'bump>, &'bump Term<'bump>, &'bump [Name<'bump>])>,
+    pub struct_table: Vec<(Name<'bump>, &'bump Term<'bump>, &'bump [Name<'bump>])>,
     /// External C function signatures.
-    pub(crate) extern_table: Vec<(Name<'bump>, &'bump Term<'bump>)>,
+    pub extern_table: Vec<(Name<'bump>, &'bump Term<'bump>)>,
     /// Compile-time implicit instances: name, constraint, value.
-    pub(crate) instance_table: Vec<(Name<'bump>, &'bump Term<'bump>, &'bump Term<'bump>)>,
+    pub instance_table: Vec<(Name<'bump>, &'bump Term<'bump>, &'bump Term<'bump>)>,
     /// Whether the current check is inside an explicit unsafe expression.
-    pub(crate) unsafe_depth: usize,
+    pub unsafe_depth: usize,
     mode: CheckMode,
 }
 
@@ -249,14 +249,14 @@ impl<'bump> TypeChecker<'bump> {
         }
     }
 
-    pub(crate) fn implicit_inner(t: &'bump Term<'bump>) -> &'bump Term<'bump> {
+    pub fn implicit_inner(t: &'bump Term<'bump>) -> &'bump Term<'bump> {
         match t {
             Term::Implicit(inner) => inner,
             _ => t,
         }
     }
 
-    pub(crate) fn is_implicit_constraint(t: &Term<'_>) -> bool {
+    pub fn is_implicit_constraint(t: &Term<'_>) -> bool {
         matches!(t, Term::Implicit(_))
     }
 

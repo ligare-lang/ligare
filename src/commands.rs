@@ -1,9 +1,11 @@
-use super::{Cli, Compiler, PackageType, UpdateMode, ligare_doc, ligare_fmt};
+use super::{Cli, Compiler, PackageType, UpdateMode};
 use bumpalo::Bump;
 use ligare::backend::c::{emit_c, emit_eval_c};
 use ligare::backend::compile::{compile_and_run_c, compile_c};
 use ligare::core::pool::TermArena;
 use ligare::package::{find_manifest_root, resolve_project, write_lock};
+use ligare_doc as docgen;
+use ligare_fmt as fmt;
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -256,7 +258,7 @@ pub(super) fn run_tests(path: &Path) {
 }
 
 pub(super) fn run_fmt(path: &Path, check: bool) {
-    let report = match ligare_fmt::format_path(path, check) {
+    let report = match fmt::format_path(path, check) {
         Ok(report) => report,
         Err(e) => {
             eprintln!("{e}");
@@ -273,14 +275,13 @@ pub(super) fn run_fmt(path: &Path, check: bool) {
 }
 
 pub(super) fn run_doc(path: &Path, output: Option<&Path>, include_private: bool) {
-    let markdown =
-        match ligare_doc::generate_markdown(path, &ligare_doc::DocOptions { include_private }) {
-            Ok(markdown) => markdown,
-            Err(err) => {
-                eprintln!("{err}");
-                process::exit(1);
-            }
-        };
+    let markdown = match docgen::generate_markdown(path, &docgen::DocOptions { include_private }) {
+        Ok(markdown) => markdown,
+        Err(err) => {
+            eprintln!("{err}");
+            process::exit(1);
+        }
+    };
     if let Some(output) = output {
         if let Err(err) = std::fs::write(output, &markdown) {
             eprintln!("cannot write `{}`: {err}", output.display());

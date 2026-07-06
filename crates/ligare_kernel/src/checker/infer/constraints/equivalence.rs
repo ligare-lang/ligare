@@ -142,7 +142,7 @@ impl<'bump> TypeChecker<'bump> {
         }
     }
 
-    pub(crate) fn is_refinement_of(&self, t1: &'bump Term<'bump>, t2: &'bump Term<'bump>) -> bool {
+    pub fn is_refinement_of(&self, t1: &'bump Term<'bump>, t2: &'bump Term<'bump>) -> bool {
         if t1 == t2 {
             return true;
         }

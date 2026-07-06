@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use bumpalo::Bump;
-
-use ligare::core::pool::TermArena;
-use ligare::core::syntax::{DoStmt, Name, PrimOp, Tactic, Term};
-use ligare::front::parser::{Attribute, ParseError, TopLevel, UseTree, Visibility, parse_program};
+use ligare_ast::core::pool::TermArena;
+use ligare_ast::core::syntax::{DoStmt, Name, PrimOp, Tactic, Term};
+use ligare_front::front::parser::{
+    Attribute, ParseError, TopLevel, UseTree, Visibility, parse_program,
+};
 
 const INDENT: usize = 2;
 const PREC_BLOCK: u8 = 0;
@@ -1125,8 +1126,8 @@ fn collect_format_targets(path: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
 mod tests {
     use super::format_source;
     use bumpalo::Bump;
-    use ligare::core::pool::TermArena;
-    use ligare::front::parser::parse_program;
+    use ligare_ast::core::pool::TermArena;
+    use ligare_front::front::parser::parse_program;
 
     fn assert_roundtrip(source: &str, expected: &str) {
         let formatted = format_source(source).unwrap();

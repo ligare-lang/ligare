@@ -4,15 +4,28 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = [".", "crates/ligls", "crates/ligare_fmt", "crates/ligare_doc"]
+members = [
+    ".",
+    "crates/ligare_support",
+    "crates/ligare_ast",
+    "crates/ligare_front",
+    "crates/ligare_kernel",
+    "crates/ligls",
+    "crates/ligare_fmt",
+    "crates/ligare_doc",
+]
 
 [dependencies]
-logos = "0.15"
 clap = { version = "4", features = ["derive"] }
 bumpalo = "3"
-annotate-snippets = "0.12"
 toml = "1.1.2"
 serde = { version = "1", features = ["derive"] }
 rmp-serde = "1"
+ligare-support = { path = "crates/ligare_support" }
+ligare-ast = { path = "crates/ligare_ast" }
+ligare-front = { path = "crates/ligare_front" }
+ligare-kernel = { path = "crates/ligare_kernel" }
+ligare-doc = { path = "crates/ligare_doc" }
+ligare-fmt = { path = "crates/ligare_fmt" }
 
 [dev-dependencies]

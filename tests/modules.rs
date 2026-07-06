@@ -148,12 +148,15 @@ fn non_main_file_with_import_uses_module_pipeline() {
     );
     write(&root, "libs/mod.lig", "pub mod std\n");
     write(&root, "libs/std/mod.lig", "pub mod lib\n");
-    let bump = Box::leak(Box::new(Bump::new()));
-    let arena = Box::leak(Box::new(TermArena::new(bump)));
-    let mut compiler = Compiler::new(bump, arena);
-    compiler
-        .collect_file(&root.join("test.lig").to_string_lossy())
-        .unwrap();
+    let compiler = with_ligare_std_path(None, || {
+        let bump = Box::leak(Box::new(Bump::new()));
+        let arena = Box::leak(Box::new(TermArena::new(bump)));
+        let mut compiler = Compiler::new(bump, arena);
+        compiler
+            .collect_file(&root.join("test.lig").to_string_lossy())
+            .unwrap();
+        compiler
+    });
 
     assert!(compiler.raw_defs().iter().any(|top| {
         matches!(top, ligare::front::parser::TopLevel::TLDef(name, ..) if *name == "main")
