@@ -311,14 +311,7 @@ fn codegen_struct_typedef() {
             "def Point : prop := struct\n  x : int\n  y : int\ndef p : Point := Point.mk 3 4\n",
         )
         .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     assert!(
         c.contains("typedef struct Point"),
         "missing struct typedef:\n{c}"
@@ -336,14 +329,7 @@ fn codegen_struct_construction() {
             "def Point : prop := struct\n  x : int\n  y : int\ndef p : Point := Point.mk 3 4\n#eval p\n",
         )
         .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     assert!(c.contains("const Point p"), "missing struct const:\n{c}");
 }
 
@@ -356,15 +342,9 @@ fn codegen_struct_named_initializer() {
             "def Point : prop := struct\n  x : int\n  y : int\ndef p : Point := Point{y := 4, x := 3}\n#eval Point.x p\n",
         )
         .unwrap();
-    let eval_c = emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"))
-    .expect("program has #eval output");
+    let eval_c = emit_eval_c(compiler.codegen_input())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .expect("program has #eval output");
     match compile_and_run_c(&eval_c) {
         Ok(stdout) => assert_eq!(stdout, "3\n"),
         Err(CompileError::CompilerNotFound) => {
@@ -383,15 +363,9 @@ fn codegen_struct_projection() {
             "def Point : prop := struct\n  x : int\n  y : int\n#eval Point.x (Point.mk 7 8)\n",
         )
         .unwrap();
-    let c = emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"))
-    .unwrap();
+    let c = emit_eval_c(compiler.codegen_input())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .unwrap();
     assert!(c.contains(".x"), "missing field name .x in codegen:\n{c}");
 }
 
@@ -404,15 +378,9 @@ fn codegen_struct_projection_uses_real_field_name() {
             "def Point : prop := struct\n  x : int\n  y : int\n#eval Point.y (Point.mk 1 42)\n",
         )
         .unwrap();
-    let c = emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"))
-    .unwrap();
+    let c = emit_eval_c(compiler.codegen_input())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .unwrap();
     assert!(c.contains(".y"), "missing real field name .y:\n{c}");
     assert!(
         !c.contains("_f"),
@@ -429,14 +397,7 @@ fn codegen_struct_function_param() {
             "def Point : prop := struct\n  x : int\n  y : int\ndef get_x (p : Point) : int := Point.x p\n",
         )
         .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     assert!(
         c.contains("int64_t get_x(Point"),
         "missing function with struct param:\n{c}"
@@ -452,14 +413,7 @@ fn codegen_struct_with_str_field() {
             "def Person : prop := struct\n  name : str\n  age : int\ndef p : Person := Person.mk \"Alice\" 30\n",
         )
         .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     assert!(
         c.contains("const char* name;"),
         "missing str field type:\n{c}"
@@ -475,14 +429,7 @@ fn codegen_struct_single_field() {
             "def Wrapper : prop := struct\n  inner : int\ndef w : Wrapper := Wrapper.mk 99\n",
         )
         .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     assert!(
         c.contains("typedef struct Wrapper"),
         "missing typedef:\n{c}"
@@ -520,14 +467,7 @@ fn codegen_enum_with_struct_payload() {
             "def Point : prop := struct\n  x : int\n  y : int\ndef Shape : prop := enum\n  | Circle of (center : Point) (r : int)\n  | Rect\ndef s : Shape := Circle (Point.mk 1 2) 5\n",
         )
         .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     // Enum typedef should use Point struct as field type
     assert!(
         c.contains("Point center;"),
@@ -596,14 +536,7 @@ fn codegen_struct_with_enum_field() {
             "def Option : prop := enum\n  | None\n  | Some of (val : int)\ndef Config : prop := struct\n  name : str\n  opt : Option\ndef c : Config := Config.mk \"cfg\" (Some 99)\n",
         )
         .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     // Struct typedef should use Option enum as field type
     assert!(
         c.contains("Option opt;"),
@@ -620,14 +553,7 @@ fn codegen_cyclic_struct_enum_field_is_boxed_and_lazy() {
             "def Tree : prop := enum\n  | Leaf\n  | Node of (holder : Holder)\ndef Holder : prop := struct\n  tree : Tree\ndef leaf_holder : Holder := Holder.mk Leaf\n",
         )
         .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     assert!(c.contains("Tree* tree;"), "{c}");
     assert!(c.contains("Holder leaf_holder(void)"), "{c}");
     assert!(c.contains("Tree* _ligare_heap"), "{c}");
@@ -642,15 +568,9 @@ fn cyclic_struct_enum_top_level_value_compiles_and_runs() {
             "def Tree : prop := enum\n  | Leaf\n  | Node of (holder : Holder)\ndef Holder : prop := struct\n  tree : Tree\ndef leaf_holder : Holder := Holder.mk Leaf\n#eval match Holder.tree leaf_holder with | Leaf => 0 | Node h => 1\n",
         )
         .unwrap();
-    let eval_c = emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"))
-    .expect("program has #eval output");
+    let eval_c = emit_eval_c(compiler.codegen_input())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .expect("program has #eval output");
     match compile_and_run_c(&eval_c) {
         Ok(stdout) => assert_eq!(stdout, "0\n"),
         Err(CompileError::CompilerNotFound) => {

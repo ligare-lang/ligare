@@ -1,7 +1,6 @@
 use super::{Cli, Compiler, PackageType, UpdateMode};
 use bumpalo::Bump;
-use ligare::backend::c::{emit_c, emit_eval_c};
-use ligare::backend::compile::{compile_and_run_c, compile_c};
+use ligare::backend::Backend;
 use ligare::core::pool::TermArena;
 use ligare::package::{find_manifest_root, resolve_project, write_lock};
 use ligare_doc as docgen;
@@ -163,6 +162,7 @@ fn write_new_file(path: &Path, content: &str) -> Result<(), String> {
 }
 
 pub(super) fn run_build(path: &Path, cli: &Cli) {
+    let backend = backend_for(&cli.backend);
     let root = project_root_or_exit(path);
     let project = match resolve_project(&root, UpdateMode::Locked) {
         Ok(project) => project,
@@ -190,11 +190,12 @@ pub(super) fn run_build(path: &Path, cli: &Cli) {
     match project.manifest.package_type {
         PackageType::Lib => emit_library_to(
             &compiler,
-            build_library_output_path(&root, &project.manifest.name, cli).as_deref(),
+            build_library_output_path(&root, &project.manifest.name, cli, backend).as_deref(),
+            backend,
         ),
         PackageType::Binary => {
             let output = build_binary_output_path(&root, &project.manifest.name, cli);
-            emit_or_compile_to(&compiler, output.as_deref());
+            emit_or_compile_to(&compiler, output.as_deref(), cli.emit_source, backend);
         }
     }
 }
@@ -293,54 +294,75 @@ pub(super) fn run_doc(path: &Path, output: Option<&Path>, include_private: bool)
 }
 
 fn emit_or_compile(compiler: &Compiler<'_>, cli: &Cli) {
-    emit_or_compile_to(compiler, cli.output.as_deref());
+    emit_or_compile_to(
+        compiler,
+        cli.output.as_deref(),
+        cli.emit_source,
+        backend_for(&cli.backend),
+    );
 }
 
-fn emit_or_compile_to(compiler: &Compiler<'_>, output: Option<&Path>) {
+fn emit_or_compile_to(
+    compiler: &Compiler<'_>,
+    output: Option<&Path>,
+    emit_source: bool,
+    backend: &'static dyn Backend,
+) {
     let codegen = compiler.codegen_input();
-    if output.is_some() {
-        let eval_source = match emit_eval_c(
-            codegen.tops,
-            codegen.raw_defs,
-            codegen.fun_sigs,
-            codegen.enum_types,
-            codegen.struct_types,
-        ) {
-            Ok(c) => c,
+    if emit_source {
+        let source = match backend.emit_source(codegen) {
+            Ok(source) => source,
             Err(e) => {
-                eprintln!("Eval code generation error: {e}");
+                eprintln!("Code generation error: {e}");
                 process::exit(1);
             }
         };
-        if let Some(eval_source) = eval_source {
-            match compile_and_run_c(&eval_source) {
-                Ok(stdout) => print!("{stdout}"),
-                Err(e) => {
-                    eprintln!("Eval compilation error: {e}");
-                    process::exit(1);
-                }
+        if let Some(output) = output {
+            if let Some(parent) = output.parent()
+                && let Err(e) = std::fs::create_dir_all(parent)
+            {
+                eprintln!("cannot create output directory `{}`: {e}", parent.display());
+                process::exit(1);
+            }
+            if let Err(e) = std::fs::write(output, source) {
+                eprintln!("cannot write `{}`: {e}", output.display());
+                process::exit(1);
+            }
+            eprintln!("Wrote {}", output.display());
+        } else {
+            print!("{source}");
+        }
+        return;
+    }
+
+    let eval_source = match backend.emit_eval_source(codegen) {
+        Ok(source) => source,
+        Err(e) => {
+            eprintln!("Eval code generation error: {e}");
+            process::exit(1);
+        }
+    };
+    if let Some(eval_source) = eval_source {
+        match backend.run_eval_source(&eval_source) {
+            Ok(stdout) => print!("{stdout}"),
+            Err(e) => {
+                eprintln!("Eval compilation error: {e}");
+                process::exit(1);
             }
         }
     }
-    let c_source = match emit_c(
-        codegen.tops,
-        codegen.raw_defs,
-        codegen.fun_sigs,
-        codegen.enum_types,
-        codegen.struct_types,
-    ) {
-        Ok(c) => c,
+    let source = match backend.emit_source(codegen) {
+        Ok(source) => source,
         Err(e) => {
             eprintln!("Code generation error: {e}");
             process::exit(1);
         }
     };
-    if output.is_none() {
-        print!("{c_source}");
+    let Some(output) = output else {
+        print!("{source}");
         return;
-    }
-    let output = output.unwrap();
-    match compile_c(&c_source, output) {
+    };
+    match backend.compile_source(&source, output) {
         Ok(actual) => eprintln!("Compiled → {}", actual.display()),
         Err(e) => {
             eprintln!("Compilation error: {e}");
@@ -349,23 +371,17 @@ fn emit_or_compile_to(compiler: &Compiler<'_>, output: Option<&Path>) {
     }
 }
 
-fn emit_library_to(compiler: &Compiler<'_>, output: Option<&Path>) {
+fn emit_library_to(compiler: &Compiler<'_>, output: Option<&Path>, backend: &'static dyn Backend) {
     let codegen = compiler.codegen_input();
-    let c_source = match emit_c(
-        codegen.tops,
-        codegen.raw_defs,
-        codegen.fun_sigs,
-        codegen.enum_types,
-        codegen.struct_types,
-    ) {
-        Ok(c) => c,
+    let source = match backend.emit_source(codegen) {
+        Ok(source) => source,
         Err(e) => {
             eprintln!("Code generation error: {e}");
             process::exit(1);
         }
     };
     let Some(output) = output else {
-        print!("{c_source}");
+        print!("{source}");
         return;
     };
     if let Some(parent) = output.parent()
@@ -374,7 +390,7 @@ fn emit_library_to(compiler: &Compiler<'_>, output: Option<&Path>) {
         eprintln!("cannot create output directory `{}`: {e}", parent.display());
         process::exit(1);
     }
-    if let Err(e) = std::fs::write(output, c_source) {
+    if let Err(e) = std::fs::write(output, source) {
         eprintln!("cannot write `{}`: {e}", output.display());
         process::exit(1);
     }
@@ -382,8 +398,8 @@ fn emit_library_to(compiler: &Compiler<'_>, output: Option<&Path>) {
 }
 
 fn build_binary_output_path(root: &Path, package_name: &str, cli: &Cli) -> Option<PathBuf> {
-    if cli.emit_c {
-        None
+    if cli.emit_source {
+        cli.output.clone()
     } else {
         Some(
             cli.output
@@ -393,16 +409,32 @@ fn build_binary_output_path(root: &Path, package_name: &str, cli: &Cli) -> Optio
     }
 }
 
-fn build_library_output_path(root: &Path, package_name: &str, cli: &Cli) -> Option<PathBuf> {
-    if cli.emit_c {
-        None
+fn build_library_output_path(
+    root: &Path,
+    package_name: &str,
+    cli: &Cli,
+    backend: &'static dyn Backend,
+) -> Option<PathBuf> {
+    if cli.emit_source {
+        cli.output.clone()
     } else {
-        Some(
-            cli.output
-                .clone()
-                .unwrap_or_else(|| root.join("target").join(format!("{package_name}.c"))),
-        )
+        Some(cli.output.clone().unwrap_or_else(|| {
+            root.join("target")
+                .join(format!("{package_name}.{}", backend.source_extension()))
+        }))
     }
+}
+
+fn backend_for(name: &str) -> &'static dyn Backend {
+    if let Some(backend) = ligare::backend::backend_named(name) {
+        return backend;
+    }
+    let available = ligare::backend::registry()
+        .names()
+        .collect::<Vec<_>>()
+        .join(", ");
+    eprintln!("unknown backend `{name}`; available backends: {available}");
+    process::exit(2);
 }
 
 fn package_binary_name(package_name: &str) -> String {

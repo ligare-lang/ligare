@@ -1,6 +1,6 @@
 use super::*;
 
-impl<'a> ExpressionEmitter<'a> {
+impl ExpressionEmitter {
     pub fn emit_app(
         &self,
         term: &Term<'_>,
@@ -38,9 +38,8 @@ impl<'a> ExpressionEmitter<'a> {
         let call = self.collect_call_args(term, ctx, enum_map, struct_map)?;
         let (param_types, ret_ty) = self
             .fun_sigs
-            .iter()
-            .find(|(n, _)| Some(*n) == call.raw_function.as_deref())
-            .map(|(_, sig)| (sig.param_types.clone(), sig.ret_type.clone()))
+            .get(call.raw_function.as_deref().unwrap_or_default())
+            .map(|sig| (sig.param_types.clone(), sig.ret_type.clone()))
             .ok_or_else(|| {
                 Diagnostic::new(format!(
                     "Cannot emit call to `{}`; missing function signature",

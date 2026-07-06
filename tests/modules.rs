@@ -95,14 +95,7 @@ fn single_level_import_codegen_uses_prefixed_c_name() {
         "mod nat\nuse nat::add\npub def main : IO () := let _ := add 2 3 in ()\n",
     );
     let compiler = collect(&root).unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap();
+    let c = emit_c(compiler.codegen_input()).unwrap();
     assert!(c.contains("nat_add"), "{c}");
 }
 
@@ -161,14 +154,7 @@ fn non_main_file_with_import_uses_module_pipeline() {
     assert!(compiler.raw_defs().iter().any(|top| {
         matches!(top, ligare::front::parser::TopLevel::TLDef(name, ..) if *name == "main")
     }));
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap();
+    let c = emit_c(compiler.codegen_input()).unwrap();
     assert!(c.contains("extern int puts(const char*);"), "{c}");
     assert!(!c.contains("libs_std_lib_puts"), "{c}");
 }
@@ -505,14 +491,7 @@ fn std_prelude_primitives_are_compiler_intrinsics() {
         collect_unlocked(&root)
     })
     .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap();
+    let c = emit_c(compiler.codegen_input()).unwrap();
 
     assert!(c.contains("extern int puts(const char*);"), "{c}");
     assert!(!c.contains("std_primitive_int"), "{c}");
@@ -559,14 +538,7 @@ fn real_std_vec_codegen_uses_layout_type_only() {
         collect_unlocked(&root)
     })
     .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap();
+    let c = emit_c(compiler.codegen_input()).unwrap();
 
     assert!(c.contains("std__mem__vec__Vec__int"), "{c}");
     assert!(!c.contains("std__mem__vec__Vec__int__n0"), "{c}");
@@ -692,14 +664,7 @@ fn std_path_searches_multiple_roots_in_order() {
         collect_unlocked(&root)
     })
     .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap();
+    let c = emit_c(compiler.codegen_input()).unwrap();
 
     assert!(c.contains("const int64_t std_answer_value = 1;"), "{c}");
     assert!(!c.contains("const int64_t std_answer_value = 2;"), "{c}");

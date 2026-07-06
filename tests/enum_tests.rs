@@ -97,15 +97,9 @@ fn scoped_enum_constructors_codegen_and_eval() {
             "def Option : prop := enum\n  | None\n  | Some of (val : int)\n#eval match Option::Some 42 with | Option::None => 0 | Option::Some x => x\n",
         )
         .unwrap();
-    let eval_c = emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"))
-    .expect("program has #eval output");
+    let eval_c = emit_eval_c(compiler.codegen_input())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .expect("program has #eval output");
     match compile_and_run_c(&eval_c) {
         Ok(stdout) => assert_eq!(stdout, "42\n"),
         Err(CompileError::CompilerNotFound) => {
@@ -189,14 +183,7 @@ fn codegen_recursive_enum_typedef() {
             "def Nat : prop := enum\n  | Zero\n  | Succ of (pred : Nat)\ndef zero : Nat := Zero\n",
         )
         .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     assert!(c.contains("Nat* pred;"), "typedef missing Nat*:\n{c}");
     assert!(c.contains(".Zero = {0}"), "empty variant init wrong:\n{c}");
 }
@@ -210,14 +197,7 @@ fn codegen_recursive_variant_heap_allocates_payload() {
             "def Nat : prop := enum\n  | Zero\n  | Succ of (pred : Nat)\ndef one : Nat := Succ Zero\n",
         )
         .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     assert!(
         c.contains(".pred = ({ Nat* _ligare_heap"),
         "recursive field should be heap-backed:\n{c}"
@@ -310,15 +290,9 @@ fn codegen_recursive_enum_match_compiles_and_runs() {
              #eval depth (Succ (Succ Zero))\n",
         )
         .unwrap();
-    let eval_c = emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"))
-    .expect("program has #eval output");
+    let eval_c = emit_eval_c(compiler.codegen_input())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .expect("program has #eval output");
     assert!(
         eval_c.contains("Nat p = *("),
         "recursive match bind should dereference heap payload:\n{eval_c}"
@@ -346,15 +320,9 @@ fn extern_call_clones_recursive_enum_argument() {
              #eval depth one\n",
         )
         .unwrap();
-    let eval_c = emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"))
-    .expect("program has #eval output");
+    let eval_c = emit_eval_c(compiler.codegen_input())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .expect("program has #eval output");
     assert!(eval_c.contains("ligare_clone_Nat("), "{eval_c}");
     let c_impl = r#"
 #include <stdlib.h>
@@ -415,15 +383,9 @@ fn codegen_match_with_binding_emits_decl() {
             "def Option : prop := enum\n  | None\n  | Some of (val : int)\n#eval match Some 42 with | None => -1 | Some x => x\n",
         )
         .unwrap();
-    let c = emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"))
-    .unwrap();
+    let c = emit_eval_c(compiler.codegen_input())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .unwrap();
     assert!(c.contains("int64_t x ="), "missing bind decl:\n{c}");
     assert!(
         c.contains("_s0.data.Some.val"),
@@ -440,15 +402,9 @@ fn codegen_multiple_matches_unique_vars() {
             "def Color : prop := enum\n  | Red\n  | Green\n#eval match Red with | Red => 1 | Green => 2\n#eval match Green with | Red => 10 | Green => 20\n",
         )
         .unwrap();
-    let c = emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"))
-    .unwrap();
+    let c = emit_eval_c(compiler.codegen_input())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .unwrap();
     assert!(c.contains("_s0"), "missing _s0:\n{c}");
     assert!(c.contains("_s1"), "missing _s1:\n{c}");
     assert!(c.contains("_r0"), "missing _r0:\n{c}");
@@ -464,14 +420,7 @@ fn codegen_function_returning_enum() {
             "def Option : prop := enum\n  | None\n  | Some of (val : int)\ndef some_val : Option := Some 42\n#eval some_val\n",
         )
         .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     assert!(
         c.contains("const Option some_val"),
         "missing enum const:\n{c}"
@@ -488,14 +437,7 @@ fn codegen_tagged_enum_typedef() {
             "def Shape : prop := enum\n  | Circle\n  | Square\n  | Triangle\ndef s : Shape := Square\ndef c : Shape := Circle\n#eval s\n#eval c\n",
         )
         .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     assert!(c.contains("typedef struct Shape"), "missing typedef:\n{c}");
     assert!(c.contains("int tag;"), "missing tag:\n{c}");
     // Should have both variant names in the typedef
@@ -512,14 +454,7 @@ fn codegen_empty_main_with_no_output() {
     compiler
         .collect_file_str("def Color : prop := enum\n  | Red\n  | Green\ndef x : Color := Red\n")
         .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     assert!(
         c.contains("int main(void)"),
         "missing main:

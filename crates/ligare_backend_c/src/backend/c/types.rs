@@ -6,9 +6,11 @@
 
 use crate::backend::ir::CType;
 use crate::backend::ir::FunSig;
+use crate::config::GLOBAL_ALLOCATOR_NAME_PREFIX;
 use crate::core::syntax::{Name, Term};
 use crate::diagnostic::Diagnostic;
-use std::collections::{HashMap, HashSet};
+use crate::front::parser::TopLevel;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 // ── Type info structs ──
 
@@ -435,6 +437,30 @@ impl TypeAnalyzer {
     ) -> Result<CType, Diagnostic> {
         FunSig::from_func(params, m_ret, body, &self.enum_names, &self.struct_names)
             .map(|sig| sig.ret_type)
+    }
+
+    pub fn collect_fun_sigs(
+        &self,
+        raw_defs: &[TopLevel<'_>],
+    ) -> Result<BTreeMap<String, FunSig>, Diagnostic> {
+        let mut fun_sigs = BTreeMap::new();
+        for top in raw_defs {
+            if matches!(top, TopLevel::TLDef(name, ..) if name.starts_with(GLOBAL_ALLOCATOR_NAME_PREFIX))
+            {
+                continue;
+            }
+            if let TopLevel::TLDef(name, params, ret, body, _) = top
+                && (!params.is_empty() || matches!(body, Term::Lam(_) | Term::Annot(_, _)))
+            {
+                let sig =
+                    FunSig::from_func(params, *ret, body, &self.enum_names, &self.struct_names)?;
+                fun_sigs.insert((*name).to_string(), sig);
+            } else if let TopLevel::TLExternDef(name, params, ret, _) = top {
+                let sig = FunSig::from_extern(params, ret, &self.enum_names, &self.struct_names)?;
+                fun_sigs.insert((*name).to_string(), sig);
+            }
+        }
+        Ok(fun_sigs)
     }
 
     pub fn clone_required_type_names(&self) -> HashSet<String> {

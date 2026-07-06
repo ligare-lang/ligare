@@ -519,6 +519,8 @@ dependencies = [
  "bumpalo",
  "clap",
  "ligare-ast",
+ "ligare-backend",
+ "ligare-backend-c",
  "ligare-doc",
  "ligare-fmt",
  "ligare-front",
@@ -534,6 +536,27 @@ name = "ligare-ast"
 version = "0.1.0"
 dependencies = [
  "bumpalo",
+ "ligare-support",
+]
+
+[[package]]
+name = "ligare-backend"
+version = "0.1.0"
+dependencies = [
+ "ligare-ast",
+ "ligare-front",
+ "ligare-support",
+]
+
+[[package]]
+name = "ligare-backend-c"
+version = "0.1.0"
+dependencies = [
+ "bumpalo",
+ "ligare-ast",
+ "ligare-backend",
+ "ligare-front",
+ "ligare-kernel",
  "ligare-support",
 ]
 

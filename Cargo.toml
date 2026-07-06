@@ -6,6 +6,8 @@ edition = "2024"
 [workspace]
 members = [
     ".",
+    "crates/ligare_backend",
+    "crates/ligare_backend_c",
     "crates/ligare_support",
     "crates/ligare_ast",
     "crates/ligare_front",
@@ -21,6 +23,8 @@ bumpalo = "3"
 toml = "1.1.2"
 serde = { version = "1", features = ["derive"] }
 rmp-serde = "1"
+ligare-backend = { path = "crates/ligare_backend" }
+ligare-backend-c = { path = "crates/ligare_backend_c" }
 ligare-support = { path = "crates/ligare_support" }
 ligare-ast = { path = "crates/ligare_ast" }
 ligare-front = { path = "crates/ligare_front" }

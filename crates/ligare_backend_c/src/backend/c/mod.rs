@@ -14,7 +14,7 @@
 //! Usage:
 //! ```ignore
 //! use ligare::backend::c::{CEmitter, CodeGenerator};
-//! let emitter = CEmitter::new(struct_types, enum_types, fun_sigs)?;
+//! let emitter = CEmitter::new(struct_types, enum_types, raw_defs)?;
 //! let c_source = emitter.generate(tops, raw_defs, struct_types, enum_types)?;
 //! ```
 
@@ -38,46 +38,47 @@ pub use match_emit::MatchEmitter;
 pub use names::NameResolver;
 pub use types::{EnumInfo, StructInfo, TypeAnalyzer, TypeMapper, VariantInfo};
 
-use crate::backend::ir::FunSig;
-use crate::core::syntax::Term;
 use crate::diagnostic::Diagnostic;
-use crate::front::parser::TopLevel;
+use ligare_backend::CodegenInput;
 
 /// Convenience wrapper: produce a complete C source file.
 ///
-/// Maintains backward compatibility with the old free-function API.
-/// For new code, prefer constructing a `CEmitter` directly.
-pub fn emit_c(
-    tops: &[TopLevel<'_>],
-    raw_defs: &[TopLevel<'_>],
-    fun_sigs: &[(&str, FunSig)],
-    enum_types: &[(&str, &Term<'_>)],
-    struct_types: &[(&str, &Term<'_>)],
-) -> Result<String, Diagnostic> {
-    let emitter = CEmitter::new(struct_types, enum_types, fun_sigs)?;
-    emitter.generate(tops, raw_defs, struct_types, enum_types)
+/// For new code, prefer going through the backend registry.
+pub fn emit_c(input: CodegenInput<'_, '_>) -> Result<String, Diagnostic> {
+    let emitter = CEmitter::new(input.struct_types, input.enum_types, input.raw_defs)?;
+    emitter.generate(
+        input.tops,
+        input.raw_defs,
+        input.struct_types,
+        input.enum_types,
+    )
 }
 
 pub fn emit_c_with_options(
-    tops: &[TopLevel<'_>],
-    raw_defs: &[TopLevel<'_>],
-    fun_sigs: &[(&str, FunSig)],
-    enum_types: &[(&str, &Term<'_>)],
-    struct_types: &[(&str, &Term<'_>)],
+    input: CodegenInput<'_, '_>,
     options: CEmitOptions,
 ) -> Result<String, Diagnostic> {
-    let emitter = CEmitter::new_with_options(struct_types, enum_types, fun_sigs, options)?;
-    emitter.generate(tops, raw_defs, struct_types, enum_types)
+    let emitter = CEmitter::new_with_options(
+        input.struct_types,
+        input.enum_types,
+        input.raw_defs,
+        options,
+    )?;
+    emitter.generate(
+        input.tops,
+        input.raw_defs,
+        input.struct_types,
+        input.enum_types,
+    )
 }
 
 /// Produce a temporary eval-only C source file, if the program contains `#eval`.
-pub fn emit_eval_c(
-    tops: &[TopLevel<'_>],
-    raw_defs: &[TopLevel<'_>],
-    fun_sigs: &[(&str, FunSig)],
-    enum_types: &[(&str, &Term<'_>)],
-    struct_types: &[(&str, &Term<'_>)],
-) -> Result<Option<String>, Diagnostic> {
-    let emitter = CEmitter::new(struct_types, enum_types, fun_sigs)?;
-    emitter.generate_eval(tops, raw_defs, struct_types, enum_types)
+pub fn emit_eval_c(input: CodegenInput<'_, '_>) -> Result<Option<String>, Diagnostic> {
+    let emitter = CEmitter::new(input.struct_types, input.enum_types, input.raw_defs)?;
+    emitter.generate_eval(
+        input.tops,
+        input.raw_defs,
+        input.struct_types,
+        input.enum_types,
+    )
 }

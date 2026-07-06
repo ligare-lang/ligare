@@ -108,14 +108,7 @@ def main : str := render 5
         )
         .expect("program should collect");
     let input = compiler.codegen_input();
-    let c = emit_c(
-        input.tops,
-        input.raw_defs,
-        input.fun_sigs,
-        input.enum_types,
-        input.struct_types,
-    )
-    .expect("C generation should succeed");
+    let c = emit_c(input).expect("C generation should succeed");
     assert!(c.contains("show_int(x)"), "{c}");
     assert!(c.contains("render__ShowInt__show_int(5)"), "{c}");
     assert!(!c.contains("struct ShowInt"), "{c}");

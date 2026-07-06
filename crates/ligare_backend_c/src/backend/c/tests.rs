@@ -29,12 +29,12 @@ fn sig(name: &str, param_types: Vec<CType>, ret_type: CType) -> (&str, FunSig) {
 }
 
 fn emit(tops: &[TopLevel<'_>], fun_sigs: &[(&str, FunSig)]) -> String {
-    let emitter = CEmitter::new(&[], &[], fun_sigs).unwrap();
+    let emitter = CEmitter::new_with_fun_sigs(&[], &[], fun_sigs).unwrap();
     emitter.generate(tops, tops, &[], &[]).unwrap()
 }
 
 fn emit_eval(tops: &[TopLevel<'_>], fun_sigs: &[(&str, FunSig)]) -> String {
-    let emitter = CEmitter::new(&[], &[], fun_sigs).unwrap();
+    let emitter = CEmitter::new_with_fun_sigs(&[], &[], fun_sigs).unwrap();
     emitter
         .generate_eval(tops, tops, &[], &[])
         .unwrap()
@@ -42,12 +42,12 @@ fn emit_eval(tops: &[TopLevel<'_>], fun_sigs: &[(&str, FunSig)]) -> String {
 }
 
 fn emit_err(tops: &[TopLevel<'_>], fun_sigs: &[(&str, FunSig)]) -> String {
-    let emitter = CEmitter::new(&[], &[], fun_sigs).unwrap();
+    let emitter = CEmitter::new_with_fun_sigs(&[], &[], fun_sigs).unwrap();
     emitter.generate(tops, tops, &[], &[]).unwrap_err().message
 }
 
 fn emit_eval_err(tops: &[TopLevel<'_>], fun_sigs: &[(&str, FunSig)]) -> String {
-    let emitter = CEmitter::new(&[], &[], fun_sigs).unwrap();
+    let emitter = CEmitter::new_with_fun_sigs(&[], &[], fun_sigs).unwrap();
     emitter
         .generate_eval(tops, tops, &[], &[])
         .unwrap_err()
@@ -61,7 +61,7 @@ fn emit_with_types(
     enum_types: &[(&str, &Term<'_>)],
     struct_types: &[(&str, &Term<'_>)],
 ) -> String {
-    let emitter = CEmitter::new(struct_types, enum_types, fun_sigs).unwrap();
+    let emitter = CEmitter::new_with_fun_sigs(struct_types, enum_types, fun_sigs).unwrap();
     emitter
         .generate(tops, raw_defs, struct_types, enum_types)
         .unwrap()
@@ -74,7 +74,7 @@ fn emit_eval_err_with_types(
     enum_types: &[(&str, &Term<'_>)],
     struct_types: &[(&str, &Term<'_>)],
 ) -> String {
-    let emitter = CEmitter::new(struct_types, enum_types, fun_sigs).unwrap();
+    let emitter = CEmitter::new_with_fun_sigs(struct_types, enum_types, fun_sigs).unwrap();
     emitter
         .generate_eval(tops, raw_defs, struct_types, enum_types)
         .unwrap_err()

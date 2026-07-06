@@ -31,14 +31,7 @@ fn ffi_fixture_compiles_and_runs_with_expected_output() {
         .collect_file("tests/fixtures/ffi.lig")
         .expect("ffi fixture should pass compile pipeline collection");
     let codegen = compiler.codegen_input();
-    let generated = emit_c(
-        codegen.tops,
-        codegen.raw_defs,
-        codegen.fun_sigs,
-        codegen.enum_types,
-        codegen.struct_types,
-    )
-    .expect("ffi fixture should emit C");
+    let generated = emit_c(codegen).expect("ffi fixture should emit C");
     assert!(
         generated.contains("extern int64_t ffi_abs(int64_t);"),
         "missing ffi_abs prototype:\n{generated}"
@@ -59,15 +52,9 @@ fn ffi_fixture_compiles_and_runs_with_expected_output() {
         !generated.contains("int64_t ffi_abs(int64_t) {"),
         "extern should not generate wrapper definition:\n{generated}"
     );
-    let eval_c = emit_eval_c(
-        codegen.tops,
-        codegen.raw_defs,
-        codegen.fun_sigs,
-        codegen.enum_types,
-        codegen.struct_types,
-    )
-    .expect("ffi fixture should emit eval C")
-    .expect("ffi fixture has #eval outputs");
+    let eval_c = emit_eval_c(codegen)
+        .expect("ffi fixture should emit eval C")
+        .expect("ffi fixture has #eval outputs");
 
     let c_impl = "#include <stdint.h>\nint64_t ffi_abs(int64_t x) { return x < 0 ? -x : x; }\nint64_t ffi_read() { return 42; }\n";
     match compile_and_run_c(&format!("{c_impl}\n{eval_c}")) {
@@ -87,14 +74,7 @@ fn bare_top_level_expression_prints_from_generated_executable() {
         .collect_file_str("\"hello world\"\n")
         .expect("bare expression should pass compile pipeline collection");
     let codegen = compiler.codegen_input();
-    let generated = emit_c(
-        codegen.tops,
-        codegen.raw_defs,
-        codegen.fun_sigs,
-        codegen.enum_types,
-        codegen.struct_types,
-    )
-    .expect("bare expression should emit final C");
+    let generated = emit_c(codegen).expect("bare expression should emit final C");
     assert!(generated.contains("printf(\"%s\\n\""), "{generated}");
     match compile_and_run_c(&generated) {
         Ok(stdout) => assert_eq!(stdout, "hello world\n"),
@@ -116,14 +96,7 @@ fn ffi_puts_main_prints_from_generated_executable() {
         )
         .expect("puts main should pass compile pipeline collection");
     let codegen = compiler.codegen_input();
-    let generated = emit_c(
-        codegen.tops,
-        codegen.raw_defs,
-        codegen.fun_sigs,
-        codegen.enum_types,
-        codegen.struct_types,
-    )
-    .expect("puts main should emit final C");
+    let generated = emit_c(codegen).expect("puts main should emit final C");
     assert!(
         generated.contains("extern int puts(const char*);"),
         "{generated}"

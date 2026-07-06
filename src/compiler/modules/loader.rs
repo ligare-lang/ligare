@@ -142,7 +142,6 @@ impl<'bump> Compiler<'bump> {
 
     fn extend_codegen_state(&mut self, codegen: crate::compiler::CodegenState<'bump>) {
         self.raw_defs.extend(codegen.raw_defs);
-        extend_named_unique(&mut self.fun_sigs, codegen.fun_sigs);
         extend_named_unique(&mut self.enum_types, codegen.enum_types);
         extend_named_unique(&mut self.struct_types, codegen.struct_types);
     }

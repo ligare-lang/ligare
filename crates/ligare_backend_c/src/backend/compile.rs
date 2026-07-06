@@ -6,45 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+pub use ligare_backend::CompileError;
+
 static TEMP_COUNTER: AtomicU32 = AtomicU32::new(0);
-
-/// Errors that can occur during compilation.
-#[derive(Debug)]
-pub enum CompileError {
-    Io(std::io::Error),
-    CompilerNotFound,
-    CompileFailed {
-        status: std::process::ExitStatus,
-        stderr: String,
-    },
-    RunFailed {
-        status: std::process::ExitStatus,
-        stderr: String,
-    },
-}
-
-impl std::fmt::Display for CompileError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CompileError::Io(e) => write!(f, "I/O error: {}", e),
-            CompileError::CompilerNotFound => write!(f, "compiler not found in PATH"),
-            CompileError::CompileFailed { status, stderr } => {
-                write!(f, "compilation failed ({}): {}", status, stderr)
-            }
-            CompileError::RunFailed { status, stderr } => {
-                write!(f, "eval execution failed ({}): {}", status, stderr)
-            }
-        }
-    }
-}
-
-impl std::error::Error for CompileError {}
-
-impl From<std::io::Error> for CompileError {
-    fn from(e: std::io::Error) -> Self {
-        CompileError::Io(e)
-    }
-}
 
 /// Compile C source code into a native executable using `cc`.
 /// Respects the `CC` environment variable.

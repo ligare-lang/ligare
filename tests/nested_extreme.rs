@@ -46,14 +46,7 @@ fn collect_c(source: &str) -> String {
     compiler
         .collect_file_str(source)
         .unwrap_or_else(|e| panic!("{e:?}"));
-    emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"))
+    emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"))
 }
 
 fn collect_eval_c(source: &str) -> String {
@@ -62,15 +55,9 @@ fn collect_eval_c(source: &str) -> String {
     compiler
         .collect_file_str(source)
         .unwrap_or_else(|e| panic!("{e:?}"));
-    emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"))
-    .unwrap()
+    emit_eval_c(compiler.codegen_input())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .unwrap()
 }
 
 // Parser nesting and boundary cases.

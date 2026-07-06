@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::backend::ir::FunSig;
 use crate::core::debruijn::Desugarer;
 use crate::core::semantics::SemanticQueries;
 use crate::core::syntax::{Name, Term};
@@ -85,7 +84,6 @@ impl<'bump> Compiler<'bump> {
             && generic_types.is_empty()
             && !self.codegen_uses_registered_generics(&codegen)
         {
-            self.rebuild_fun_sigs(&mut codegen)?;
             return Ok(MonomorphizedProgram { tops, codegen });
         }
         let mut state = MonoState::new(generic_fns, generic_types);
@@ -126,7 +124,6 @@ impl<'bump> Compiler<'bump> {
         }
 
         self.refresh_type_defs(&mut codegen, &mut state);
-        self.rebuild_fun_sigs(&mut codegen)?;
         self.refresh_env_for_codegen(&codegen.raw_defs);
         self.refresh_env_for_codegen(&rewritten);
         Ok(MonomorphizedProgram {
@@ -290,37 +287,6 @@ impl<'bump> Compiler<'bump> {
                         })
                 })
         })
-    }
-
-    fn rebuild_fun_sigs(&self, codegen: &mut CodegenState<'bump>) -> Result<(), Diagnostic> {
-        let enum_names = codegen
-            .enum_types
-            .iter()
-            .map(|(n, _)| n.to_string())
-            .collect::<HashSet<_>>();
-        let struct_names = codegen
-            .struct_types
-            .iter()
-            .map(|(n, _)| n.to_string())
-            .collect::<HashSet<_>>();
-        let mut fun_sigs = Vec::new();
-        for top in &codegen.raw_defs {
-            if matches!(top, TopLevel::TLDef(name, ..) if name.starts_with(crate::config::GLOBAL_ALLOCATOR_NAME_PREFIX))
-            {
-                continue;
-            }
-            if let TopLevel::TLDef(name, params, ret, body, _) = top
-                && (!params.is_empty() || matches!(body, Term::Lam(_) | Term::Annot(_, _)))
-            {
-                let sig = FunSig::from_func(params, *ret, body, &enum_names, &struct_names)?;
-                fun_sigs.push((*name, sig));
-            } else if let TopLevel::TLExternDef(name, params, ret, _) = top {
-                let sig = FunSig::from_extern(params, ret, &enum_names, &struct_names)?;
-                fun_sigs.push((*name, sig));
-            }
-        }
-        codegen.fun_sigs = fun_sigs;
-        Ok(())
     }
 
     fn refresh_env_for_codegen(&mut self, tops: &[TopLevel<'bump>]) {

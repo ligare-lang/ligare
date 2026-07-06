@@ -24,9 +24,13 @@ struct Cli {
     #[arg(long, value_name = "EXPR")]
     eval: Option<String>,
 
-    /// Emit C source code
-    #[arg(long)]
-    emit_c: bool,
+    /// Emit backend source code instead of compiling it
+    #[arg(long = "emit-source", alias = "emit-c")]
+    emit_source: bool,
+
+    /// Select the compiler backend
+    #[arg(long, default_value = "c", value_name = "NAME")]
+    backend: String,
 
     /// Compile and output a native executable
     #[arg(short = 'o', long, value_name = "PATH")]
@@ -125,7 +129,7 @@ fn main() {
     let bump = Bump::new();
     let arena = TermArena::new(&bump);
 
-    if cli.emit_c || cli.output.is_some() {
+    if cli.emit_source || cli.output.is_some() {
         commands::run_codegen(&cli, &bump, &arena);
     } else {
         commands::run_eval(&cli, &bump, &arena);

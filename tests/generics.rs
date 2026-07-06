@@ -276,23 +276,10 @@ fn codegen_generic_id_monomorphizes_int() {
     compiler
         .collect_file_str("def id (A : prop) (x : A) : A := x\n#eval id int 42\n")
         .unwrap();
-    let c = ligare::backend::c::emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
-    let eval_c = ligare::backend::c::emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"))
-    .unwrap();
+    let c = ligare::backend::c::emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
+    let eval_c = ligare::backend::c::emit_eval_c(compiler.codegen_input())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .unwrap();
     assert!(c.contains("int64_t id__int(int64_t x)"), "{c}");
     assert!(eval_c.contains("id__int(42)"), "{eval_c}");
 }
@@ -304,23 +291,10 @@ fn codegen_generic_id_monomorphizes_str() {
     compiler
         .collect_file_str("def id (A : prop) (x : A) : A := x\n#eval id str \"hi\"\n")
         .unwrap();
-    let c = ligare::backend::c::emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
-    let eval_c = ligare::backend::c::emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"))
-    .unwrap();
+    let c = ligare::backend::c::emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
+    let eval_c = ligare::backend::c::emit_eval_c(compiler.codegen_input())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .unwrap();
     assert!(c.contains("const char* id__str(const char* x)"), "{c}");
     assert!(eval_c.contains("id__str(\"hi\")"), "{eval_c}");
 }
@@ -334,23 +308,10 @@ fn codegen_generic_const_monomorphizes() {
             "def konst (A : prop) (B : prop) (x : A) (y : B) : A := x\n#eval konst int bool 42 true\n",
         )
         .unwrap();
-    let c = ligare::backend::c::emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
-    let eval_c = ligare::backend::c::emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"))
-    .unwrap();
+    let c = ligare::backend::c::emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
+    let eval_c = ligare::backend::c::emit_eval_c(compiler.codegen_input())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .unwrap();
     assert!(
         c.contains("int64_t konst__int__bool(int64_t x, int64_t y)"),
         "{c}"
@@ -367,23 +328,10 @@ fn codegen_generic_three_type_params_monomorphizes() {
             "def triple (A : prop) (B : prop) (C : prop) (a : A) (b : B) (c : C) : A := a\n#eval triple int bool str 1 true \"hi\"\n",
         )
         .unwrap();
-    let c = ligare::backend::c::emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
-    let eval_c = ligare::backend::c::emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"))
-    .unwrap();
+    let c = ligare::backend::c::emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
+    let eval_c = ligare::backend::c::emit_eval_c(compiler.codegen_input())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .unwrap();
     assert!(c.contains("int64_t triple__int__bool__str("), "{c}");
     assert!(
         eval_c.contains("triple__int__bool__str(1, 1, \"hi\")"),
@@ -400,14 +348,7 @@ fn codegen_unused_generic_enum_emits_no_runtime_type() {
     compiler
         .collect_file_str("def Option (A : prop) : prop := enum\n  | None\n  | Some of (val : A)\n")
         .unwrap();
-    let c = ligare::backend::c::emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = ligare::backend::c::emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     assert!(!c.contains("Cannot map unresolved constraint"), "{c}");
     assert!(!c.contains("typedef struct Option"), "{c}");
 }
@@ -421,23 +362,10 @@ fn codegen_generic_enum_monomorphizes_used_instance() {
             "def Option (A : prop) : prop := enum\n  | None\n  | Some of (val : A)\ndef unwrap (A : prop) (opt : Option A) (default : A) : A :=\n  match opt with\n  | None => default\n  | Some x => x\n#eval unwrap int (Some 42) 0\n",
         )
         .unwrap();
-    let c = ligare::backend::c::emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
-    let eval_c = ligare::backend::c::emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"))
-    .unwrap();
+    let c = ligare::backend::c::emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
+    let eval_c = ligare::backend::c::emit_eval_c(compiler.codegen_input())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .unwrap();
     assert!(c.contains("typedef struct Option__int"), "{c}");
     assert!(c.contains("int64_t unwrap__int(Option__int opt"), "{c}");
     assert!(eval_c.contains("unwrap__int(((Option__int)"), "{eval_c}");
@@ -453,23 +381,10 @@ fn codegen_non_prefix_erased_param_monomorphizes() {
              #eval choose 0 int 5\n",
         )
         .unwrap();
-    let c = ligare::backend::c::emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
-    let eval_c = ligare::backend::c::emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"))
-    .unwrap();
+    let c = ligare::backend::c::emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
+    let eval_c = ligare::backend::c::emit_eval_c(compiler.codegen_input())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .unwrap();
     assert!(
         c.contains("int64_t choose__int(int64_t x, int64_t y)"),
         "{c}"
@@ -497,14 +412,7 @@ fn codegen_unused_generic_struct_emits_no_runtime_type() {
     compiler
         .collect_file_str("def Pair (A : prop) (B : prop) : prop := struct\n  fst : A\n  snd : B\n")
         .unwrap();
-    let c = ligare::backend::c::emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = ligare::backend::c::emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     assert!(!c.contains("Cannot map unresolved constraint"), "{c}");
     assert!(!c.contains("typedef struct Pair"), "{c}");
 }

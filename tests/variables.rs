@@ -56,13 +56,6 @@ def main : int := id 1
         )
         .expect("program should collect");
     let input = compiler.codegen_input();
-    let c = emit_c(
-        input.tops,
-        input.raw_defs,
-        input.fun_sigs,
-        input.enum_types,
-        input.struct_types,
-    )
-    .expect("C generation should succeed");
+    let c = emit_c(input).expect("C generation should succeed");
     assert!(c.contains("main"), "{c}");
 }

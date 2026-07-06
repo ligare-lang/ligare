@@ -1,0 +1,14 @@
+[package]
+name = "ligare-backend-c"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ligare-backend = { path = "../ligare_backend" }
+ligare-support = { path = "../ligare_support" }
+ligare-ast = { path = "../ligare_ast" }
+ligare-front = { path = "../ligare_front" }
+ligare-kernel = { path = "../ligare_kernel" }
+
+[dev-dependencies]
+bumpalo = "3"

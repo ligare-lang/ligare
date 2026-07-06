@@ -11,6 +11,7 @@ use crate::config::GLOBAL_ALLOCATOR_NAME_PREFIX;
 use crate::core::syntax::{Name, PrimOp, Term};
 use crate::diagnostic::Diagnostic;
 use crate::front::parser::TopLevel;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -87,43 +88,70 @@ pub trait CodeGenerator {
 /// - `expr_emitter` handles expression → C translation (stateless service)
 /// - `match_emitter` handles match → switch translation
 /// - `fun_sigs` provides return-type inference for function calls
-pub struct CEmitter<'a> {
+pub struct CEmitter {
     /// Function signatures for type inference.
-    fun_sigs: &'a [(&'a str, FunSig)],
+    fun_sigs: BTreeMap<String, FunSig>,
     /// Type analysis and typedef emission.
     type_analyzer: TypeAnalyzer,
     /// Name resolution and escaping.
     name_resolver: NameResolver,
     /// Expression translation (stateless service object).
-    expr_emitter: ExpressionEmitter<'a>,
+    expr_emitter: ExpressionEmitter,
     /// Match block translation.
     match_emitter: MatchEmitter,
     /// Target-specific code generation options.
     options: CEmitOptions,
 }
 
-impl<'a> CEmitter<'a> {
+impl CEmitter {
     /// Create a new emitter from the compilation context.
     ///
     /// Builds all sub-components and wires them together.
     pub fn new(
         struct_types: &[(&str, &Term<'_>)],
         enum_types: &[(&str, &Term<'_>)],
-        fun_sigs: &'a [(&'a str, FunSig)],
+        raw_defs: &[TopLevel<'_>],
     ) -> Result<Self, Diagnostic> {
-        Self::new_with_options(struct_types, enum_types, fun_sigs, CEmitOptions::default())
+        Self::new_with_options(struct_types, enum_types, raw_defs, CEmitOptions::default())
     }
 
     pub fn new_with_options(
         struct_types: &[(&str, &Term<'_>)],
         enum_types: &[(&str, &Term<'_>)],
-        fun_sigs: &'a [(&'a str, FunSig)],
+        raw_defs: &[TopLevel<'_>],
         options: CEmitOptions,
     ) -> Result<Self, Diagnostic> {
         let type_analyzer = TypeAnalyzer::new(struct_types, enum_types)?;
-        let expr_emitter = ExpressionEmitter::new(fun_sigs);
+        let fun_sigs = type_analyzer.collect_fun_sigs(raw_defs)?;
+        Self::new_with_fun_sigs_and_options(struct_types, enum_types, &fun_sigs, options)
+    }
+
+    pub fn new_with_fun_sigs(
+        struct_types: &[(&str, &Term<'_>)],
+        enum_types: &[(&str, &Term<'_>)],
+        fun_sigs: &[(&str, FunSig)],
+    ) -> Result<Self, Diagnostic> {
+        Self::new_with_fun_sigs_and_options(
+            struct_types,
+            enum_types,
+            &fun_sigs
+                .iter()
+                .map(|(name, sig)| ((*name).to_string(), sig.clone()))
+                .collect::<BTreeMap<_, _>>(),
+            CEmitOptions::default(),
+        )
+    }
+
+    pub fn new_with_fun_sigs_and_options(
+        struct_types: &[(&str, &Term<'_>)],
+        enum_types: &[(&str, &Term<'_>)],
+        fun_sigs: &BTreeMap<String, FunSig>,
+        options: CEmitOptions,
+    ) -> Result<Self, Diagnostic> {
+        let type_analyzer = TypeAnalyzer::new(struct_types, enum_types)?;
+        let expr_emitter = ExpressionEmitter::new(fun_sigs.clone());
         Ok(Self {
-            fun_sigs,
+            fun_sigs: fun_sigs.clone(),
             type_analyzer,
             name_resolver: NameResolver::new(),
             expr_emitter,
@@ -180,9 +208,8 @@ impl<'a> CEmitter<'a> {
                 .collect();
             let param_types: Vec<CType> = self
                 .fun_sigs
-                .iter()
-                .find(|(n, _)| *n == name)
-                .map(|(_, sig)| sig.param_types.clone())
+                .get(name)
+                .map(|sig| sig.param_types.clone())
                 .ok_or_else(|| {
                     Diagnostic::new(format!(
                         "Cannot emit function `{name}`; missing function signature"
@@ -354,7 +381,7 @@ impl<'a> CEmitter<'a> {
         self.type_analyzer
             .emit_type_declarations(&mut out, struct_types, enum_types)?;
 
-        for (name, sig) in self.fun_sigs {
+        for (name, sig) in &self.fun_sigs {
             if self.name_resolver.is_extern_name(name, raw_defs) {
                 let params = sig
                     .param_types
@@ -372,8 +399,8 @@ impl<'a> CEmitter<'a> {
         }
         if self
             .fun_sigs
-            .iter()
-            .any(|(name, _)| self.name_resolver.is_extern_name(name, raw_defs))
+            .keys()
+            .any(|name| self.name_resolver.is_extern_name(name, raw_defs))
         {
             out.push('\n');
         }
@@ -541,10 +568,9 @@ impl<'a> CEmitter<'a> {
         }
         Ok(getters)
     }
-
 }
 
-impl<'a> CodeGenerator for CEmitter<'a> {
+impl CodeGenerator for CEmitter {
     fn generate(
         &self,
         tops: &[TopLevel<'_>],

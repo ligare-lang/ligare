@@ -16,14 +16,7 @@ fn emit(source: &str) -> String {
         .collect_file_str(source)
         .expect("program should collect");
     let input = compiler.codegen_input();
-    emit_c(
-        input.tops,
-        input.raw_defs,
-        input.fun_sigs,
-        input.enum_types,
-        input.struct_types,
-    )
-    .expect("C generation should succeed")
+    emit_c(input).expect("C generation should succeed")
 }
 
 #[test]
@@ -76,11 +69,7 @@ fn bare_metal_target_requires_explicit_allocator_for_implicit_allocation() {
         .expect("program should collect");
     let input = compiler.codegen_input();
     let err = emit_c_with_options(
-        input.tops,
-        input.raw_defs,
-        input.fun_sigs,
-        input.enum_types,
-        input.struct_types,
+        input,
         CEmitOptions {
             target: CTarget::BareMetal,
         },

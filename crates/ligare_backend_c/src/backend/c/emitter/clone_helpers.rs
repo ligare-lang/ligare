@@ -1,6 +1,6 @@
 use super::*;
 
-impl<'a> CEmitter<'a> {
+impl CEmitter {
     pub(super) fn collect_extern_names(&self, raw_defs: &[TopLevel<'_>]) -> HashSet<String> {
         raw_defs
             .iter()
@@ -58,7 +58,7 @@ impl<'a> CEmitter<'a> {
         clone_type_names: &HashSet<String>,
     ) -> bool {
         self.fun_sigs.iter().any(|(name, sig)| {
-            called_extern_names.contains(*name)
+            called_extern_names.contains(name)
                 && (sig
                     .param_types
                     .iter()

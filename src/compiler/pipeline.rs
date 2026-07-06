@@ -15,7 +15,6 @@ struct ParsedProgram<'bump> {
 
 pub(crate) struct CodegenState<'bump> {
     pub(crate) raw_defs: Vec<TopLevel<'bump>>,
-    pub(crate) fun_sigs: Vec<(&'bump str, crate::backend::ir::FunSig)>,
     pub(crate) enum_types: Vec<(&'bump str, &'bump Term<'bump>)>,
     pub(crate) struct_types: Vec<(&'bump str, &'bump Term<'bump>)>,
 }
@@ -24,7 +23,6 @@ impl<'bump> CodegenState<'bump> {
     pub(crate) fn empty() -> Self {
         Self {
             raw_defs: Vec::new(),
-            fun_sigs: Vec::new(),
             enum_types: Vec::new(),
             struct_types: Vec::new(),
         }
@@ -557,7 +555,6 @@ impl<'bump> Compiler<'bump> {
 
     fn apply_codegen_state(&mut self, state: CodegenState<'bump>) {
         self.raw_defs = state.raw_defs;
-        self.fun_sigs = state.fun_sigs;
         self.enum_types = state.enum_types;
         self.struct_types = state.struct_types;
     }

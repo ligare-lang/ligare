@@ -19,7 +19,7 @@ use crate::core::syntax::{MatchBranch, PrimOp, Term};
 use crate::diagnostic::Diagnostic;
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 fn c_string_literal(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
@@ -67,9 +67,9 @@ impl FieldInit {
 ///
 /// Stateless service object — holds only function signatures and name resolver.
 /// Type maps are passed at call time to avoid self-referential borrows.
-pub struct ExpressionEmitter<'a> {
+pub struct ExpressionEmitter {
     /// Function signatures for return-type inference.
-    fun_sigs: &'a [(&'a str, FunSig)],
+    fun_sigs: BTreeMap<String, FunSig>,
     /// Name resolver for escaping.
     names: NameResolver,
     /// Counter for nested match expression temporaries.
@@ -86,9 +86,9 @@ pub struct ExpressionEmitter<'a> {
     allocation_counter: Cell<u32>,
 }
 
-impl<'a> ExpressionEmitter<'a> {
+impl ExpressionEmitter {
     /// Create a new expression emitter.
-    pub fn new(fun_sigs: &'a [(&'a str, FunSig)]) -> Self {
+    pub fn new(fun_sigs: BTreeMap<String, FunSig>) -> Self {
         Self {
             fun_sigs,
             names: NameResolver::new(),
@@ -193,9 +193,8 @@ impl<'a> ExpressionEmitter<'a> {
                 }
                 let ty = self
                     .fun_sigs
-                    .iter()
-                    .find(|(n, _)| *n == *name)
-                    .map(|(_, sig)| sig.ret_type.clone())
+                    .get(*name)
+                    .map(|sig| sig.ret_type.clone())
                     .ok_or_else(|| {
                         Diagnostic::new(format!(
                             "Cannot determine C type for `{name}`; missing function signature"
@@ -203,9 +202,8 @@ impl<'a> ExpressionEmitter<'a> {
                     })?;
                 let code = self
                     .fun_sigs
-                    .iter()
-                    .find(|(n, _)| *n == *name)
-                    .filter(|(_, sig)| sig.param_types.is_empty())
+                    .get(*name)
+                    .filter(|sig| sig.param_types.is_empty())
                     .map(|_| format!("{}()", self.names.escape(name)))
                     .unwrap_or_else(|| self.names.escape(name));
                 Ok(CValue::code(code, ty))

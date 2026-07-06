@@ -25,15 +25,7 @@ fn splice_inserts_code_and_eval_runs() {
     compiler
         .collect_file_str("#eval $(quote { 1 + 2 })\n")
         .unwrap();
-    let c = emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap()
-    .unwrap();
+    let c = emit_eval_c(compiler.codegen_input()).unwrap().unwrap();
     let stdout = compile_and_run_c(&c).unwrap();
     assert_eq!(stdout, "3\n");
 }
@@ -46,15 +38,7 @@ fn nested_quote_splice_eval_runs() {
     compiler
         .collect_file_str("#eval $(quote { 1 + $(quote { 2 }) })\n")
         .unwrap();
-    let c = emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap()
-    .unwrap();
+    let c = emit_eval_c(compiler.codegen_input()).unwrap().unwrap();
     let stdout = compile_and_run_c(&c).unwrap();
     assert_eq!(stdout, "3\n");
 }
@@ -99,15 +83,7 @@ $(generated_defs)
 "#,
         )
         .unwrap();
-    let c = emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap()
-    .unwrap();
+    let c = emit_eval_c(compiler.codegen_input()).unwrap().unwrap();
     let stdout = compile_and_run_c(&c).unwrap();
     assert_eq!(stdout, "42\n");
 }
@@ -154,15 +130,7 @@ def Marker : prop := struct
 "#,
         )
         .unwrap();
-    let c = emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap()
-    .unwrap();
+    let c = emit_eval_c(compiler.codegen_input()).unwrap().unwrap();
     let stdout = compile_and_run_c(&c).unwrap();
     assert_eq!(stdout, "8\n");
 }
@@ -190,15 +158,7 @@ def Host : int := 0
 "#,
         )
         .unwrap();
-    let c = emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap()
-    .unwrap();
+    let c = emit_eval_c(compiler.codegen_input()).unwrap().unwrap();
     let stdout = compile_and_run_c(&c).unwrap();
     assert_eq!(stdout, "42\n");
 }
@@ -314,15 +274,7 @@ def Host : int := 0
 "#,
         )
         .unwrap();
-    let c = emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap()
-    .unwrap();
+    let c = emit_eval_c(compiler.codegen_input()).unwrap().unwrap();
     let stdout = compile_and_run_c(&c).unwrap();
     assert_eq!(stdout, "42\n");
 }

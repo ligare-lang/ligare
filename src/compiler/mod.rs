@@ -15,8 +15,8 @@ use std::collections::HashMap;
 use std::fs;
 
 use bumpalo::Bump;
+use ligare_backend::CodegenInput;
 
-use crate::backend::ir::FunSig;
 use crate::checker::context::empty_ctx;
 use crate::checker::{CheckMode, TypeChecker};
 use crate::config::{
@@ -40,19 +40,6 @@ pub(crate) use pipeline::{CodegenState, MonomorphizedProgram};
 fn read_source_file(file: &str) -> Result<String, Diagnostic> {
     fs::read_to_string(file)
         .map_err(|e| Diagnostic::new(format!("cannot read source file `{}`: {}", file, e)))
-}
-
-/// Borrowed view of the data C codegen needs.
-///
-/// This is intentionally a light wrapper over the existing compiler-owned
-/// storage. It makes the handoff explicit without introducing a full pipeline
-/// of separate IR types.
-pub struct CodegenInput<'a, 'bump> {
-    pub tops: &'a [TopLevel<'bump>],
-    pub raw_defs: &'a [TopLevel<'bump>],
-    pub fun_sigs: &'a [(&'bump str, FunSig)],
-    pub enum_types: &'a [(&'bump str, &'bump Term<'bump>)],
-    pub struct_types: &'a [(&'bump str, &'bump Term<'bump>)],
 }
 
 pub type ExpandedTopLevels<'bump> = Vec<(usize, TopLevel<'bump>)>;
@@ -86,8 +73,6 @@ pub struct Compiler<'bump> {
     /// Raw (un-erased) function definitions for on-demand codegen.
     /// Bodies are resolved & desugared, but type params are NOT erased yet.
     raw_defs: Vec<TopLevel<'bump>>,
-    /// Function signatures extracted before erasure (for C codegen).
-    fun_sigs: Vec<(&'bump str, FunSig)>,
     /// Enum type definitions collected before erasure (for C codegen).
     pub enum_types: Vec<(&'bump str, &'bump Term<'bump>)>,
     /// Struct type definitions collected before erasure (for C codegen).
@@ -113,7 +98,6 @@ impl<'bump> Compiler<'bump> {
             env: HashMap::new(),
             tops: vec![],
             raw_defs: vec![],
-            fun_sigs: vec![],
             enum_types: vec![],
             struct_types: vec![],
             scoped_implicit_params: Vec::new(),
@@ -291,17 +275,11 @@ impl<'bump> Compiler<'bump> {
         &self.raw_defs
     }
 
-    /// Get the function signatures extracted before erasure (for C codegen).
-    pub fn fun_sigs(&self) -> &[(&'bump str, FunSig)] {
-        &self.fun_sigs
-    }
-
     /// Get a single explicit codegen input view.
     pub fn codegen_input(&self) -> CodegenInput<'_, 'bump> {
         CodegenInput {
             tops: &self.tops,
             raw_defs: &self.raw_defs,
-            fun_sigs: &self.fun_sigs,
             enum_types: &self.enum_types,
             struct_types: &self.struct_types,
         }
@@ -393,5 +371,4 @@ impl<'bump> Compiler<'bump> {
                 })?;
         Ok(self.arena.annot(func_body, func_constraint))
     }
-
 }

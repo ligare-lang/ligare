@@ -1,6 +1,6 @@
 use super::*;
 
-impl<'a> CEmitter<'a> {
+impl CEmitter {
     pub(super) fn collect_outputs<'t>(
         &self,
         tops: &'t [TopLevel<'_>],
@@ -189,9 +189,8 @@ impl<'a> CEmitter<'a> {
             Term::App(_, _) if self.is_string_concat_app(term) => true,
             Term::Builtin(name) | Term::Global(name) => self
                 .fun_sigs
-                .iter()
-                .find(|(n, _)| *n == *name)
-                .is_some_and(|(_, sig)| sig.ret_type == CType::Str),
+                .get(*name)
+                .is_some_and(|sig| sig.ret_type == CType::Str),
             _ => false,
         }
     }

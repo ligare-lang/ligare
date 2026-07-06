@@ -1,6 +1,6 @@
 use super::*;
 
-impl<'a> ExpressionEmitter<'a> {
+impl ExpressionEmitter {
     pub(super) fn emit_struct_cons(
         &self,
         sname: &str,

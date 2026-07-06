@@ -151,14 +151,7 @@ fn codegen_match_with_str_payload() {
             "def Msg : prop := enum\n  | Text of (s : str)\n  | Code of (n : int)\n#eval match Text \"hi\" with | Text s => s | Code n => \"err\"\n",
         )
         .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     assert!(c.contains("const char*"), "missing str support:\n{c}");
 }
 
@@ -169,14 +162,7 @@ fn codegen_ptr_cast_emits_c_cast() {
     compiler
         .collect_file_str("def cast (p : ptr c_int) : ptr c_uint := unsafe { ptr_cast c_uint p }\n")
         .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     assert!(c.contains("unsigned int* cast(int* p)"), "{c}");
     assert!(c.contains("((unsigned int*)p)"), "{c}");
     assert!(!c.contains("ptr_cast("), "{c}");
@@ -193,14 +179,7 @@ fn codegen_multiple_enums() {
             "def A : prop := enum\n  | A1\n  | A2\ndef B : prop := enum\n  | B1\n  | B2\ndef a : A := A1\ndef b : B := B2\n#eval a\n#eval b\n",
         )
         .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     assert!(c.contains("typedef struct A"), "missing typedef A:\n{c}");
     assert!(c.contains("typedef struct B"), "missing typedef B:\n{c}");
     assert!(c.contains("const A a"), "missing const A:\n{c}");
@@ -218,14 +197,7 @@ fn codegen_function_with_match_body() {
             "def Color : prop := enum\n  | Red\n  | Green\ndef f (c : Color) : int := match c with | Red => 1 | Green => 2\n#eval f Red\n",
         )
         .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     assert!(c.contains("int64_t f(Color"), "missing fun sig:\n{c}");
     assert!(c.contains("switch"), "missing switch in fun body:\n{c}");
 }
@@ -241,14 +213,7 @@ fn codegen_wildcard_match_no_decl() {
             "def Opt : prop := enum\n  | None\n  | Some of (val : int)\n#eval match Some 7 with | None => 0 | Some _ => 1\n",
         )
         .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    let c = emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
     // Should NOT declare the wildcard variable
     assert!(
         !c.contains("int64_t _ ="),
@@ -267,23 +232,10 @@ fn codegen_constant_constructed_from_match() {
             "def Color : prop := enum\n  | Red\n  | Green\ndef x : Color := Red\n#eval x\n",
         )
         .unwrap();
-    let c = emit_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
-    let eval_c = emit_eval_c(
-        compiler.tops(),
-        compiler.raw_defs(),
-        compiler.fun_sigs(),
-        &compiler.enum_types,
-        &compiler.struct_types,
-    )
-    .unwrap_or_else(|e| panic!("{e}"))
-    .unwrap();
+    let c = emit_c(compiler.codegen_input()).unwrap_or_else(|e| panic!("{e}"));
+    let eval_c = emit_eval_c(compiler.codegen_input())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .unwrap();
     assert!(c.contains("const Color x"), "missing const:\n{c}");
     assert!(
         !c.contains("printf"),
@@ -430,14 +382,7 @@ fn codegen_extern_call_is_direct_c_call() {
         )
         .unwrap();
     let codegen = compiler.codegen_input();
-    let c = emit_c(
-        codegen.tops,
-        codegen.raw_defs,
-        codegen.fun_sigs,
-        codegen.enum_types,
-        codegen.struct_types,
-    )
-    .unwrap();
+    let c = emit_c(codegen).unwrap();
     assert!(
         c.contains("extern int64_t c_abs(int64_t);"),
         "missing extern prototype:\n{c}"
@@ -461,14 +406,7 @@ fn codegen_io_extern_uses_inner_c_repr() {
         )
         .unwrap();
     let codegen = compiler.codegen_input();
-    let c = emit_c(
-        codegen.tops,
-        codegen.raw_defs,
-        codegen.fun_sigs,
-        codegen.enum_types,
-        codegen.struct_types,
-    )
-    .unwrap();
+    let c = emit_c(codegen).unwrap();
     assert!(c.contains("extern int64_t c_read();"), "{c}");
     assert!(c.contains("c_read()"), "{c}");
 }
