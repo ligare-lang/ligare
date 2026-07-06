@@ -10,7 +10,7 @@ Ligare is an experimental programming language and compiler written in Rust. It 
 The current repository contains:
 
 - A lexer, parser, type checker, evaluator, formatter, documentation generator, and C backend for `.lig` source files.
-- A package mode driven by `ligare.toml`, with build, update, test, format, and documentation commands.
+- A package mode driven by `ligare.toml`, with new/init, build, update, test, format, and documentation commands.
 - Experimental support for refinement constraints, proof blocks, structs, enums, pattern matching, modules, generics, and code generation to C.
 - A small `ligls` language-server crate under `crates/ligls`.
 
@@ -78,7 +78,8 @@ Usage: ligare [OPTIONS] [FILES]... [COMMAND]
 | `--eval <EXPR>` | Evaluate an expression after processing the input files. |
 | `--emit-c` | Emit C source code instead of running the evaluator. |
 | `-o, --output <PATH>` | Compile generated C into a native executable at `PATH`. |
-| `new [--bin\|--lib] PATH` | Create a new package directory with `ligare.toml` and a `src` entry file. |
+| `new [--bin\|--lib] PATH` | Create a new package directory with `ligare.toml`, a `src` entry file, and Git scaffolding. |
+| `init [--bin\|--lib] [PATH]` | Initialize the current or target directory as a package, preserving existing files and adding Git scaffolding. |
 | `build [PATH]` | Build the package found at `PATH` or the current directory. |
 | `update [NAME] [VERSION]` | Refresh `ligare.lock`, optionally pinning one dependency. |
 | `test [PATH]` | Run package files whose names end in `_test.lig`. |

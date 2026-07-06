@@ -583,5 +583,4 @@ impl<'bump> TypeChecker<'bump> {
             PrettyPrinter::pretty(subject_val)
         ))
     }
-
 }

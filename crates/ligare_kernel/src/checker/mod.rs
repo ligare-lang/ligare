@@ -266,5 +266,4 @@ impl<'bump> TypeChecker<'bump> {
             .find(|(n, _)| *n == name)
             .map(|(_, sig)| *sig)
     }
-
 }

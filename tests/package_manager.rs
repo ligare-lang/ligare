@@ -326,6 +326,9 @@ fn cli_new_creates_binary_package() {
     assert!(manifest.contains("type = \"binary\""), "{manifest}");
     let main = fs::read_to_string(package.join("src/main.lig")).unwrap();
     assert_eq!(main, "pub def main : IO () := ()\n");
+    let gitignore = fs::read_to_string(package.join(".gitignore")).unwrap();
+    assert_eq!(gitignore, "/target\n");
+    assert!(package.join(".git").is_dir());
 
     let status = Command::new(bin)
         .args(["build", package.to_str().unwrap()])
@@ -353,6 +356,9 @@ fn cli_new_creates_library_package() {
     assert!(manifest.contains("entry = \"src/lib.lig\""), "{manifest}");
     let lib = fs::read_to_string(package.join("src/lib.lig")).unwrap();
     assert_eq!(lib, "pub def hello : str := \"hello\"\n");
+    let gitignore = fs::read_to_string(package.join(".gitignore")).unwrap();
+    assert_eq!(gitignore, "/target\n");
+    assert!(package.join(".git").is_dir());
 
     let status = Command::new(bin)
         .args(["build", package.to_str().unwrap()])
@@ -378,6 +384,74 @@ fn cli_new_rejects_non_empty_directory() {
         "keep me\n"
     );
     assert!(!root.join("ligare.toml").exists());
+}
+
+#[test]
+fn cli_init_creates_binary_package_in_existing_directory() {
+    let root = temp_project();
+    write(&root, "README.md", "keep me\n");
+
+    let bin = env!("CARGO_BIN_EXE_ligare");
+    let status = Command::new(bin)
+        .args(["init", root.to_str().unwrap()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let manifest = fs::read_to_string(root.join("ligare.toml")).unwrap();
+    assert!(manifest.contains("type = \"binary\""), "{manifest}");
+    let main = fs::read_to_string(root.join("src/main.lig")).unwrap();
+    assert_eq!(main, "pub def main : IO () := ()\n");
+    assert_eq!(
+        fs::read_to_string(root.join("README.md")).unwrap(),
+        "keep me\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join(".gitignore")).unwrap(),
+        "/target\n"
+    );
+    assert!(root.join(".git").is_dir());
+}
+
+#[test]
+fn cli_init_defaults_to_current_directory_name() {
+    let root = temp_project().join("hello-world");
+    fs::create_dir_all(&root).unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_ligare");
+    let status = Command::new(bin)
+        .arg("init")
+        .current_dir(&root)
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let manifest = fs::read_to_string(root.join("ligare.toml")).unwrap();
+    assert!(manifest.contains("name = \"hello_world\""), "{manifest}");
+    assert!(root.join(".git").is_dir());
+}
+
+#[test]
+fn cli_init_does_not_create_nested_git_repo() {
+    let repo = temp_project();
+    run(&repo, &["init"]);
+
+    let package = repo.join("hello");
+    fs::create_dir_all(&package).unwrap();
+    write(&package, "README.md", "keep me\n");
+
+    let bin = env!("CARGO_BIN_EXE_ligare");
+    let status = Command::new(bin)
+        .args(["init", package.to_str().unwrap()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    assert!(!package.join(".git").exists());
+    assert_eq!(
+        fs::read_to_string(package.join(".gitignore")).unwrap(),
+        "/target\n"
+    );
 }
 
 #[test]

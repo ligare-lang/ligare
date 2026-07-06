@@ -547,7 +547,6 @@ impl<'bump> Compiler<'bump> {
             _ => Ok(term),
         }
     }
-
 }
 
 #[cfg(test)]

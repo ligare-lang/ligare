@@ -592,5 +592,4 @@ impl<'bump> Compiler<'bump> {
             _ => None,
         }
     }
-
 }

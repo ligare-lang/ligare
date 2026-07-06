@@ -550,5 +550,4 @@ impl<'bump> Compiler<'bump> {
             }
         }
     }
-
 }

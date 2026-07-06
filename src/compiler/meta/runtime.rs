@@ -252,7 +252,10 @@ impl<'bump> Compiler<'bump> {
         )
     }
 
-    pub(super) fn decode_expr(&self, expr: &'bump Term<'bump>) -> Result<&'bump Term<'bump>, String> {
+    pub(super) fn decode_expr(
+        &self,
+        expr: &'bump Term<'bump>,
+    ) -> Result<&'bump Term<'bump>, String> {
         let expr = self.peel(expr);
         let Term::Variant(name, idx, payloads) = expr else {
             return Err(format!("expected Expr variant, got {:?}", expr));

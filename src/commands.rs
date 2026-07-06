@@ -6,21 +6,48 @@ use ligare::package::{find_manifest_root, resolve_project, write_lock};
 use ligare_doc as docgen;
 use ligare_fmt as fmt;
 use std::path::{Path, PathBuf};
-use std::process;
+use std::process::{self, Command};
 
 pub(super) fn run_new(path: &Path, lib: bool, _bin: bool) {
+    run_package_init(path, lib, PackageInitMode::New);
+}
+
+pub(super) fn run_init(path: &Path, lib: bool, _bin: bool) {
+    run_package_init(path, lib, PackageInitMode::Init);
+}
+
+fn run_package_init(path: &Path, lib: bool, mode: PackageInitMode) {
     let package_type = if lib {
         PackageType::Lib
     } else {
         PackageType::Binary
     };
-    if let Err(e) = create_package(path, package_type) {
+    if let Err(e) = create_package(path, package_type, mode) {
         eprintln!("{e}");
         process::exit(1);
     }
 }
 
-fn create_package(path: &Path, package_type: PackageType) -> Result<(), String> {
+#[derive(Clone, Copy)]
+enum PackageInitMode {
+    New,
+    Init,
+}
+
+impl PackageInitMode {
+    fn action(self) -> &'static str {
+        match self {
+            Self::New => "Created",
+            Self::Init => "Initialized",
+        }
+    }
+}
+
+fn create_package(
+    path: &Path,
+    package_type: PackageType,
+    mode: PackageInitMode,
+) -> Result<(), String> {
     if path.exists() {
         if !path.is_dir() {
             return Err(format!(
@@ -28,13 +55,15 @@ fn create_package(path: &Path, package_type: PackageType) -> Result<(), String> 
                 path.display()
             ));
         }
-        let mut entries = std::fs::read_dir(path)
-            .map_err(|e| format!("cannot read `{}`: {e}", path.display()))?;
-        if entries.next().is_some() {
-            return Err(format!(
-                "`{}` already exists and is not empty; use an empty directory",
-                path.display()
-            ));
+        if matches!(mode, PackageInitMode::New) {
+            let mut entries = std::fs::read_dir(path)
+                .map_err(|e| format!("cannot read `{}`: {e}", path.display()))?;
+            if entries.next().is_some() {
+                return Err(format!(
+                    "`{}` already exists and is not empty; use an empty directory",
+                    path.display()
+                ));
+            }
         }
     } else {
         std::fs::create_dir_all(path)
@@ -50,9 +79,12 @@ fn create_package(path: &Path, package_type: PackageType) -> Result<(), String> 
 
     let (entry_name, entry_source) = package_entry(package_type);
     write_new_file(&src.join(entry_name), entry_source)?;
+    write_file_if_missing(&path.join(".gitignore"), package_gitignore())?;
+    init_git_repository_if_needed(path)?;
 
     eprintln!(
-        "Created {} package `{}`",
+        "{} {} package `{}`",
+        mode.action(),
         package_kind(package_type),
         path.display()
     );
@@ -60,10 +92,7 @@ fn create_package(path: &Path, package_type: PackageType) -> Result<(), String> 
 }
 
 fn package_name_from_path(path: &Path) -> Result<String, String> {
-    let raw = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| format!("cannot infer package name from `{}`", path.display()))?;
+    let raw = package_name_segment(path)?;
     let mut name = String::new();
     for ch in raw.chars() {
         if ch.is_ascii_alphanumeric() || ch == '_' {
@@ -89,6 +118,105 @@ fn package_name_from_path(path: &Path) -> Result<String, String> {
         name.push('_');
     }
     Ok(name)
+}
+
+fn package_name_segment(path: &Path) -> Result<String, String> {
+    if let Some(name) = path
+        .file_name()
+        .filter(|name| *name != std::ffi::OsStr::new(".") && *name != std::ffi::OsStr::new(".."))
+    {
+        return Ok(name.to_string_lossy().into_owned());
+    }
+    if path.exists() {
+        let resolved = path
+            .canonicalize()
+            .map_err(|e| format!("cannot resolve `{}`: {e}", path.display()))?;
+        if let Some(name) = resolved.file_name() {
+            return Ok(name.to_string_lossy().into_owned());
+        }
+    }
+    Err(format!(
+        "cannot infer package name from `{}`",
+        path.display()
+    ))
+}
+
+fn package_manifest(name: &str, package_type: PackageType) -> String {
+    match package_type {
+        PackageType::Binary => format!(
+            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\ntype = \"binary\"\n\n[dependencies]\n"
+        ),
+        PackageType::Lib => format!(
+            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\ntype = \"lib\"\nentry = \"src/lib.lig\"\n\n[dependencies]\n"
+        ),
+    }
+}
+
+fn package_entry(package_type: PackageType) -> (&'static str, &'static str) {
+    match package_type {
+        PackageType::Binary => ("main.lig", "pub def main : IO () := ()\n"),
+        PackageType::Lib => ("lib.lig", "pub def hello : str := \"hello\"\n"),
+    }
+}
+
+fn package_gitignore() -> &'static str {
+    "/target\n"
+}
+
+fn init_git_repository_if_needed(path: &Path) -> Result<(), String> {
+    if is_inside_git_work_tree(path) {
+        return Ok(());
+    }
+    let status = match Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(path)
+        .status()
+    {
+        Ok(status) => status,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(format!(
+                "cannot run `git init` in `{}`: {err}",
+                path.display()
+            ));
+        }
+    };
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("`git init` failed in `{}`", path.display()))
+    }
+}
+
+fn is_inside_git_work_tree(path: &Path) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(path)
+        .output()
+        .is_ok_and(|output| {
+            output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true"
+        })
+}
+
+fn package_kind(package_type: PackageType) -> &'static str {
+    match package_type {
+        PackageType::Binary => "binary",
+        PackageType::Lib => "library",
+    }
+}
+
+fn write_new_file(path: &Path, content: &str) -> Result<(), String> {
+    if path.exists() {
+        return Err(format!("`{}` already exists", path.display()));
+    }
+    std::fs::write(path, content).map_err(|e| format!("cannot write `{}`: {e}", path.display()))
+}
+
+fn write_file_if_missing(path: &Path, content: &str) -> Result<(), String> {
+    if path.exists() {
+        return Ok(());
+    }
+    std::fs::write(path, content).map_err(|e| format!("cannot write `{}`: {e}", path.display()))
 }
 
 fn is_ligare_keyword(name: &str) -> bool {
@@ -127,38 +255,6 @@ fn is_ligare_keyword(name: &str) -> bool {
             | "where"
             | "with"
     )
-}
-
-fn package_manifest(name: &str, package_type: PackageType) -> String {
-    match package_type {
-        PackageType::Binary => format!(
-            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\ntype = \"binary\"\n\n[dependencies]\n"
-        ),
-        PackageType::Lib => format!(
-            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\ntype = \"lib\"\nentry = \"src/lib.lig\"\n\n[dependencies]\n"
-        ),
-    }
-}
-
-fn package_entry(package_type: PackageType) -> (&'static str, &'static str) {
-    match package_type {
-        PackageType::Binary => ("main.lig", "pub def main : IO () := ()\n"),
-        PackageType::Lib => ("lib.lig", "pub def hello : str := \"hello\"\n"),
-    }
-}
-
-fn package_kind(package_type: PackageType) -> &'static str {
-    match package_type {
-        PackageType::Binary => "binary",
-        PackageType::Lib => "library",
-    }
-}
-
-fn write_new_file(path: &Path, content: &str) -> Result<(), String> {
-    if path.exists() {
-        return Err(format!("`{}` already exists", path.display()));
-    }
-    std::fs::write(path, content).map_err(|e| format!("cannot write `{}`: {e}", path.display()))
 }
 
 pub(super) fn run_build(path: &Path, cli: &Cli) {

@@ -200,10 +200,7 @@ impl<'bump> Compiler<'bump> {
         })
     }
 
-    pub(super) fn codegen_uses_registered_generics(
-        &self,
-        codegen: &CodegenState<'bump>,
-    ) -> bool {
+    pub(super) fn codegen_uses_registered_generics(&self, codegen: &CodegenState<'bump>) -> bool {
         codegen.raw_defs.iter().any(|top| match top {
             TopLevel::TLDef(_, params, ret, body, _) => {
                 self.params_use_registered_generics(params)

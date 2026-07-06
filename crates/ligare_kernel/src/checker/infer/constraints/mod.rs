@@ -531,5 +531,4 @@ impl<'bump> TypeChecker<'bump> {
             ))
         }
     }
-
 }

@@ -286,5 +286,4 @@ impl<'a, 'bump> Parser<'a, 'bump> {
         }
         false
     }
-
 }

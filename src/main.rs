@@ -53,6 +53,18 @@ enum Command {
         #[arg(long)]
         bin: bool,
     },
+    /// Initialize a Ligare package in an existing directory
+    Init {
+        /// Project directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Create a library package
+        #[arg(long, conflicts_with = "bin")]
+        lib: bool,
+        /// Create a binary package
+        #[arg(long)]
+        bin: bool,
+    },
     /// Build the current Ligare package
     Build {
         /// Project directory
@@ -104,6 +116,7 @@ fn main() {
     if let Some(command) = &cli.command {
         match command {
             Command::New { path, lib, bin } => commands::run_new(path, *lib, *bin),
+            Command::Init { path, lib, bin } => commands::run_init(path, *lib, *bin),
             Command::Build { path } => commands::run_build(path, &cli),
             Command::Update {
                 name,
@@ -122,7 +135,9 @@ fn main() {
     }
 
     if cli.files.is_empty() {
-        eprintln!("ligare requires source files, or one of: build, update, test, fmt, doc");
+        eprintln!(
+            "ligare requires source files, or one of: new, init, build, update, test, fmt, doc"
+        );
         process::exit(2);
     }
 
