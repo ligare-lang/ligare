@@ -3,6 +3,8 @@
 > **Everything is a term. Everything is a constraint.**  
 > File extension: `.lig`
 
+> [Official Website](https://ligare.plos.edu.ci)
+
 [中文版](README_zh.md)
 
 Ligare is an experimental programming language and compiler written in Rust. It explores a minimal core where values, types, propositions, proofs, functions, data declarations, and macros are all represented as terms constrained by other terms.
