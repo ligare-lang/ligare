@@ -734,6 +734,7 @@ impl<'a> CEmitter<'a> {
                 continue;
             };
             if *name == "main"
+                || name.starts_with(GLOBAL_ALLOCATOR_NAME_PREFIX)
                 || !params.is_empty()
                 || self.name_resolver.count_lams(body) != 0
                 || !self.should_emit_zero_arg_getter(body)

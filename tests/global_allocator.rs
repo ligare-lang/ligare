@@ -97,10 +97,12 @@ fn bare_metal_target_requires_explicit_allocator_for_implicit_allocation() {
 #[test]
 fn generated_c_expands_string_concat_to_direct_allocator_call() {
     let c = emit(r#"def joined : str := "a" + "b""#);
-    assert!(c.contains("const char* joined = ({"), "{c}");
+    assert!(c.contains("const char* joined(void) {"), "{c}");
     assert!(
         c.contains("char* _ligare_out0 = (char*)ligare_default_allocate"),
         "{c}"
     );
     assert!(!c.contains("ligare_str_concat"), "{c}");
+    let output = compile_and_run_c(&c).expect("generated C should compile and run");
+    assert_eq!(output, "");
 }

@@ -1,3 +1,5 @@
+use std::os::*
+
 pub mod list
 pub mod vec
 
@@ -5,4 +7,10 @@ pub def Allocator : prop := struct
   allocate : int -> ptr ()
   deallocate : ptr () -> int
   reallocate : ptr () -> int -> ptr ()
+
+def DefaultAllocator := struct
+  _: ()
+
+def allocate (size : int) := malloc x
+
 

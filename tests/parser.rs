@@ -1129,7 +1129,14 @@ fn comparison_of_two_binary_subs() {
     let right = bin(&arena, PrimOp::Sub, arena.var(0), arena.lit_int(2));
     assert_eq!(
         *parse_fun_body("fun n => fun m => n - 1 < m - 2", b, &arena),
-        *arena.lam(arena.lam(bin(&arena, PrimOp::Lt, left, right)))
+        *arena.lam(arena.annot(
+            arena.lam(bin(&arena, PrimOp::Lt, left, right)),
+            arena.pi(
+                s(&arena, "m"),
+                arena.builtin(s(&arena, "data")),
+                arena.builtin(s(&arena, "data"))
+            )
+        ))
     );
 }
 
