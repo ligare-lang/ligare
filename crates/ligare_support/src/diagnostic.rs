@@ -3,6 +3,13 @@ use annotate_snippets::{AnnotationKind, Level, Renderer, Snippet};
 /// A source span: byte offset range in the source text.
 pub type Span = std::ops::Range<usize>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Severity {
+    #[default]
+    Error,
+    Warning,
+}
+
 /// A structured diagnostic message with optional source span information.
 ///
 /// Replaces bare `String` errors in public-facing compiler APIs so callers
@@ -10,6 +17,7 @@ pub type Span = std::ops::Range<usize>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub message: String,
+    pub severity: Severity,
     pub span: Option<Span>,
     pub file: Option<String>,
     pub source: Option<String>,
@@ -18,8 +26,23 @@ pub struct Diagnostic {
 impl Diagnostic {
     /// Create a diagnostic with just a message (no span).
     pub fn new(message: impl Into<String>) -> Self {
+        Self::error(message)
+    }
+
+    pub fn error(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            severity: Severity::Error,
+            span: None,
+            file: None,
+            source: None,
+        }
+    }
+
+    pub fn warning(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            severity: Severity::Warning,
             span: None,
             file: None,
             source: None,
@@ -28,8 +51,23 @@ impl Diagnostic {
 
     /// Create a diagnostic with both a message and a source span.
     pub fn with_span(message: impl Into<String>, span: Span) -> Self {
+        Self::error_with_span(message, span)
+    }
+
+    pub fn error_with_span(message: impl Into<String>, span: Span) -> Self {
         Self {
             message: message.into(),
+            severity: Severity::Error,
+            span: Some(span),
+            file: None,
+            source: None,
+        }
+    }
+
+    pub fn warning_with_span(message: impl Into<String>, span: Span) -> Self {
+        Self {
+            message: message.into(),
+            severity: Severity::Warning,
             span: Some(span),
             file: None,
             source: None,
@@ -62,7 +100,11 @@ impl Diagnostic {
         let start = span.start.min(source.len());
         let end = span.end.min(source.len()).max(start);
         let origin = self.file.as_deref().unwrap_or("<source>");
-        let report = &[Level::ERROR.primary_title(&self.message).element(
+        let level = match self.severity {
+            Severity::Error => Level::ERROR,
+            Severity::Warning => Level::WARNING,
+        };
+        let report = &[level.primary_title(&self.message).element(
             Snippet::source(source)
                 .path(origin)
                 .annotation(AnnotationKind::Primary.span(start..end)),
@@ -76,10 +118,18 @@ impl std::fmt::Display for Diagnostic {
         if let Some(rendered) = self.render_snippet() {
             return write!(f, "{rendered}");
         }
+        let prefix = match self.severity {
+            Severity::Error => "",
+            Severity::Warning => "warning: ",
+        };
         if let Some(span) = &self.span {
-            return write!(f, "{} (at {}..{})", self.message, span.start, span.end);
+            return write!(
+                f,
+                "{prefix}{} (at {}..{})",
+                self.message, span.start, span.end
+            );
         }
-        write!(f, "{}", self.message)
+        write!(f, "{prefix}{}", self.message)
     }
 }
 

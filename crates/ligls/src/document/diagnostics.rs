@@ -2,7 +2,7 @@ use bumpalo::Bump;
 use ligare::checker::CheckMode;
 use ligare::compiler::Compiler;
 use ligare::core::pool::TermArena;
-use ligare::diagnostic::{Diagnostic as CompilerDiagnostic, Span};
+use ligare::diagnostic::{Diagnostic as CompilerDiagnostic, Severity as CompilerSeverity, Span};
 use tower_lsp::lsp_types as lsp;
 
 use super::text::offset_to_position;
@@ -63,7 +63,10 @@ pub(crate) fn compiler_diagnostic_to_lsp(
         .unwrap_or(0..0);
     lsp::Diagnostic {
         range: span_to_lsp_range(source, span),
-        severity: Some(lsp::DiagnosticSeverity::ERROR),
+        severity: Some(match diagnostic.severity {
+            CompilerSeverity::Error => lsp::DiagnosticSeverity::ERROR,
+            CompilerSeverity::Warning => lsp::DiagnosticSeverity::WARNING,
+        }),
         source: Some("ligare".to_string()),
         message: diagnostic.message,
         ..Default::default()

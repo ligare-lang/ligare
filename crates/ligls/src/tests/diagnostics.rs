@@ -115,6 +115,62 @@ fn diagnostic_range_targets_unbound_identifier() {
     assert_eq!(range_text(source, diagnostic.range), "missing");
 }
 
+#[test]
+fn naming_warnings_use_warning_severity_and_name_ranges() {
+    let source = "def bad_type : prop := enum\n  | One\ndef BadValue : int := 1\ntheorem BadTheorem : int := 0\n";
+    let diagnostics = lsp_diagnostics_for_source(source, DiagnosticCheck::Fast);
+
+    let type_warning = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("constraint/type `bad_type`"))
+        .expect("type naming warning");
+    assert_eq!(
+        type_warning.severity,
+        Some(lsp::DiagnosticSeverity::WARNING)
+    );
+    assert_eq!(range_text(source, type_warning.range), "bad_type");
+
+    let value_warning = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("definition `BadValue`"))
+        .expect("value naming warning");
+    assert_eq!(
+        value_warning.severity,
+        Some(lsp::DiagnosticSeverity::WARNING)
+    );
+    assert_eq!(range_text(source, value_warning.range), "BadValue");
+
+    let theorem_warning = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("theorem `BadTheorem`"))
+        .expect("theorem naming warning");
+    assert_eq!(
+        theorem_warning.severity,
+        Some(lsp::DiagnosticSeverity::WARNING)
+    );
+    assert_eq!(range_text(source, theorem_warning.range), "BadTheorem");
+}
+
+#[tokio::test]
+async fn service_publishes_naming_warnings() {
+    let publisher = RecordingPublisher::default();
+    let service = DiagnosticService::new(publisher.clone());
+    let uri = lsp::Url::parse("file:///workspace/main.lig").unwrap();
+    let source = "def BadValue : int := 1\n";
+
+    service.did_open(uri, Some(1), source.to_string()).await;
+
+    let notifications = publisher.wait_for_notifications(1).await;
+    let diagnostics = &notifications.last().unwrap().1;
+    let warning = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("definition `BadValue`"))
+        .expect("naming warning");
+
+    assert_eq!(warning.severity, Some(lsp::DiagnosticSeverity::WARNING));
+    assert_eq!(range_text(source, warning.range), "BadValue");
+}
+
 #[tokio::test]
 async fn service_diagnostics_resolve_package_imports_from_manifest() {
     let publisher = RecordingPublisher::default();

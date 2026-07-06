@@ -4,6 +4,7 @@
 //! struct and its lifecycle methods.
 
 pub mod cache;
+mod lint;
 mod meta;
 pub mod modules;
 mod pipeline;
@@ -139,7 +140,11 @@ impl<'bump> Compiler<'bump> {
         self.quiet = true;
         let previous_mode = self.checker.mode();
         self.checker.set_mode(mode);
-        let mut diagnostics = Vec::new();
+        let tops = tops.into_iter().collect::<Vec<_>>();
+        let mut diagnostics = lint::naming_diagnostics(&tops, source)
+            .into_iter()
+            .map(|diagnostic| diagnostic.with_source_if_missing(file, source))
+            .collect::<Vec<_>>();
 
         for top in tops {
             if let Err(diagnostic) = self.process_top_level(top) {
@@ -167,7 +172,11 @@ impl<'bump> Compiler<'bump> {
         self.quiet = true;
         let previous_mode = self.checker.mode();
         self.checker.set_mode(mode);
-        let mut diagnostics = Vec::new();
+        let tops = tops.into_iter().collect::<Vec<_>>();
+        let mut diagnostics = lint::naming_indexed_diagnostics(&tops, source)
+            .into_iter()
+            .map(|(idx, diagnostic)| (idx, diagnostic.with_source_if_missing(file, source)))
+            .collect::<Vec<_>>();
 
         for (idx, top, report) in tops {
             if let Err(diagnostic) = self.process_top_level(top)
@@ -197,8 +206,12 @@ impl<'bump> Compiler<'bump> {
         self.quiet = true;
         let previous_mode = self.checker.mode();
         self.checker.set_mode(mode);
+        let tops = tops.into_iter().collect::<Vec<_>>();
         let mut expanded_tops = Vec::new();
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = lint::naming_indexed_diagnostics(&tops, source)
+            .into_iter()
+            .map(|(idx, diagnostic)| (idx, diagnostic.with_source_if_missing(file, source)))
+            .collect::<Vec<_>>();
 
         for (idx, top, report) in tops {
             match self.expand_meta_tops(top) {
@@ -233,6 +246,7 @@ impl<'bump> Compiler<'bump> {
             Diagnostic::with_span(format!("parse error: {}", e.message), e.span)
                 .with_source(file, content)
         })?;
+        self.emit_naming_warnings(file, content, &tops);
         for top in tops {
             self.process_top_level(top)
                 .map_err(|d| d.with_source_if_missing(file, content))?;
@@ -262,6 +276,15 @@ impl<'bump> Compiler<'bump> {
                 println!("{}", PrettyPrinter::pretty(val));
                 Ok(())
             }
+        }
+    }
+
+    fn emit_naming_warnings(&self, file: &str, source: &str, tops: &[TopLevel<'bump>]) {
+        if self.quiet {
+            return;
+        }
+        for warning in lint::naming_diagnostics(tops, source) {
+            eprintln!("{}", warning.with_source(file, source));
         }
     }
 

@@ -211,6 +211,7 @@ impl<'bump> Compiler<'bump> {
         let tops = parse_program(&source, self.bump, self.arena)
             .map_err(|e| Diagnostic::with_span(format!("parse error: {}", e.message), e.span))
             .map_err(|d| d.with_source(&file_str, &source))?;
+        self.emit_naming_warnings(&file_str, &source, &tops);
         let imports = module_cache_imports(&id, &tops, graph)?;
         parsed.insert(
             id.clone(),
