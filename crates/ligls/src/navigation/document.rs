@@ -59,9 +59,7 @@ impl IndexedDocument {
             return String::new();
         };
 
-        if token_index >= 2
-            && self.tokens[token_index - 1].token == Token::Dot
-        {
+        if token_index >= 2 && self.tokens[token_index - 1].token == Token::Dot {
             let parent = self
                 .qualified_path_at(token_index - 2)
                 .map(|parts| parts.join("::"))

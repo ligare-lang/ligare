@@ -375,9 +375,7 @@ fn lambda_bool_to_int_with_if() {
     assert_eq!(
         check_empty(
             &arena,
-            arena.lam(
-                arena.if_then_else(arena.var(0), arena.lit_int(0), arena.lit_int(1))
-            ),
+            arena.lam(arena.if_then_else(arena.var(0), arena.lit_int(0), arena.lit_int(1))),
             parse_constraint("bool -> int", b, &arena)
         ),
         Ok(())

@@ -1,5 +1,5 @@
-use crate::checker::context::lookup_refine;
 use crate::checker::context::empty_ctx;
+use crate::checker::context::lookup_refine;
 use crate::checker::erase::Eraser;
 use crate::config::COMPILER_INTRINSIC_ATTR;
 use crate::core::semantics::SemanticQueries;
@@ -354,8 +354,7 @@ impl<'bump> Compiler<'bump> {
                         self.checker.desugar_with_context(term)
                     })?;
                     let resolved = self.subst_top_level(desugared);
-                    let resolved =
-                        self.elaborate_of_nat_literals(resolved, &empty_ctx(), None)?;
+                    let resolved = self.elaborate_of_nat_literals(resolved, &empty_ctx(), None)?;
                     eraser.erase(resolved)
                 };
                 Ok(Some(TopLevel::TLDef(name, params, m_ret, erased, span)))

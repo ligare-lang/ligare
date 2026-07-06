@@ -351,7 +351,10 @@ impl<'arena, 'bump> Desugarer<'arena, 'bump> {
                 let fields = fields
                     .iter()
                     .map(|(field, value)| {
-                        Ok((*field, self.try_desugar_with_env(value, env, resolver, effect)?))
+                        Ok((
+                            *field,
+                            self.try_desugar_with_env(value, env, resolver, effect)?,
+                        ))
                     })
                     .collect::<Result<Vec<_>, String>>()?;
                 self.arena

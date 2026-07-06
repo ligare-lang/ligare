@@ -1047,9 +1047,8 @@ impl<'a, 'bump> Parser<'a, 'bump> {
                 span: self.current_span(),
             });
         }
-        Ok(self.arena.named_struct_cons(
-            name,
-            self.arena.alloc_slice(&fields),
-        ))
+        Ok(self
+            .arena
+            .named_struct_cons(name, self.arena.alloc_slice(&fields)))
     }
 }

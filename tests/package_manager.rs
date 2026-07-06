@@ -250,6 +250,36 @@ fn lock_file_pins_git_version_until_update() {
 }
 
 #[test]
+fn latest_update_prefers_highest_semver_tag() {
+    let _guard = env_lock().lock().unwrap();
+    let root = temp_project();
+    unsafe {
+        std::env::set_var("LIGARE_HOME", root.join(".ligare"));
+    }
+    let repo = root.join("dep_repo");
+    init_git_dep_with_tag(&repo, "v1.9.0", "1");
+    git_dep_commit(&repo, "2", "v1.10.0");
+
+    manifest(
+        &root,
+        "app",
+        &format!(
+            "\n[dependencies]\nlib = {{ git = \"{}\" }}\n",
+            repo.canonicalize().unwrap().display()
+        ),
+    );
+    write(
+        &root,
+        "src/main.lig",
+        "use lib::api::value\npub def main : IO () := value\n",
+    );
+
+    let project = resolve_project(&root, UpdateMode::Latest).unwrap();
+    let locked = &project.lock.deps["lib"];
+    assert_eq!(locked.version, "v1.10.0");
+}
+
+#[test]
 fn non_exported_dependency_module_is_rejected() {
     let root = temp_project();
     let util = root.join("util");
@@ -423,6 +453,10 @@ fn cli_build_infers_lib_package_from_lib_entry() {
 }
 
 fn init_git_dep(repo: &Path) {
+    init_git_dep_with_tag(repo, "v1", "1");
+}
+
+fn init_git_dep_with_tag(repo: &Path, tag: &str, value: &str) {
     fs::create_dir_all(repo).unwrap();
     manifest(repo, "lib", "");
     write(
@@ -430,13 +464,17 @@ fn init_git_dep(repo: &Path) {
         "src/main.lig",
         "pub mod api\npub def ignored : int := 0\n",
     );
-    write(repo, "src/api.lig", "pub def value : int := 1\n");
+    write(
+        repo,
+        "src/api.lig",
+        &format!("pub def value : int := {value}\n"),
+    );
     run(repo, &["init"]);
     run(repo, &["config", "user.email", "test@example.com"]);
     run(repo, &["config", "user.name", "Test"]);
     run(repo, &["add", "."]);
-    run(repo, &["commit", "-m", "v1"]);
-    run(repo, &["tag", "v1"]);
+    run(repo, &["commit", "-m", tag]);
+    run(repo, &["tag", tag]);
 }
 
 fn git_dep_commit(repo: &Path, value: &str, tag: &str) {

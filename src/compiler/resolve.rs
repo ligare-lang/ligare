@@ -1328,9 +1328,8 @@ impl<'bump> Compiler<'bump> {
                     "{name} is not a struct constraint"
                 )));
             };
-            let type_args = expected.and_then(|expected| {
-                self.constraint_type_args_for(*actual_name, expected)
-            });
+            let type_args =
+                expected.and_then(|expected| self.constraint_type_args_for(*actual_name, expected));
             return Ok((*actual_name, type_args, *fields));
         }
 
@@ -1340,9 +1339,9 @@ impl<'bump> Compiler<'bump> {
                     .to_string(),
             ));
         };
-        let Some((head, type_args)) = self.constraint_head_and_args(
-            crate::checker::TypeChecker::implicit_inner(expected),
-        ) else {
+        let Some((head, type_args)) =
+            self.constraint_head_and_args(crate::checker::TypeChecker::implicit_inner(expected))
+        else {
             return Err(Diagnostic::new(format!(
                 "expected a struct constraint for initializer, got {}",
                 crate::pretty::PrettyPrinter::pretty(expected)
@@ -1399,11 +1398,7 @@ impl<'bump> Compiler<'bump> {
             } else {
                 *field_constraint
             };
-            ordered.push(self.elaborate_of_nat_literals(
-                value,
-                ctx,
-                Some(field_constraint),
-            )?);
+            ordered.push(self.elaborate_of_nat_literals(value, ctx, Some(field_constraint))?);
         }
         Ok(ordered)
     }
@@ -1456,9 +1451,9 @@ impl<'bump> Compiler<'bump> {
                 self.replace_generic_constraint_vars_at(f, type_args, depth),
                 self.replace_generic_constraint_vars_at(a, type_args, depth),
             ),
-            Term::Implicit(inner) => self.arena.implicit(
-                self.replace_generic_constraint_vars_at(inner, type_args, depth),
-            ),
+            Term::Implicit(inner) => self
+                .arena
+                .implicit(self.replace_generic_constraint_vars_at(inner, type_args, depth)),
             Term::Pi(name, a, b) => self.arena.pi(
                 name,
                 self.replace_generic_constraint_vars_at(a, type_args, depth),

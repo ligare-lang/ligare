@@ -160,7 +160,10 @@ fn let_with_constraint() {
 #[test]
 fn lambda() {
     let (b, a) = a();
-    assert_eq!(*parse_fun_body("fun x => x", b, &a), Term::Lam(&Term::Var(0)));
+    assert_eq!(
+        *parse_fun_body("fun x => x", b, &a),
+        Term::Lam(&Term::Var(0))
+    );
 }
 
 #[test]
@@ -804,7 +807,11 @@ fn legacy_enum_variant_dot_access_is_rejected() {
     let (b, arena) = a();
     let err = parse_expr_top("Option.Some 1", b, &arena)
         .expect_err("legacy enum variant dot access must fail");
-    assert!(err.message.contains("uses `::` instead of `.`"), "{}", err.message);
+    assert!(
+        err.message.contains("uses `::` instead of `.`"),
+        "{}",
+        err.message
+    );
 }
 
 #[test]
