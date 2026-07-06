@@ -42,13 +42,16 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p ligare
+          cargo build --release --target ${{ matrix.target }} -p ligls
 
       - name: Prepare artifact
         shell: bash
         run: |
           mkdir -p release
           cp target/${{ matrix.target }}/release/ligare${{ matrix.ext }} release/
+          cp target/${{ matrix.target }}/release/ligls${{ matrix.ext }} release/
           tar -czf ${{ matrix.artifact }}.tar.gz -C release .
 
       - name: Upload artifact
