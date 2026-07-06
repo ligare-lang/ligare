@@ -204,7 +204,8 @@ impl TypeAnalyzer {
 
         remaining
             .into_iter()
-            .filter_map(|(name, _, is_struct)| is_struct.then(|| name.to_string()))
+            .filter(|(_, _, is_struct)| *is_struct)
+            .map(|(name, _, _)| name.to_string())
             .collect()
     }
 

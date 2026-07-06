@@ -235,7 +235,7 @@ impl<'bump> Compiler<'bump> {
                 if matches!(body_term, Term::EnumDef(..) | Term::StructDef(..)) {
                     continue;
                 }
-                let desugared = self.desugar_checked_def(params, *m_ret, *body_term)?;
+                let desugared = self.desugar_checked_def(params, *m_ret, body_term)?;
                 let resolved = self.subst_top_level(desugared);
                 let names: Vec<_> = params.iter().rev().map(|(pn, _)| *pn).collect();
                 let core_params = params

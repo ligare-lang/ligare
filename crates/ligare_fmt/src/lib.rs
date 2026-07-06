@@ -16,6 +16,9 @@ const PREC_MUL: u8 = 5;
 const PREC_APP: u8 = 6;
 const PREC_ATOM: u8 = 7;
 
+type NamedMatchBranch<'a> = (Name<'a>, &'a [(Name<'a>, &'a Term<'a>)], &'a Term<'a>);
+type ResolvedMatchBranch<'a> = (usize, &'a [(Name<'a>, &'a Term<'a>)], &'a Term<'a>);
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FormatReport {
     pub changed: Vec<PathBuf>,
@@ -304,7 +307,7 @@ impl SourceFormatter {
         self.format_param_sequence(
             &params
                 .iter()
-                .map(|(name, constraint)| self.param_info(*name, *constraint))
+                .map(|(name, constraint)| self.param_info(name, *constraint))
                 .collect::<Vec<_>>(),
             ParamStyle::Decl,
         )
@@ -623,7 +626,7 @@ impl SourceFormatter {
             if *name != expected_name {
                 return None;
             }
-            params.push(self.param_info(*name, Some(*domain)));
+            params.push(self.param_info(name, Some(*domain)));
             cursor = rest;
         }
         if !is_builtin_data(cursor) {
@@ -656,7 +659,7 @@ impl SourceFormatter {
         let mut cursor = term;
         let mut parts = Vec::new();
         while let Term::Pi(name, domain, rest) = cursor {
-            let param = self.param_info(*name, Some(*domain));
+            let param = self.param_info(name, Some(*domain));
             let rendered = if param.name.is_empty() && !param.implicit {
                 self.format_term(domain, PREC_ARROW + 1)
             } else {
@@ -849,7 +852,7 @@ impl SourceFormatter {
     fn format_named_match(
         &self,
         scrutinee: &Term<'_>,
-        branches: &[(Name<'_>, &[(Name<'_>, &Term<'_>)], &Term<'_>)],
+        branches: &[NamedMatchBranch<'_>],
     ) -> String {
         let mut lines = vec![format!(
             "match {} with",
@@ -885,7 +888,7 @@ impl SourceFormatter {
     fn format_resolved_match(
         &self,
         scrutinee: &Term<'_>,
-        branches: &[(usize, &[(Name<'_>, &Term<'_>)], &Term<'_>)],
+        branches: &[ResolvedMatchBranch<'_>],
     ) -> String {
         let mut lines = vec![format!(
             "match {} with",

@@ -135,7 +135,7 @@ fn collect_item(
             kind: "Definition",
             signature: Some(render_def_signature(
                 &join_name(prefix, name),
-                *params,
+                params,
                 *ret,
                 body,
                 meta.public,
@@ -150,7 +150,7 @@ fn collect_item(
             kind: "External Definition",
             signature: Some(render_extern_signature(
                 &join_name(prefix, name),
-                *params,
+                params,
                 ret,
                 meta.public,
             )),
@@ -249,11 +249,11 @@ fn render_item(item: &DocItem, level: usize) -> String {
         out.push_str("\n\nAttributes: ");
         out.push_str(&item.attributes.join(", "));
     }
-    if let Some(doc) = &item.doc {
-        if !doc.trim().is_empty() {
-            out.push_str("\n\n");
-            out.push_str(doc.trim());
-        }
+    if let Some(doc) = &item.doc
+        && !doc.trim().is_empty()
+    {
+        out.push_str("\n\n");
+        out.push_str(doc.trim());
     }
     if let Some(details) = &item.details {
         match details {
