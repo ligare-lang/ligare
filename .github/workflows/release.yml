@@ -52,6 +52,7 @@ jobs:
           mkdir -p release
           cp target/${{ matrix.target }}/release/ligare${{ matrix.ext }} release/
           cp target/${{ matrix.target }}/release/ligls${{ matrix.ext }} release/
+          cp -r libs/std release/
           tar -czf ${{ matrix.artifact }}.tar.gz -C release .
 
       - name: Upload artifact
